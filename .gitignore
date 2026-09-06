@@ -1,0 +1,30 @@
+# Secrets & local config — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Next.js
+node_modules/
+web/.next/
+web/out/
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+
+# Local data & output
+*.log
+output/
+backups/
