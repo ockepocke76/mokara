@@ -23,12 +23,14 @@ from app.routers import history as history_router
 from app.routers import me as me_router
 from app.routers import public as public_router
 from app.routers import simulations as simulations_router
+from app.routers import strategies as strategies_router
 
 app.include_router(me_router.router)
 app.include_router(public_router.router)
 app.include_router(simulations_router.router)
 app.include_router(history_router.router)
 app.include_router(admin_router.router)
+app.include_router(strategies_router.router)
 
 
 @app.get("/healthz")

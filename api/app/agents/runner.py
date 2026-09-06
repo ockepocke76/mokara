@@ -50,8 +50,11 @@ def get_graph():
             from langgraph.checkpoint.postgres import PostgresSaver
             from psycopg_pool import ConnectionPool
 
+            import atexit
+
             _pool = ConnectionPool(_dsn(), min_size=1, max_size=4,
                                    kwargs={'autocommit': True}, open=True)
+            atexit.register(_pool.close)
             checkpointer = PostgresSaver(_pool)
             checkpointer.setup()
             _graph = build_graph(checkpointer)
