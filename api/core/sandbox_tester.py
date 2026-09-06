@@ -11,10 +11,11 @@ import pandas as pd
 from typing import Dict, List, Any, Optional
 
 
-def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str, Any]) -> Dict[str, Any]:
+def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str, Any],
+                     seed: Optional[int] = None) -> Dict[str, Any]:
     """
     Run tests using the REAL simulation engine for realistic results.
-    
+
     Args:
         strategy_code: Strategy class code to test
         class_name: Name of strategy class
@@ -25,6 +26,10 @@ def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str,
             - use_sp500_backtest: Whether to include S&P 500 backtest (default: True)
             - inflation_rate: Inflation rate (default: 0.02)
             - strategy_params: Dict of strategy-specific parameters
+        seed: Optional RNG seed. run_simulation generates all return scenarios
+            upfront from the global numpy RNG, so two calls with the same seed
+            see identical market paths — required for paired strategy-vs-baseline
+            comparisons where an unpaired 10-path sample is mostly noise.
     
     Returns:
         Dict with:
@@ -89,6 +94,8 @@ def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str,
         
         # --- STEP 4: Run the REAL simulation engine ---
         # We pass the real inputs (returns_sources, mu, sigma) just like the main process.
+        if seed is not None:
+            np.random.seed(seed)
         all_results = run_simulation(
             params=sim_params,
             returns_sources=sim_inputs['returns_sources'],

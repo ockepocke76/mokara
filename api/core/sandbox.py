@@ -304,6 +304,13 @@ def _validate_strategy_class(strategy_class):
             if item not in valid_options:
                 raise ValueError(f"Invalid option '{item}' in shortfall_funding_policy. Valid options are: {valid_options}")
 
+        # 7. Validate evaluation_category. The base class defaults to 'HYBRID',
+        # so this only fails when a strategy overrides it with a bad value.
+        category = instance.evaluation_category()
+        valid_categories = {'WITHDRAWAL_ONLY', 'CONTRIBUTION_ONLY', 'HYBRID'}
+        if category not in valid_categories:
+            raise ValueError(f"evaluation_category() returned '{category}'. Valid options are: {valid_categories}")
+
         logging.info(f"Dry run validation successful for {strategy_class.__name__}")
         return True
     except Exception as e:
