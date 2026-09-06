@@ -18,6 +18,10 @@ configure_logging()
 
 app = FastAPI(title="Mokara API", version="0.1.0")
 
+from app.routers import me as me_router
+
+app.include_router(me_router.router)
+
 
 @app.get("/healthz")
 def healthz() -> dict:

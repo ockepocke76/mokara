@@ -119,16 +119,24 @@ script, `admin_app.py` as a separate service.
 - [x] CI (GitHub Actions): api pytest + web build/lint on PR.
 - [x] `.env.example` for both halves; `.gitignore` correct from commit one.
 
-### W1 — Auth
-- [ ] Better Auth in `web/` with Google provider; sessions in Postgres.
-- [ ] Link Better Auth users ↔ existing `USERS` table by email (keep the
+### W1 — Auth ✅ (2026-09-06)
+- [x] Better Auth in `web/` with Google provider; sessions in Postgres.
+- [x] Link Better Auth users ↔ existing `USERS` table by email (keep the
       engine's user_id intact — job attribution, history, tiers all key on it).
-- [ ] Admin gate: allowlist in DB/env (replaces `allowed_users.txt` +
-      `ui/auth.is_admin`).
-- [ ] BFF plumbing: authenticated fetch helper (Next route handler →
+- [x] Admin gate: tier-based, straight from the DB (`get_user_tier == 'ADMIN'`)
+      — that's what old `ui/auth.is_admin` actually did; no allowlist file.
+- [x] BFF plumbing: authenticated fetch helper (Next route handler →
       FastAPI with internal auth header + user claims).
-- [ ] Port the tier/beta system as-is: `tier_config`, beta gating
+- [x] Port the tier/beta system as-is: `tier_config`, beta gating
       (`get_beta_status` quota auto-approve), AI credits (`core/limits`).
+
+Notes: GET /me on the API returns the full viewer profile (identity, beta
+allowed-status w/ quota auto-approve, tier, admin flag, currency). Dev-only
+email/password login (AUTH_DEV_LOGIN=1) makes every authed flow testable in
+the browser without Google credentials; Google needs its redirect URI
+(BETTER_AUTH_URL + /api/auth/callback/google) added in the Google console
+before real logins work. Verified live: signup → session → BFF headers →
+engine user auto-created (FREE tier, beta auto-approved).
 
 ### W2 — Read-only slice (proves API + charts end to end, cheaply)
 - [ ] API: `/leaderboard`, `/community-stats`, `/beta-status`.
@@ -194,4 +202,5 @@ script, `admin_app.py` as a separate service.
 |------|------|-------|
 | 2026-09-06 | — | Repo created; plan written. Decisions: mokara name, Tailwind+shadcn, docs consolidation. Open: hosting/DB, tier scope, branding. |
 | 2026-09-06 | W0 | Scaffold complete: engine copied from tag (ui/layout→core/param_layout, ui/radar_chart_data→reporting, broken ui.formatting lazy import fixed, snowflake migrations + 4 UI tests + 2 stale tests pruned); pyarrow was a hidden streamlit transitive dep, now explicit. api: venv, 168 tests pass, FastAPI /healthz (db ping) + /internal/ping (BFF secret) verified live. web: create-next-app + shadcn (14 components), Mokara landing verified in browser, prod build clean. CI workflow (api pytest w/ PG service + migrations; web lint+build). |
+| 2026-09-06 | W1 | Auth complete: Better Auth (PG tables migrated) + Google provider (env-gated) + dev credentials login; BFF apiFetch/getViewer with internal secret + identity headers; API /me (5 new tests); site header w/ session + user menu; login page. Full loop verified in browser. |
 | 2026-09-06 | — | Remaining decisions closed: Cloud Run + Cloud SQL, tier system ported as-is, full rebrand to Mokara. All decisions made — W0 is unblocked. |
