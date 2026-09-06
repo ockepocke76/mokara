@@ -39,17 +39,16 @@ value, ship when ready.
 - Admin → an **admin route group** in `web/` (kills the separate
   `admin_app.py` deployment).
 
-**Open (decide before the wave that needs them):**
-- [ ] **Hosting + database** (needed by W7, worth deciding early): prod was
-      Cloud Run + Cloud SQL (~cost was the reason it was torn down).
-      Options: Cloud Run again (known), or cheaper managed PG
-      (Neon/Supabase free tier) + small always-on host. Also: does the
-      background worker run as a separate service or in the API container?
-- [ ] **Tier/beta system scope** (needed by W1): port the full
-      `tier_config` + allowed-users beta gating, or simplify to
-      admin-allowlist + one free tier for launch?
-- [ ] **Branding**: keep "MyMonteCarlo" product name under mokara.ai, or
-      rebrand as Mokara?
+- Hosting: **Cloud Run + Cloud SQL** (decided 2026-09-06) — the known
+  stack; deploy scripts/knowledge from the old repo carry over. Prod DB can
+  seed from the dump at `~/dev/mymontecarlo/backups/`. Still open within
+  W7: worker as its own Cloud Run service vs. sidecar/same container.
+- Tier/beta system: **port as-is** (decided 2026-09-06) — full
+  `tier_config` + beta gating + AI credits come along in W1/W5.
+- Branding: **rebrand as Mokara** (decided 2026-09-06) — product name is
+  Mokara, domain mokara.ai. UI copy, page titles, PDF headers, and email
+  addresses use Mokara; "MyMonteCarlo" survives only in engine internals
+  until touched.
 
 ---
 
@@ -128,7 +127,8 @@ script, `admin_app.py` as a separate service.
       `ui/auth.is_admin`).
 - [ ] BFF plumbing: authenticated fetch helper (Next route handler →
       FastAPI with internal auth header + user claims).
-- [ ] Decide + implement the tier/beta scope decision (see Open).
+- [ ] Port the tier/beta system as-is: `tier_config`, beta gating
+      (`get_beta_status` quota auto-approve), AI credits (`core/limits`).
 
 ### W2 — Read-only slice (proves API + charts end to end, cheaply)
 - [ ] API: `/leaderboard`, `/community-stats`, `/beta-status`.
@@ -170,8 +170,9 @@ script, `admin_app.py` as a separate service.
       management, migrations trigger, danger zone (system reset — keep the
       DELETE-EVERYTHING + ADMIN_PASSWORD double confirm).
 
-### W7 — Deploy
-- [ ] Execute the hosting decision; Dockerfiles for api/worker/web.
+### W7 — Deploy (Cloud Run + Cloud SQL)
+- [ ] Dockerfiles for api/worker/web; decide worker topology (own Cloud Run
+      service vs. same container as api).
 - [ ] Secrets as env vars in the host — never in the repo.
 - [ ] Restore-from-backup path: prod DB dump lives at
       `~/dev/mymontecarlo/backups/` — decide whether new prod starts from
@@ -192,3 +193,4 @@ script, `admin_app.py` as a separate service.
 | Date | Wave | Notes |
 |------|------|-------|
 | 2026-09-06 | — | Repo created; plan written. Decisions: mokara name, Tailwind+shadcn, docs consolidation. Open: hosting/DB, tier scope, branding. |
+| 2026-09-06 | — | Remaining decisions closed: Cloud Run + Cloud SQL, tier system ported as-is, full rebrand to Mokara. All decisions made — W0 is unblocked. |
