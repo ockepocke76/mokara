@@ -298,6 +298,93 @@ on per-year traces); dead-parameter detection (perturb-and-rerun).
       total). Browser-verified as an ADMIN user (dev@mokara.local promoted
       locally); reset button NOT clicked.
 
+### WV — Visual identity & page-by-page parity (added 2026-09-06, runs before W7)
+
+The functional port works but reads as a generic monochrome shadcn app; the
+old Streamlit app had a real brand. Grounded in a side-by-side session
+against the live old app (bypass_login temporarily enabled, since reverted).
+
+**The old app's design language (what "professional" meant):**
+- Palette: **orange `#FF6B35`** primary (CTAs, sliders, active states),
+  **navy `#2E4057`** headings/text, white bg + `#F4F6F8` secondary surfaces,
+  soft-blue info banners, soft-yellow warning banners.
+- **Brand header on every page**: logo mark (`ui/assets/mokara_logo.png` in
+  the old repo — copy it over) + "mokara.ai" wordmark + tagline
+  *"Wisdom of the Crowd, Applied"*. Footer: "© 2026 Mokara.AI · Stockholm,
+  Sweden 🇸🇪 · Made with ❤️ and ☕ for better financial futures".
+- **Voice**: emoji-led page titles (🚀 Run Simulation, 🏆 Strategy
+  Leaderboard), pedagogic info boxes (the "Wisdom of the Crowd" explainer,
+  ISK-tax caveat), a dismissible ✨ Early Access banner.
+- Charts (light theme, `reporting/color_scheme.py` LightChartColors):
+  plot bg `#f8f9fa`, median red `#e74c3c`, mean yellow, p25 purple
+  `#9b59b6` / p75 green `#2ecc71`, IQR teal fill, sim paths blue `#3498db`.
+- Rich components: score displayed big as **41.6/100**, medal icons,
+  expandable "View Details & Metrics", persona profile cards with
+  one-line descriptions, orange sliders with value bubble + currency hint
+  ("→ 1 000 000 SEK").
+
+#### WV.0 — Foundation (do first; everything else inherits it)
+- [ ] Design tokens: map brand into shadcn CSS vars in `globals.css` —
+      `--primary` = orange (+hover), headings/foreground toward navy,
+      `--secondary`/muted surfaces = `#F4F6F8`; info/warning banner
+      utility classes. Keep light as the designed theme (old app was
+      light-only); dark stays functional but is not the target look.
+- [ ] Brand assets: copy `mokara_logo.png` from the old repo →
+      `web/public/`; favicon + og-image from it.
+- [ ] `SiteHeader` v2: logo mark + "mokara.ai" wordmark (+ tagline on
+      desktop), orange active-link states. `SiteFooter` (Stockholm line) on
+      all pages. Dismissible Early-Access banner (localStorage) fed by
+      `/beta-status`.
+- [ ] Chart theme module (`lib/chart-theme.ts`): one Plotly layout+color
+      preset matching LightChartColors (median red, p25 purple, p75 green,
+      teal IQR fill, blue sampled paths) — used by every Chart call.
+- [ ] `InfoBox` / `WarningBox` components (soft blue / soft yellow, emoji
+      slot) replicating the old `st.info`/`st.warning` look.
+- [ ] Slider v2 in `ParamField`: orange track, value bubble above thumb,
+      currency hint line for `is_currency` params, proper Tooltip (shadcn)
+      for param descriptions instead of `title=`.
+
+#### WV.1 — Page by page (each item: compare vs old screenshot, restyle, verify desktop + 375px)
+- [ ] **Landing + Dashboard (the old Home)**: authed → "Welcome back,
+      {name} 👋", stat pair (Simulations Run / Strategies Created), recent
+      simulations list, Quick Actions row with the orange "🚀 Run New
+      Simulation" CTA; anonymous → hero with logo, tagline, early-access
+      spots + sign-in CTA. Landing redirects authed users to /dashboard.
+- [ ] **Login**: logo + tagline above the card; orange primary buttons.
+- [ ] **Simulate**: sections as collapsible accordions like the old
+      expanders (⚙️ Simulation Settings, Economic Assumptions, Tax
+      Settings); orange sliders w/ value bubbles; per-param help tooltips;
+      currency hint under Initial Investment; sticky bottom run-bar with
+      inline progress.
+- [ ] **Results**: emoji section headers; stat cards restyled (score-sized
+      numbers, success green / ruin red accents); charts on the brand
+      chart theme (median red line, purple/green band edges, teal fill);
+      ISK-tax WarningBox; AI-analysis card styled like the old report
+      sections.
+- [ ] **My Simulations**: richer preview cards — mini net-worth sparkline,
+      status chips, orange primary "New simulation". NOTE: old page had a
+      **Compare** tab — not ported anywhere yet; decide scope (backlog or
+      part of this wave).
+- [ ] **Leaderboard**: entry cards instead of a bare table — medal, name,
+      category, big **score/100**, expandable details with sub-score bars
+      (scores dict already served); "🧠 Wisdom of the Crowd" InfoBox;
+      ISK-tax WarningBox; persona profile cards with descriptions
+      (extend /leaderboard/meta with profile descriptions).
+- [ ] **Strategies**: branded placeholder until W5 ships (logo, one-line
+      pitch, "the AI designer is being rebuilt" + link to leaderboard).
+- [ ] **Docs**: emoji page titles, InfoBox for key callouts, brand link
+      color; otherwise typography is fine.
+- [ ] **Settings + Admin**: light touch — brand header/footer, orange
+      primaries, consistent page titles.
+- [ ] **Mobile pass**: hamburger/sheet nav for <md (replaces the old app's
+      bottom-nav hacks properly); every page checked at 375px.
+
+#### WV.2 — Exit checks
+- [ ] Side-by-side screenshot review vs the old app, page by page (Oscar
+      eyeballs — visual verdicts are his).
+- [ ] `npm run build` + lint clean; dark mode still functional (not the
+      designed theme, but must not be broken).
+
 ### W7 — Deploy (Cloud Run + Cloud SQL)
 - [ ] Dockerfiles for api/worker/web; decide worker topology (own Cloud Run
       service vs. same container as api).
