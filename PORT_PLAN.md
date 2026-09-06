@@ -282,11 +282,21 @@ on per-year traces); dead-parameter detection (perturb-and-rerun).
 **Deliberately NOT now:** embeddings/RAG, N parallel candidates, in-loop
 8-scenario evaluation, parameter auto-tuning.
 
-### W6 — Settings + Admin
-- [ ] Settings page: currency preference (UserProfileService).
-- [ ] `admin/` route group: users + tiers, jobs table, leaderboard
-      management, migrations trigger, danger zone (system reset — keep the
-      DELETE-EVERYTHING + ADMIN_PASSWORD double confirm).
+### W6 — Settings + Admin ✅ (2026-09-06)
+- [x] Settings page: currency preference via `PUT /me/settings`
+      (validated against get_currency_options; UserProfileService).
+- [x] `admin/` route group (layout 404s non-admins; API re-checks tier on
+      every endpoint; Admin item in user menu for admins):
+      **Users** — unified registered+pre-authorized table (SQL ported from
+      old admin_app.get_unified_user_data), per-row tier select
+      (update_user_tier w/ SUBSCRIPTION_HISTORY audit), allow/revoke,
+      pre-authorize form. **Jobs** — background-jobs table w/ status badges.
+      **System** — run migrations, re-run all leaderboard evaluations
+      (builtin + custom, same job payloads as old admin), danger zone with
+      the DELETE-EVERYTHING + ADMIN_PASSWORD double confirm.
+      BFF: catch-all /api/bff/admin/[...path] proxy. 5 API tests (187
+      total). Browser-verified as an ADMIN user (dev@mokara.local promoted
+      locally); reset button NOT clicked.
 
 ### W7 — Deploy (Cloud Run + Cloud SQL)
 - [ ] Dockerfiles for api/worker/web; decide worker topology (own Cloud Run
@@ -316,5 +326,6 @@ on per-year traces); dead-parameter detection (perturb-and-rerun).
 | 2026-09-06 | W2 | Read-only slice done; all three pages verified in browser against live local DB. Gotcha fixed: uvicorn launch config now uses --reload (stale server had 404'd new routers). |
 | 2026-09-06 | W3 | Core flow complete + browser-verified e2e. Found: engine config oddity (return_threshold_rate default 0 < min 0.5 — surfaced by native form validation, now bypassed; engine validates server-side). 178 api tests green. |
 | 2026-09-06 | W4 | My Simulations + PDF done, browser-verified; 45-page PDF through worker→storage→API→BFF. Engine pdf_status vocabulary is lowercase pending/ready/failed. STOPPED HERE per Oscar: W5 on hold for agentic-flow redesign; W6+W7 not started. |
+| 2026-09-06 | W6 | Settings + Admin done, browser-verified. Only W5 (agentic designer, design settled) and W7 (deploy — needs Oscar's go for billing) remain. |
 | 2026-09-06 | — | Remaining decisions closed: Cloud Run + Cloud SQL, tier system ported as-is, full rebrand to Mokara. All decisions made — W0 is unblocked. |
 | 2026-09-06 | W5 | Hold lifted: agentic-generation design settled and written into the W5 section (LangGraph, one graph for create+evolve, validation ladder w/ paired baseline, spec-conformance-only rework, per-run credit metering). Implementation not started. |

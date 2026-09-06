@@ -1,7 +1,6 @@
 import Link from "next/link";
-import { headers } from "next/headers";
 
-import { auth } from "@/lib/auth";
+import { getViewer } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { UserMenu } from "@/components/user-menu";
 
@@ -15,7 +14,7 @@ const NAV = [
 ];
 
 export async function SiteHeader() {
-  const session = await auth.api.getSession({ headers: await headers() });
+  const viewer = await getViewer().catch(() => null);
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
@@ -35,10 +34,11 @@ export async function SiteHeader() {
           ))}
         </nav>
         <div className="ml-auto">
-          {session?.user ? (
+          {viewer?.authenticated ? (
             <UserMenu
-              name={session.user.name ?? session.user.email}
-              email={session.user.email}
+              name={viewer.name ?? viewer.email ?? "Account"}
+              email={viewer.email ?? ""}
+              isAdmin={viewer.is_admin ?? false}
             />
           ) : (
             <Button asChild size="sm">

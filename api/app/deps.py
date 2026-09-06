@@ -13,7 +13,7 @@ get_current_user returns a user dict shaped like the engine expects
 import logging
 from typing import Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 from core.secrets import get_secret
 
@@ -45,4 +45,20 @@ def get_current_user(
 def require_user(user: Optional[dict] = None) -> dict:
     if user is None:
         raise HTTPException(status_code=401, detail="authentication required")
+    return user
+
+
+def require_admin(user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """Admin = tier 'ADMIN' in the engine DB (same rule as the old app)."""
+    if user is None:
+        raise HTTPException(status_code=401, detail="authentication required")
+    from db.database import db
+
+    try:
+        tier = db.get_user_tier(user["id"])
+    except Exception:
+        logging.exception("admin tier lookup failed for %s", user["id"])
+        raise HTTPException(status_code=500, detail="tier lookup failed")
+    if tier != "ADMIN":
+        raise HTTPException(status_code=403, detail="admin access required")
     return user

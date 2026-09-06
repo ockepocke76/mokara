@@ -2,11 +2,34 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.deps import get_current_user, verify_internal_secret
 
 router = APIRouter(dependencies=[Depends(verify_internal_secret)])
+
+
+class UpdateSettings(BaseModel):
+    currency: str
+
+
+@router.put("/me/settings")
+def update_settings(
+    body: UpdateSettings,
+    user: Optional[dict] = Depends(get_current_user),
+) -> dict:
+    if user is None:
+        raise HTTPException(status_code=401, detail="authentication required")
+    from core.user_profile import UserProfileService, get_currency_options
+    from db.database import db
+
+    if body.currency not in get_currency_options():
+        raise HTTPException(status_code=422, detail=f"Unknown currency: {body.currency}")
+    ok = UserProfileService.update_user_profile(db, user["id"], currency=body.currency)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to update settings")
+    return {"currency": body.currency}
 
 
 @router.get("/me")
