@@ -143,16 +143,27 @@ engine user auto-created (FREE tier, beta auto-approved).
 - [x] Web: Leaderboard page (table w/ medals, category+profile filters via URL params) + Dashboard (stat cards, most-run-strategies Plotly bar w/ empty state, getting-started links). `components/chart.tsx` = SSR-safe react-plotly wrapper on plotly.js-dist-min.
 - [x] `/docs` MDX section (@next/mdx + typography plugin): methodology/glossary/disclaimer GENERATED verbatim from `reporting/content.py` via script; about (Mokara story) + assets hand-ported. Sidebar layout.
 
-### W3 — Run Simulation (the core flow)
-- [ ] API: `GET /config/params` exposing the config-driven parameter schema
-      (the old sidebar generated sliders from config — same data drives a
-      React form now); `POST /simulations` (validate via `validation.py`,
-      queue job); `GET /jobs/{id}` with progress payload.
-- [ ] Worker runs as a real process (`api/worker.py`); document the local
-      run recipe (api + worker + web).
-- [ ] Web: simulate page — param form (react-hook-form + zod from the
-      schema), strategy picker, submit → progress (poll `/jobs/{id}`) →
-      results charts from the regeneration package series.
+### W3 — Run Simulation ✅ (2026-09-06)
+- [x] API: `GET /config/params` — strategies (class param defs + BBD
+      conditional-visibility rules), assets (per-model params incl.
+      num_years), sections (tax exposed under the engine's `tax_method`
+      key); `POST /simulations` — faithful port of _start_simulation
+      (beta + AI-credit gates, currency from profile, validate → 422,
+      hash/cache/history, stale-cache replacement rerun; responses:
+      cached | running | queued); `GET /jobs/{id}` with progress payload;
+      `GET /simulations/{hash}/results` — stats + chart series (percentile
+      fan, Net-Worth slice of the MultiIndex sampled_paths, histogram,
+      median yearly table, AI content).
+- [x] Worker runs as a real process (`api/worker.py` →
+      services/background_worker.run_worker).
+- [x] Web: simulate page — schema-driven form (plain state, ParamField
+      renders slider+input/select/checkbox with percent scaling and
+      visible_if; form is noValidate — engine validation is authoritative,
+      config defaults can sit off native step grids), submit → BFF →
+      poll → results page: stat cards, log-scale percentile fan with
+      sampled paths, outcome histogram, median yearly table, AI analysis
+      (hidden when disabled). Verified END TO END in the browser: real
+      S&P 500 bootstrap 30y × 1000 runs through form → worker → charts.
 
 ### W4 — My Simulations + PDF
 - [ ] API: history list w/ preview stats (the phase-1 `db/cache.py` wrappers
@@ -161,7 +172,13 @@ engine user auto-created (FREE tier, beta auto-approved).
 - [ ] Web: simulations list with preview cards, detail view, PDF button
       with ready-state polling.
 
-### W5 — Strategies (biggest single wave)
+### W5 — Strategies (biggest single wave) — ⏸ ON HOLD (2026-09-06)
+
+**Do not port the old one-shot Gemini generation.** Oscar is replacing the
+one-shot prompt with an **agentic flow** — W5 starts only after that design
+discussion. The CRUD/evaluate/leaderboard plumbing below may survive as-is;
+the generate step will be redesigned.
+
 - [ ] API: strategies CRUD, `POST /strategies/generate` (Gemini,
       server-side, per-user AI-credit enforcement via `core/limits`),
       test-run endpoint, `POST /strategies/evaluate` (existing job type),
@@ -203,4 +220,5 @@ engine user auto-created (FREE tier, beta auto-approved).
 | 2026-09-06 | W0 | Scaffold complete: engine copied from tag (ui/layout→core/param_layout, ui/radar_chart_data→reporting, broken ui.formatting lazy import fixed, snowflake migrations + 4 UI tests + 2 stale tests pruned); pyarrow was a hidden streamlit transitive dep, now explicit. api: venv, 168 tests pass, FastAPI /healthz (db ping) + /internal/ping (BFF secret) verified live. web: create-next-app + shadcn (14 components), Mokara landing verified in browser, prod build clean. CI workflow (api pytest w/ PG service + migrations; web lint+build). |
 | 2026-09-06 | W1 | Auth complete: Better Auth (PG tables migrated) + Google provider (env-gated) + dev credentials login; BFF apiFetch/getViewer with internal secret + identity headers; API /me (5 new tests); site header w/ session + user menu; login page. Full loop verified in browser. |
 | 2026-09-06 | W2 | Read-only slice done; all three pages verified in browser against live local DB. Gotcha fixed: uvicorn launch config now uses --reload (stale server had 404'd new routers). |
+| 2026-09-06 | W3 | Core flow complete + browser-verified e2e. Found: engine config oddity (return_threshold_rate default 0 < min 0.5 — surfaced by native form validation, now bypassed; engine validates server-side). 178 api tests green. |
 | 2026-09-06 | — | Remaining decisions closed: Cloud Run + Cloud SQL, tier system ported as-is, full rebrand to Mokara. All decisions made — W0 is unblocked. |
