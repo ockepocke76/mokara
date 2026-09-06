@@ -1,0 +1,263 @@
+# Glossary
+
+## Core Simulation & Statistical Concepts
+
+**Monte Carlo Simulation** — A method used to understand the impact of risk and uncertainty in financial forecasts. It works by running a large number of simulations with random variables to see the range of possible outcomes.
+
+**Volatility** — A measure of how much the price of an asset varies over time. Higher volatility means higher risk and a wider range of potential outcomes. It is a key driver of both upside potential and downside risk.
+
+**Annualized Volatility** — The standard deviation of returns scaled to represent a full year. It measures the degree of variation in an asset's returns over a one-year period, providing a standardized measure of risk that can be compared across different assets and time periods.
+
+**Standard Deviation** — A statistical measure of the amount of variation or dispersion of a set of values. In finance, it's often used as a measure of volatility.
+
+**Sequence of Returns Risk** — The risk that the order and timing of investment returns are unfavorable. Poor returns in the early years of retirement can have a much bigger impact than poor returns later on.
+
+**Autocorrelation (ACF)** — The correlation of a time series with a delayed version of itself. In finance, the ACF of returns is used to test for market efficiency. If returns are random (an efficient market), the autocorrelation for any lag other than zero should be close to zero. Significant spikes outside the shaded confidence interval at various lags could suggest the presence of momentum or mean-reversion tendencies, which would have implications for the validity of the simulation models.
+
+**Logarithmic Scale** — A non-linear scale used for displaying data that spans several orders of magnitude. On a log scale, constant percentage changes appear as straight lines, making it easier to visualize compound growth and relative changes.
+
+**Skewness** — A measure of the asymmetry of a probability distribution. Positive skewness indicates a distribution with a longer tail on the right side (more extreme positive outcomes), while negative skewness indicates a longer tail on the left (more extreme negative outcomes). In finance, understanding skewness helps assess the likelihood of extreme gains or losses.
+
+**Kurtosis** — A measure of the 'tailedness' of a probability distribution. High kurtosis indicates heavy tails and a higher probability of extreme outcomes (both positive and negative) compared to a normal distribution. This is crucial for understanding the risk of rare but severe market events.
+
+**Fat Tails** — A characteristic of probability distributions where extreme events (far from the mean) occur more frequently than predicted by a normal distribution. In financial markets, fat tails mean that crashes and booms are more common than standard models suggest, making risk management more challenging.
+
+**Cone of Uncertainty** — A visual representation in simulation plots showing how the range of possible outcomes widens over time. It illustrates the increasing uncertainty about future values as the time horizon extends, typically shown as shaded areas between percentile paths.
+
+## Financial Strategies & Methods
+
+**Trinity Study** — A well-known financial study that examined 'safe withdrawal rates' from retirement portfolios. It's famous for establishing the '4% Rule'.
+
+**4% Rule** — A rule of thumb suggesting that retirees can safely withdraw 4% of their initial portfolio value each year, adjusted for inflation, without depleting their funds for at least 30 years.
+
+**Asset Withdrawal** — A strategy for generating cash by selling assets from a portfolio. This is a common strategy for retirees.
+
+**Loan Drawdown (Buy, Borrow, Die)** — A strategy where instead of selling assets, one borrows money against the value of the portfolio to fund expenses. The assets remain invested, allowing them to continue to grow over time. The 'die' part refers to the idea that the loan is repaid from the estate upon death, thus avoiding capital gains tax on the assets.
+
+**Backtest** — A simulation run using actual historical data to see how a strategy would have performed in the past. Unlike forward-looking Monte Carlo simulations, a backtest uses the exact sequence of historical returns to provide a single 'what actually happened' scenario.
+
+## Portfolio Outcome & Risk Metrics
+
+**Net Worth** — The value of assets minus liabilities (debts). In this simulation, it's the asset value minus the total debt. This represents the owner's equity in the portfolio.
+
+**Portfolio Success Rate** — The percentage of simulations that successfully funded consumption for the entire time horizon without failure. For the Trinity strategy, failure is defined as portfolio depletion (value reaching zero). For the Loan Drawdown strategy, failure is defined as insolvency (debt exceeding asset value).
+
+**Chance of Ruin** — The inverse of Portfolio Success Rate - the percentage of simulations that failed to sustain the strategy for the full time horizon. For withdrawal strategies, this means portfolio depletion (running out of money). For leverage strategies, this means insolvency (debt exceeding asset value). Also called the failure rate.
+
+**Earliest Ruin Year** — Among the simulations that failed, this indicates the year when the first failure occurred. This represents the fastest path to ruin and helps understand the minimum time buffer before failure becomes possible, even in worst-case sequences of returns.
+
+**Risk of Insolvency** — The risk that liabilities (debt) will exceed the value of assets, resulting in a negative net worth.
+
+**Risk of Nominal Loss** — The percentage of simulations where the final net worth is less than the initial investment, without adjusting for inflation. It measures the risk of ending with less money than you started with in absolute terms.
+
+**Median Year of Ruin** — For the set of simulations that end in failure (portfolio depletion or insolvency), this is the median year in which that failure occurred. It provides insight into how quickly things can go wrong in unfavorable scenarios.
+
+**Cash Flow Reliability** — A qualitative measure of the consistency of annual cash flow. A 'Low' reliability indicates that consumption drawdowns were frequently suspended (e.g., due to high LTV) or reduced (e.g., due to a percentage-based drawdown on a declining asset value).
+
+**Years of Spending Left (Portfolio Longevity)** — Estimates how many additional years the portfolio could sustain withdrawals based on the final net worth and a representative withdrawal amount. Calculated as: final net worth divided by the median of all non-zero, inflation-adjusted withdrawals during the simulation. All historical withdrawals are adjusted to final-year purchasing power to ensure an accurate comparison. For withdrawal/hybrid strategies, this uses the median withdrawal across all years with actual withdrawals. For contribution-only strategies, this metric is not applicable (displayed as N/A). This approach avoids misleading results from strategies that intentionally reduce withdrawals near the end of the simulation (e.g., 'die with zero' approaches).
+
+**Chance of Profit (Nominal)** — The percentage of simulations where the final net worth is greater than the initial investment in nominal terms (not adjusted for inflation).
+
+**Chance of Real Profit** — The percentage of simulations where the final net worth is greater than the initial investment after adjusting the initial amount for cumulative inflation over the simulation period. This measures the growth of purchasing power.
+
+**Maximum Drawdown** — The largest peak-to-trough decline in asset value during the historical period or simulation. It represents the worst-case scenario an investor would have experienced and is a key measure of downside risk. Expressed as a percentage of the peak value.
+
+**Total Withdrawn** — The cumulative sum of all consumption withdrawals taken from the portfolio over the simulation period, adjusted for inflation to today's purchasing power. This represents the total lifestyle funding that the portfolio provided.
+
+**Total Costs** — The sum of all fees, taxes, and interest paid over the simulation period. This includes asset management fees, capital gains taxes, wealth taxes, and loan interest costs. Represents the total drag on portfolio performance from operating expenses.
+
+**Return on Investment** — The total percentage gain or loss on the initial investment, calculated as (Final Value - Initial Investment) / Initial Investment. Can be shown as total return or annualized (CAGR) for comparing across different time periods.
+
+**Peak Leverage (95th %ile)** — The highest Loan-to-Value (LTV) ratio reached across 95% of simulation paths. This indicates how much borrowing pressure the strategy experiences in typical scenarios. The 95th percentile excludes the most extreme 5% of outcomes to focus on reasonably likely scenarios rather than tail events.
+
+**Final Net Worth (Real | Nominal)** — The portfolio's net worth at the end of the simulation, shown in both real (inflation-adjusted to today's purchasing power) and nominal (actual future dollars) terms. This dual display helps you understand both the actual amount you'd have and what it would be worth in today's money.
+
+**Total Portfolio Value (Real | Nominal)** — For withdrawal strategies, this is the sum of final net worth plus all withdrawals taken, shown in both inflation-adjusted and nominal terms. Represents the total value generated by the portfolio over its lifetime.
+
+**Worst 5% Outcome** — The final net worth at the 5th percentile - meaning only 5% of simulations ended worse than this. Represents a pessimistic but plausible worst-case scenario that helps with downside risk assessment.
+
+**⚠️ Cost Drag** — The percentage of total portfolio value lost to fees, taxes, and interest costs. Shows how much of your potential wealth was consumed by operating expenses. Particularly important for the FIRE community focused on minimizing unnecessary costs.
+
+## Transaction Types & Strategy Actions
+
+**Asset Sales** — Selling portfolio assets to generate cash. Used to fund withdrawals, pay costs, or reduce leverage. Triggers capital gains tax on any profit since purchase. Common in withdrawal-based strategies like the Trinity approach.
+
+**Asset Purchases** — Buying additional assets with available cash. Increases portfolio value and future growth potential. Common in accumulation phases or when rebalancing after deleveraging.
+
+**Borrowing** — Taking a loan against the portfolio's value to generate cash for expenses without selling assets. Incurs interest costs but avoids capital gains tax and keeps assets invested. Core mechanic of the Buy, Borrow, Die strategy.
+
+**Debt Repayment** — Paying down existing loans to reduce interest costs and improve the loan-to-value ratio. Reduces financial leverage and risk but requires cash or asset sales to fund.
+
+**Contributions** — Adding new capital to the portfolio from external sources (salary, savings, etc.). Increases portfolio value without requiring market gains. Critical during accumulation phases.
+
+**Cash Buffer Management** — Maintaining cash reserves to fund near-term withdrawals without selling assets during market downturns. Helps avoid selling at unfavorable prices (sequence of returns risk mitigation).
+
+**Deleveraging** — Emergency asset sales triggered when loan-to-value ratios exceed safety thresholds. Reduces debt to restore healthy leverage ratios. A critical automatic risk management mechanism in leveraged strategies.
+
+## Strategy Evaluation Metrics
+
+**Present Value Score** — Measures the median final net worth relative to a target value (typically the initial investment). Higher scores indicate better wealth preservation. Weighted heavily in balanced evaluations as it directly measures the primary outcome.
+
+**Purchasing Power Score** — Evaluates how well the strategy maintains real (inflation-adjusted) wealth. Accounts for the erosion of purchasing power over time. Critical for long-term financial security.
+
+**Withdrawal Stability** — Measures the consistency and reliability of consumption withdrawals over time. Higher scores indicate more predictable cash flows. Important for retirement planning where stable income is valued.
+
+**Risk Score** — A composite measure of downside risks including failure rates, drawdowns, and leverage extremes. Lower risk scores are better. Heavily weighted in conservative evaluation profiles.
+
+**Robustness Score** — Evaluates how well a strategy performs across diverse market scenarios (bull, bear, sideways, volatile). Higher scores indicate strategies that work in many conditions, not just favorable ones.
+
+**Capital Efficiency** — Measures how efficiently the strategy uses capital to achieve its goals. Considers factors like tax efficiency, fee minimization, and optimal leverage use. Higher scores indicate smarter use of resources.
+
+**Legacy Score** — Evaluates the potential to pass wealth to heirs. Higher final net worth and lower failure rates contribute to this score. Relevant for those prioritizing intergenerational wealth transfer.
+
+## Asset & Market Information
+
+**Asset Name** — The descriptive name of the investment asset used in the simulation (e.g., 'S&P 500', 'Bitcoin'). Identifies what historical data or model parameterswere used.
+
+**Ticker** — The market ticker symbol for the asset (e.g., 'BTC', '^GSPC'). Used to identify and fetch historical price data from financial APIs.
+
+**Start Date** — The beginning date of the historical price data used for the simulation. Earlier start dates provide more data for bootstrap sampling but may include different market regimes.
+
+**End Date** — The final date of the historical price data. Represents the most recent market conditions incorporated into the simulation model.
+
+**Total Trading Days** — The number of individual trading days in the historical dataset. More trading days provide a richer dataset for statistical analysis and bootstrap sampling.
+
+## Simulation Settings & Parameters
+
+**Initial Investment** — The starting capital amount invested at the beginning of the simulation (Year 0). All returns, withdrawals, and outcomes are relative to this baseline amount.
+
+**Num Simulations** — The number of Monte Carlo simulation paths to run. More simulations provide more statistical confidence but take longer to compute. Typically 1,000-10,000 for good results.
+
+**Num Years** — The time horizon for the simulation in years. Represents how long you want to test the strategy (e.g., 30 years for a typical retirement period).
+
+**Simulation Name** — A user-provided identifier for this simulation run. Helps organize and distinguish between different scenarios when reviewing historical results.
+
+**Strategy** — The decision-making logic that determines how the portfolio behaves each year (withdrawals, contributions, borrowing, etc.). Can be a built-in strategy like Trinity or Buy-Borrow-Die, or a custom user-designed strategy.
+
+**Asset Model** — The source of return data for the simulation. Either 'Bootstrap' (randomly samples from historical returns) or 'Parametric' (generates returns from a statistical model with specified mean and volatility).
+
+**Return Threshold Rate** — For bootstrap models with return filtering, this sets a maximum return cap. Returns above this threshold are excluded to create more conservative scenarios that don't rely on exceptional bull markets.
+
+**Cash Interest Rate** — The annual interest rate earned on cash holdings. Applies to任何 cash buffer maintained in the portfolio. Typically set to a risk-free rate like short-term Treasury yields.
+
+**Inflation Rate** — The assumed annual inflation rate used to adjust values to real (today's purchasing power) terms. Critical for understanding true wealth preservation over long time horizons.
+
+**Loan Interest Rate** — The annual interest rate charged on portfolio loans (for leverage strategies). Higher rates increase the cost of borrowing and can significantly impact leveraged strategy viability.
+
+**Isk Tax Rate** — The annual Swedish wealth tax rate applied to the portfolio value (Investeringssparkonto system). Charged yearly regardless of whether assets are sold or gains realized.
+
+**Capital Gains Tax Rate** — The tax rate applied to profits when assets are sold. Only charged on the gain (sale price minus cost basis), making it more efficient than wealth taxes for long-term holders.
+
+**Tax Method** — Which taxation system is used: 'ISK' (annual wealth tax) or 'Capital Gains' (tax on realized profits). Different methods significantly impact strategy performance and optimal behavior.
+
+## Info Box Metrics
+
+**Median Final Net Worth** — The middle value (50th percentile) of final net worth across all simulations. Half of outcomes are above this, half below. Preferred over mean as it's less affected by extreme outliers.
+
+**Median Real Net Worth (Today's SEK)** — The median final net worth adjusted for inflation to express its value in today's purchasing power. Shows what the portfolio would actually be worth in current terms.
+
+**25th Percentile Final Net Worth** — The final net worth at the 25th percentile - meaning 75% of simulations ended better than this. Represents a moderately pessimistic outcome for downside planning.
+
+**75th Percentile Final Net Worth** — The final net worth at the 75th percentile - meaning only 25% of simulations ended better. Represents a moderately optimistic outcome for upside potential assessment.
+
+**Chance of Ruin (Insolvency)** — For leverage strategies, the percentage of simulations where debt exceeded asset value (negative net worth), resulting in insolvency and strategy failure.
+
+**Median Final LTV** — The median loan-to-value ratio at the end of the simulation across all paths. Shows typical debt levels in leveraged strategies. Lower values indicate safer final leverage states.
+
+**Recovery Time** — The median time (in years) required to recover from the worst drawdown experienced during the simulation. Long recovery times test investor patience and discipline.
+
+**Consecutive Losses (P90)** — At the 90th percentile (near-worst case), the longest streak of consecutive years with portfolio value declines. Extended losing streaks severely test psychological resilience.
+
+**Severe Drawdowns** — The median number of distinct 20%+ drawdown events experienced. Frequent severe corrections indicate high psychological volatility even if the strategy eventually recovers.
+
+**Years Below Initial** — The median number of years the portfolio value spent below the initial investment amount. Being 'underwater' triggers loss aversion and regretful decision-making.
+
+**Asset Sharpe Ratio** — Risk-adjusted return of the underlying asset based on historical data. Calculated as (return - risk-free rate) / volatility. Provides a baseline benchmark independent of strategy.
+
+**Asset Sortino Ratio** — Like Sharpe Ratio but only penalizes downside volatility, not upside. More intuitive as investors generally don't mind upside volatility. Higher is better.
+
+**Strategy Sharpe Ratio** — Risk-adjusted return of the complete strategy including all cash flows (withdrawals, contributions, costs). Shows how efficiently the strategy generated returns per unit of risk taken.
+
+**Strategy Sortino Ratio** — Downside-focused risk-adjusted return for the complete strategy. Particularly relevant for strategies where avoiding losses is more important than maximizing gains.
+
+## Performance & Risk-Adjusted Return Ratios
+
+**CAGR (Compound Annual Growth Rate)** — The mean annual growth rate of an investment over a specified period longer than one year. It represents the rate at which an investment would have grown if it had grown at a steady rate, smoothing out volatility. Calculated as: (Ending Value / Beginning Value)^(1/Years) - 1.
+
+**Sharpe Ratio** — A measure of risk-adjusted return, calculated as the excess return (return above the risk-free rate) divided by the standard deviation of returns. A higher Sharpe Ratio indicates better risk-adjusted performance. It answers the question: 'How much extra return am I getting for each unit of risk I'm taking?'
+
+**Sortino Ratio** — Similar to the Sharpe Ratio, but it only considers downside volatility (negative returns) rather than total volatility. This makes it a more relevant measure for investors who are primarily concerned with downside risk. A higher Sortino Ratio indicates better downside risk-adjusted performance.
+
+**Calmar Ratio** — A risk-adjusted return metric calculated as the CAGR divided by the maximum drawdown. It measures the return per unit of downside risk. A higher Calmar Ratio indicates that the investment generated strong returns relative to its worst historical decline, making it useful for assessing strategies with different drawdown profiles.
+
+## LTV & Deleveraging Concepts
+
+**Loan-to-Value (LTV)** — The ratio of a loan to the value of the asset purchased or used as collateral. A higher LTV means higher leverage and higher risk.
+
+**Maximum LTV** — The highest Loan-to-Value (LTV) ratio reached at any point during a single simulation run. The distribution of this metric across all simulations is a key indicator of the strategy's leverage risk.
+
+**LTV Warning Threshold** — The first tier in the LTV management system. When LTV exceeds this threshold, new loan drawdowns are suspended to prevent further leverage increase. This is a proactive risk management measure designed to prevent the LTV from reaching dangerous levels.
+
+**LTV Action Threshold** — The second, more critical tier in the LTV management system. When LTV exceeds this threshold, the system triggers automatic deleveraging by selling assets to pay down debt. This is an emergency measure to prevent insolvency.
+
+**Target LTV** — The LTV level that the deleveraging process aims to achieve when selling assets to reduce debt. Typically set below the Action Threshold to provide a safety buffer and prevent immediate re-triggering of deleveraging.
+
+**Tiered LTV Management** — A risk management system with multiple thresholds. In this simulation, it includes a 'Warning Tier' that suspends new drawdowns and an 'Action Tier' that triggers deleveraging (asset sales) to reduce debt.
+
+**Deleveraging** — The act of reducing debt. In this simulation, it is an automated process triggered when the LTV exceeds the 'Action Tier' threshold, forcing the sale of assets to pay down the loan to a 'Target LTV'. This is a critical risk-mitigation mechanism.
+
+## Data & Return Concepts
+
+**Bootstrap (Simulation Model)** — A simulation method that uses historical data. It involves randomly sampling from historical returns to generate future return scenarios. It preserves the historical distribution of returns.
+
+**Parametric (Simulation Model)** — A simulation method that uses statistical parameters (like mean and standard deviation) derived from historical data or assumptions. Returns are generated from a specified probability distribution (e.g., a normal distribution).
+
+**Rolling Return** — The average annualized return for a period ending at a particular date. For example, a 'rolling 1-year return' is calculated for every day of a dataset, providing a more comprehensive view of performance than calendar-year returns.
+
+**Drawdown** — This term has two meanings in the report. 1) **Market Drawdown:** The peak-to-trough decline of an investment's market value, measuring downside risk. 2) **Consumption Delivered:** The amount of money taken from the portfolio for consumption, either by selling assets or by taking a loan.
+
+**Percentile Paths** — In simulation visualizations, these are lines representing specific percentiles of outcomes across all simulations. For example, the '10th percentile path' shows how the portfolio evolved in the worst 10% of scenarios, while the '90th percentile path' shows the best 10% of scenarios.
+
+## Market Efficiency & Behavior Concepts
+
+**Efficient Market** — A market where asset prices fully reflect all available information, making it impossible to consistently achieve returns above the market average through stock picking or market timing. In an efficient market, returns should follow a random walk.
+
+**Random Walk** — A theory suggesting that stock price changes are random and unpredictable, with each price movement independent of previous movements. This is a key assumption in many financial models and implies that past price movements cannot be used to predict future movements.
+
+**Momentum** — A tendency for assets that have performed well in the recent past to continue performing well in the near future, and vice versa. The presence of momentum would show up as positive autocorrelation in returns and challenges the efficient market hypothesis.
+
+**Mean Reversion** — A tendency for asset prices or returns to move back toward their historical average over time. Assets that have experienced extreme gains may decline, and those with extreme losses may recover. Mean reversion would show up as negative autocorrelation in returns.
+
+## Psychological & Behavioral Metrics
+
+**Time Underwater** — The number of years a portfolio spends below its previous all-time peak value. This metric quantifies how long an investor must endure seeing their portfolio 'underwater'—a psychologically challenging state that often triggers panic selling. Extended underwater periods test investor discipline and are a primary driver of strategy abandonment, even for fundamentally sound approaches. Reported as the median across all simulation paths.
+
+**Peak Drawdown Recovery Time** — The number of years required to recover from the worst drawdown (peak-to-trough decline) experienced during the simulation. This measures how long an investor must wait to 'break even' after their worst-case scenario. Research shows that recovery periods exceeding 3-5 years significantly increase the likelihood of investors abandoning their strategy. Reported as the median across all simulation paths.
+
+**Consecutive Declining Years (P90)** — The longest streak of consecutive years where the portfolio value declined year-over-year. This metric captures sustained losing periods that severely test psychological resilience. Most investors struggle to maintain conviction after 2-3 consecutive down years, regardless of long-term fundamentals. Reported as the 90th percentile (worst-case scenario) to highlight extreme stress periods.
+
+**Severe Drawdown Frequency** — The number of distinct periods where the portfolio experienced a drawdown of 20% or more from a peak. This counts major market corrections and crashes—events that trigger intense emotional responses and media panic. Frequent severe drawdowns indicate high psychological volatility, even if the strategy eventually recovers. Reported as the median across all simulation paths.
+
+**Years Below Initial Investment** — The number of years where the portfolio value remains below the starting capital. Being 'down' on initial investment creates powerful regret and loss aversion, often prompting investors to 'cut their losses' prematurely. This metric is particularly relevant for retirees who may not have time to wait for recovery. Reported as the median across all simulation paths.
+
+## Taxation Concepts
+
+**Asset Management Fee** — An annual fee charged by a fund manager or investment service, calculated as a percentage of the total asset value. In this simulation, it is treated as an additional expense that must be covered either by selling assets (Trinity) or by increasing debt (Loan Drawdown).
+
+**Capital Gains Tax** — A tax on the profit realized on the sale of a non-inventory asset. It's the difference between the sale price and the original cost (cost basis).
+
+**Cost Basis** — The original value of an asset for tax purposes, usually the purchase price. It's used to calculate capital gains. In this simulation, the cost basis of the portfolio is tracked to accurately model the tax implications of deleveraging sales.
+
+**Wealth Tax / ISK Tax** — A Swedish tax system (Investeringssparkonto) where a small annual tax is applied to the total value of the investment account, rather than taxing capital gains when assets are sold. This simplifies taxation by charging a fixed percentage of the account value each year, regardless of whether gains or losses were realized. It's an alternative to the traditional capital gains tax model.
+
+## General Statistical Terms
+
+**Median** — The middle value in a sorted list of numbers. 50% of the outcomes are above the median and 50% are below.
+
+**Percentile** — A measure used in statistics indicating the value below which a given percentage of observations in a group of observations falls. For example, the 10th percentile is the value below which 10% of the observations may be found.
+
+**Interquartile Range (IQR)** — A measure of statistical dispersion, being equal to the difference between the 75th and 25th percentiles. It represents the range of the middle 50% of outcomes and is less sensitive to extreme outliers than the standard deviation.
+
+**Inflation-Adjusted Value (Real Value)** — The value of money or assets expressed in terms of the amount of goods or services that one unit of money can buy. It's the value after accounting for inflation.
+
+**Nominal Value** — The face value of money or assets, without being adjusted for inflation.

@@ -138,11 +138,10 @@ the browser without Google credentials; Google needs its redirect URI
 before real logins work. Verified live: signup → session → BFF headers →
 engine user auto-created (FREE tier, beta auto-approved).
 
-### W2 — Read-only slice (proves API + charts end to end, cheaply)
-- [ ] API: `/leaderboard`, `/community-stats`, `/beta-status`.
-- [ ] Web: Leaderboard page + Dashboard (aggregates, radar/comparison
-      charts via react-plotly).
-- [ ] `/docs` MDX section: port the five content pages' text.
+### W2 — Read-only slice ✅ (2026-09-06)
+- [x] API: `/leaderboard` (+`/leaderboard/meta` for category/profile selectors, profile-score fallback like the old UI), `/community-stats`, `/beta-status`. 5 tests.
+- [x] Web: Leaderboard page (table w/ medals, category+profile filters via URL params) + Dashboard (stat cards, most-run-strategies Plotly bar w/ empty state, getting-started links). `components/chart.tsx` = SSR-safe react-plotly wrapper on plotly.js-dist-min.
+- [x] `/docs` MDX section (@next/mdx + typography plugin): methodology/glossary/disclaimer GENERATED verbatim from `reporting/content.py` via script; about (Mokara story) + assets hand-ported. Sidebar layout.
 
 ### W3 — Run Simulation (the core flow)
 - [ ] API: `GET /config/params` exposing the config-driven parameter schema
@@ -203,4 +202,5 @@ engine user auto-created (FREE tier, beta auto-approved).
 | 2026-09-06 | — | Repo created; plan written. Decisions: mokara name, Tailwind+shadcn, docs consolidation. Open: hosting/DB, tier scope, branding. |
 | 2026-09-06 | W0 | Scaffold complete: engine copied from tag (ui/layout→core/param_layout, ui/radar_chart_data→reporting, broken ui.formatting lazy import fixed, snowflake migrations + 4 UI tests + 2 stale tests pruned); pyarrow was a hidden streamlit transitive dep, now explicit. api: venv, 168 tests pass, FastAPI /healthz (db ping) + /internal/ping (BFF secret) verified live. web: create-next-app + shadcn (14 components), Mokara landing verified in browser, prod build clean. CI workflow (api pytest w/ PG service + migrations; web lint+build). |
 | 2026-09-06 | W1 | Auth complete: Better Auth (PG tables migrated) + Google provider (env-gated) + dev credentials login; BFF apiFetch/getViewer with internal secret + identity headers; API /me (5 new tests); site header w/ session + user menu; login page. Full loop verified in browser. |
+| 2026-09-06 | W2 | Read-only slice done; all three pages verified in browser against live local DB. Gotcha fixed: uvicorn launch config now uses --reload (stale server had 404'd new routers). |
 | 2026-09-06 | — | Remaining decisions closed: Cloud Run + Cloud SQL, tier system ported as-is, full rebrand to Mokara. All decisions made — W0 is unblocked. |

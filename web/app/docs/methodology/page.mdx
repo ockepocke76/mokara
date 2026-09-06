@@ -1,0 +1,161 @@
+# Methodology
+
+This Monte Carlo simulation evaluates financial strategies for generating liquidity from a portfolio over multi-decade timeframes. By running thousands of scenarios with randomized market returns, we can quantify the range of potential outcomes and assess the risk-reward profile of different approaches such as **Asset Withdrawal** (Trinity Study) and **Loan Drawdown** (Buy, Borrow, Die).
+
+**Stage 1: Asset Return Modeling**
+
+
+This stage defines the asset's return characteristics, which form the basis for the simulation. Two models are available:
+
+
+• *Bootstrap Model:* This model loads historical price data for an asset (e.g., BTC/USD or a stock index). It then computes the historical distribution of rolling annual returns. This method is designed to capture the asset's authentic historical volatility and return profile, including phenomena such as "fat tails" (extreme events) and sequence risk. The simulation then samples directly from these historical returns.
+
+
+• *Parametric Model:* This model simulates returns based on user-defined parameters for expected annual return and volatility. Daily returns are drawn from a normal distribution, a standard assumption in financial modeling for assets like a global index fund. This allows for testing scenarios that may differ from historical performance.
+
+
+
+
+
+**Stage 2: Monte Carlo Simulation Engine**
+
+
+This is the core of the analysis, where thousands of parallel "possible futures" are simulated to assess the range of outcomes. The simulation operates using two nested loops:
+
+
+
+
+
+<u>Scenario Loop (Outer):</u> For each of the N scenarios (e.g., 10,000 simulations):
+
+
+• Initialize a fresh portfolio with starting capital
+
+
+• Execute the initial strategy setup (Year 0)
+
+
+• Enter the Year Loop
+
+
+
+
+
+<u>Year Loop (Inner):</u> For each year in the time horizon, the following events occur sequentially:
+
+
+
+
+
+1. <u>Market Event:</u> The asset's performance for the year is determined. In 'Bootstrap' mode, an annual return is randomly selected from the historical data. In 'Parametric' mode, 365 days of small, random price changes are simulated based on the specified parameters. The portfolio's asset value is updated accordingly.
+
+
+
+
+
+2. <u>Interest Accrual:</u> Interest is calculated and applied to both cash holdings (positive interest) and outstanding debt (interest costs).
+
+
+
+
+
+3. <u>Strategy Execution:</u> Each simulation uses a **Strategy** (the decision-making logic) to determine what actions to take. The strategy evaluates the current portfolio state, historical performance, and mandatory costs to decide on the optimal course of action.
+
+
+
+
+
+**Available Actions:** Strategies can issue commands to perform various actions, including:
+
+
+• *Sell Assets:* Liquidate a portion of the portfolio to generate cash (used by the Trinity/Withdrawal strategy)
+
+
+• *Take Loan:* Borrow money against the portfolio value (used by the Buy, Borrow, Die strategy)
+
+
+• *Repay Debt:* Pay down outstanding loans to reduce leverage
+
+
+• *Add Contributions:* Inject new capital into the portfolio
+
+
+• *Suspend Drawdowns:* Temporarily halt consumption withdrawals based on risk thresholds
+
+
+
+
+
+**Built-in Strategies:** The simulation includes pre-built strategies like "Asset Withdrawal" (Trinity Study approach) and "Loan Drawdown" (Buy, Borrow, Die). However, custom strategies can be designed to combine any of these actions based on sophisticated logic, market conditions, or risk metrics.
+
+
+
+
+
+4. <u>Portfolio Management:</u> A **Portfolio Manager** (the execution and bookkeeping engine) executes the strategy's commands while maintaining accurate records of all transactions, costs, taxes, and portfolio state. This includes:
+
+
+• Executing asset sales and purchases
+
+
+• Processing loan drawdowns and repayments
+
+
+• Calculating and applying transaction costs
+
+
+• Computing capital gains taxes
+
+
+• Tracking cost basis for tax purposes
+
+
+
+
+
+5. <u>Risk Management (LTV Thresholds):</u> For loan-based strategies, a tiered Loan-to-Value (LTV) management system can be enabled to prevent insolvency. This includes a **Warning Tier** that proactively suspends new loan drawdowns if LTV exceeds a lower threshold (e.g., 50%), and an **Action Tier** that triggers emergency deleveraging (forced asset sales to repay debt) if LTV breaches a higher, more critical threshold (e.g., 70%). The portfolio manager executes these risk management actions automatically when triggered by the strategy.
+
+
+
+
+
+6. <u>State Recording:</u> At the end of each year, the portfolio's complete state is recorded, including Asset Value, Debt, Net Worth, Cash Position, and all transaction details. This creates a comprehensive year-by-year history for each simulation path.
+
+
+
+
+
+After completing all years in the Year Loop, the final scenario results are stored, and the process repeats for the next scenario.
+
+
+
+
+
+**Stage 3: Results Analysis & Insights**
+
+
+Following the completion of all simulations, this stage consolidates the results to provide meaningful insights:
+
+
+
+
+
+• <u>Statistical Aggregation:</u> The data from all simulations is aggregated, and key statistics are calculated. To provide a robust view of the "typical" outcome and its variability, this analysis focuses on the **median** (50th percentile) and the **Interquartile Range (IQR)**, which represents the 25th to 75th percentile of outcomes. These metrics are less sensitive to extreme outliers than the mean and standard deviation, making them more suitable for analyzing the often-skewed distributions found in financial modeling.
+
+
+
+
+
+• <u>Visualization Generation:</u> Interactive plots and charts are created to illustrate the range of outcomes, including time-series projections, distribution histograms, and comparative analyses.
+
+
+
+
+
+• <u>AI-Powered Analysis:</u> An AI model reviews the quantitative results to provide qualitative insights, risk assessments, and strategic recommendations. This narrative analysis helps interpret the "why" behind the numbers and offers context for decision-making.
+
+
+
+
+
+• <u>PDF Report Compilation:</u> All findings, visualizations, and analyses are compiled into a comprehensive PDF report for review and archiving.
