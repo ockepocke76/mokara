@@ -1,0 +1,478 @@
+"""
+The W5 strategy-generation graph (LangGraph).
+
+One graph serves create AND evolve (evolve = seed_* fields set). Shape:
+
+  extract_spec -> (clarify?) -> retrieve -> plan -> generate -> validate
+      -> static_review -> test_sim -> analyze -> review -> save
+  with any failed rung routing through rework (bounded) back to generate.
+
+Hard rules from the design doc:
+- The rework loop triggers on SPEC MISMATCH or broken code only. Faithful-but-
+  underperforming results go to the user at review — never silent stat-chasing.
+- Nodes call the LLM only through config['configurable']['llm_call'].
+- All state must stay JSON-serializable (the Postgres checkpointer snapshots it).
+"""
+import json
+import logging
+from typing import Any, Optional, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
+
+from app.agents import prompts, retrieval
+from app.agents.llm import extract_description_and_code, parse_json_response
+from db import strategy_generation as sg
+
+MAX_ATTEMPTS = 3        # automatic rework rounds (validate/static/analyze failures)
+MAX_REVISIONS = 3       # user-requested "refine" rounds at review
+MAX_LLM_CALLS = 14      # per-run budget backstop (credits are metered per run)
+
+TEST_YEARS = 30
+TEST_PATHS = 10
+
+
+class GenerationBudgetExceeded(RuntimeError):
+    pass
+
+
+class GenState(TypedDict, total=False):
+    run_id: str
+    user_id: int
+    user_request: str
+    strategy_name: str
+    class_name: str
+    seed_name: Optional[str]
+    seed_description: Optional[str]
+    seed_code: Optional[str]
+    seed: int  # RNG seed for the paired test sims
+
+    spec: dict
+    clarify_questions: list
+    examples: list
+    plan: dict
+    description: str
+    code: str
+    parameters: dict
+
+    validation_error: Optional[str]
+    static_review: dict
+    test_result: dict
+    baseline_result: dict
+    analyze: dict
+
+    attempts: int
+    revisions: int
+    llm_calls: int
+    rework_reason: str      # human-readable, for attempt_started events
+    rework_feedback: str    # detailed, goes into the generate prompt
+    rework_stage: str       # which rung failed
+
+    outcome: str            # saved | discarded | failed
+    final_strategy_id: Optional[int]
+    failure_summary: Optional[str]
+
+
+def _emit(state: GenState, event_type: str, **payload) -> None:
+    sg.append_event(state['run_id'], event_type, payload)
+
+
+def _llm(state: GenState, config: dict, prompt: str, tier: str,
+         json_mode: bool = True) -> tuple[Any, int]:
+    """One LLM call; returns (parsed-or-raw response, calls-so-far)."""
+    calls = state.get('llm_calls', 0) + 1
+    if calls > MAX_LLM_CALLS:
+        raise GenerationBudgetExceeded(
+            f"LLM call budget ({MAX_LLM_CALLS}) exhausted for this run")
+    llm_call = config['configurable']['llm_call']
+    text = llm_call(prompt, tier=tier, json_mode=json_mode)
+    return (parse_json_response(text) if json_mode else text), calls
+
+
+def _sanitize(value):
+    from db.utils import _sanitize_for_json
+    return _sanitize_for_json(value)
+
+
+# --- Nodes -----------------------------------------------------------------
+
+def extract_spec(state: GenState, config) -> dict:
+    _emit(state, 'stage_started', stage='understanding')
+    spec, calls = _llm(state, config, prompts.spec_prompt(
+        state['user_request'], seed_name=state.get('seed_name'),
+        seed_description=state.get('seed_description'),
+        seed_code=state.get('seed_code')), tier='fast')
+    name = state.get('strategy_name') or spec.get('suggested_name') or 'Custom Strategy'
+    update = {'spec': spec, 'llm_calls': calls, 'strategy_name': name,
+              'clarify_questions': spec.get('questions') or []}
+    sg.update_run(state['run_id'], spec=spec, strategy_name=name, llm_calls=calls)
+    if not spec.get('needs_clarification'):
+        _emit(state, 'stage_completed', stage='understanding',
+              artifact={'spec': spec, 'strategy_name': name})
+    return update
+
+
+def clarify(state: GenState, config) -> dict:
+    # interrupt() first: this node re-runs from the top on resume, and nothing
+    # may be emitted before the pause (the runner emits needs_input instead).
+    answers = interrupt({'kind': 'clarify',
+                         'questions': state.get('clarify_questions', []),
+                         'assumptions': state.get('spec', {}).get('assumptions', [])})
+    update: dict = {}
+    if isinstance(answers, dict) and answers.get('answers'):
+        spec, calls = _llm(state, config, prompts.revise_spec_prompt(
+            state['spec'], state.get('clarify_questions', []), answers['answers']),
+            tier='fast')
+        spec['needs_clarification'] = False
+        update = {'spec': spec, 'llm_calls': calls}
+        sg.update_run(state['run_id'], spec=spec, llm_calls=calls)
+    else:
+        # "Proceed with my assumptions" — first-class, not an error path.
+        spec = dict(state['spec'])
+        spec['needs_clarification'] = False
+        update = {'spec': spec}
+    _emit(state, 'stage_completed', stage='understanding',
+          artifact={'spec': update['spec'], 'strategy_name': state['strategy_name']})
+    return update
+
+
+def retrieve(state: GenState, config) -> dict:
+    _emit(state, 'stage_started', stage='examples')
+    category = state['spec'].get('category', 'HYBRID')
+    examples = retrieval.builtin_examples(category)
+    examples += retrieval.public_examples(state['user_id'])
+    _emit(state, 'stage_completed', stage='examples', artifact={'examples': [
+        {'name': e['name'], 'source': e['source'], 'score': e.get('score')}
+        for e in examples]})
+    return {'examples': examples}
+
+
+def plan(state: GenState, config) -> dict:
+    _emit(state, 'stage_started', stage='blueprint')
+    examples_block = prompts.format_examples_block(state.get('examples', []))
+    plan_obj, calls = _llm(state, config,
+                           prompts.plan_prompt(state['spec'], examples_block),
+                           tier='strong')
+    sg.update_run(state['run_id'], llm_calls=calls)
+    _emit(state, 'stage_completed', stage='blueprint', artifact={'plan': plan_obj})
+    return {'plan': plan_obj, 'llm_calls': calls}
+
+
+def generate(state: GenState, config) -> dict:
+    from core.sandbox import _slugify_to_classname
+
+    attempt = state.get('attempts', 0) + state.get('revisions', 0)
+    if attempt == 0:
+        _emit(state, 'stage_started', stage='code')
+    class_name = _slugify_to_classname(state['strategy_name']) or 'CustomStrategy'
+    examples_block = prompts.format_examples_block(state.get('examples', []))
+    text, calls = _llm(state, config, prompts.generate_prompt(
+        state['spec'], state['plan'], examples_block, class_name,
+        feedback=state.get('rework_feedback'), prior_code=state.get('code')),
+        tier='strong', json_mode=False)
+    description, code = extract_description_and_code(text)
+    sg.update_run(state['run_id'], llm_calls=calls)
+    _emit(state, 'stage_completed', stage='code',
+          artifact={'code': code, 'description': description, 'class_name': class_name,
+                    'is_evolution': bool(state.get('seed_code'))})
+    return {'code': code, 'description': description, 'class_name': class_name,
+            'llm_calls': calls, 'rework_feedback': None,
+            'validation_error': None, 'static_review': {}, 'test_result': {},
+            'baseline_result': {}, 'analyze': {}}
+
+
+def validate(state: GenState, config) -> dict:
+    from core.ast_parser import safe_parse_strategy_parameters
+    from core.sandbox import execute_strategy_code
+
+    _emit(state, 'stage_started', stage='checks')
+    try:
+        execute_strategy_code(state['code'], state['class_name'])
+    except Exception as e:
+        _emit(state, 'stage_progress', stage='checks', check='sandbox',
+              passed=False, message=str(e)[:500])
+        return {'validation_error': str(e),
+                'rework_stage': 'validate',
+                'rework_reason': 'the code failed the sandbox safety checks',
+                'rework_feedback': f"Sandbox compilation/dry-run failed:\n{e}"}
+    _emit(state, 'stage_progress', stage='checks', check='sandbox', passed=True)
+    parameters = {}
+    try:
+        parameters = safe_parse_strategy_parameters(state['code'], state['class_name']) or {}
+    except Exception:
+        logging.exception("parameter AST parse failed (non-fatal)")
+    return {'validation_error': None, 'parameters': parameters}
+
+
+def static_review(state: GenState, config) -> dict:
+    review, calls = _llm(state, config, prompts.static_review_prompt(
+        state['code'], state['plan'], state['spec']), tier='fast')
+    sg.update_run(state['run_id'], llm_calls=calls)
+    passed = bool(review.get('implements_blueprint'))
+    _emit(state, 'stage_progress', stage='checks', check='blueprint_conformance',
+          passed=passed, rule_verdicts=review.get('rule_verdicts', []),
+          issues=review.get('issues', []))
+    update = {'static_review': review, 'llm_calls': calls}
+    if not passed:
+        issues = "; ".join(review.get('issues', [])) or "blueprint rules not implemented"
+        update.update({'rework_stage': 'static_review',
+                       'rework_reason': 'the code does not implement the blueprint',
+                       'rework_feedback': f"A code review against the blueprint found:\n{issues}\n"
+                                          f"Rule verdicts: {json.dumps(review.get('rule_verdicts', []))}"})
+    else:
+        _emit(state, 'stage_completed', stage='checks',
+              artifact={'rule_verdicts': review.get('rule_verdicts', [])})
+    return update
+
+
+def _condense_paths(result: dict) -> list[dict]:
+    paths = []
+    for p in result.get('random_paths', []):
+        yearly = p.get('yearly_results', [])
+        paths.append({'label': p.get('path_label', ''),
+                      'years': [y['Year'] for y in yearly],
+                      'net_worth': [y['Net Worth'] for y in yearly]})
+    return paths
+
+
+def test_sim(state: GenState, config) -> dict:
+    from core.sandbox_tester import run_sandbox_test
+
+    _emit(state, 'stage_started', stage='test_flight',
+          message=f"Running {TEST_PATHS} simulated markets x {TEST_YEARS} years")
+    # num_simulations/num_years must be explicit: assemble_params merges the
+    # config defaults (1000 sims) over anything run_sandbox_test setdefaults.
+    test_params = {'num_years': TEST_YEARS, 'num_simulations': TEST_PATHS,
+                   'num_random_paths': TEST_PATHS,
+                   'strategy_params': {p: (v.get('default') if isinstance(v, dict) else v)
+                                       for p, v in (state.get('parameters') or {}).items()}}
+    seed = state.get('seed', 12345)
+    result = run_sandbox_test(state['code'], state['class_name'], dict(test_params), seed=seed)
+    if not result.get('success'):
+        _emit(state, 'stage_progress', stage='test_flight', passed=False,
+              message=str(result.get('error'))[:500])
+        return {'rework_stage': 'test_sim',
+                'rework_reason': 'the strategy crashed during the test simulation',
+                'rework_feedback': f"The test simulation failed at runtime:\n{result.get('error')}"}
+
+    # Paired baseline: same category builtin, same seed => identical market paths.
+    category = state['spec'].get('category', 'HYBRID')
+    baseline_key, baseline_class, baseline_source = retrieval.baseline_for_category(category)
+    baseline = {}
+    try:
+        baseline_run = run_sandbox_test(baseline_source, baseline_class,
+                                        {'num_years': TEST_YEARS,
+                                         'num_simulations': TEST_PATHS,
+                                         'num_random_paths': TEST_PATHS}, seed=seed)
+        if baseline_run.get('success'):
+            baseline = {'name': baseline_class,
+                        'summary_stats': _sanitize(baseline_run['summary_stats'])}
+    except Exception:
+        logging.exception("baseline test sim failed (non-fatal)")
+
+    test_result = {'summary_stats': _sanitize(result['summary_stats']),
+                   'paths': _sanitize(_condense_paths(result)),
+                   'num_paths': TEST_PATHS, 'num_years': TEST_YEARS,
+                   'worst_path_trace': _worst_path_trace(result)}
+    _emit(state, 'stage_completed', stage='test_flight',
+          artifact={'summary_stats': test_result['summary_stats'],
+                    'paths': test_result['paths'],
+                    'baseline': baseline or None,
+                    'num_paths': TEST_PATHS, 'num_years': TEST_YEARS})
+    return {'test_result': test_result, 'baseline_result': baseline}
+
+
+def _worst_path_trace(result: dict) -> list[dict]:
+    worst = None
+    worst_final = None
+    for p in result.get('random_paths', []):
+        yearly = p.get('yearly_results', [])
+        if not yearly:
+            continue
+        final = yearly[-1]['Net Worth']
+        if worst_final is None or final < worst_final:
+            worst_final, worst = final, yearly
+    if not worst:
+        return []
+    return _sanitize([
+        {'year': y['Year'], 'net_worth': round(y['Net Worth']),
+         'withdrawal': round(y['Consumption Delivered']),
+         'sold': round(y['Amount Sold']), 'borrowed': round(y['Debt Change']),
+         'contributed': round(y['Amount Contributed'])}
+        for y in worst])
+
+
+def analyze(state: GenState, config) -> dict:
+    _emit(state, 'stage_started', stage='behavior')
+    baseline = state.get('baseline_result') or {}
+    verdict, calls = _llm(state, config, prompts.analyze_prompt(
+        state['spec'], state['plan'],
+        state['test_result']['summary_stats'],
+        baseline.get('summary_stats'), baseline.get('name'),
+        state['test_result']['worst_path_trace']), tier='strong')
+    sg.update_run(state['run_id'], llm_calls=calls)
+    conforms = bool(verdict.get('conforms_to_spec'))
+    _emit(state, 'stage_completed', stage='behavior',
+          artifact={'analyze': verdict, 'conforms': conforms})
+    update = {'analyze': verdict, 'llm_calls': calls}
+    if not conforms:
+        mismatches = "; ".join(verdict.get('mismatches', [])) or "behavior did not match the spec"
+        update.update({'rework_stage': 'analyze',
+                       'rework_reason': 'observed behavior did not match the spec',
+                       'rework_feedback': f"The test simulation showed behavior contradicting the spec:\n{mismatches}"})
+    return update
+
+
+def rework(state: GenState, config) -> dict:
+    attempts = state.get('attempts', 0) + 1
+    if attempts >= MAX_ATTEMPTS:
+        return {'attempts': attempts,
+                'failure_summary': f"Could not produce a working strategy after {MAX_ATTEMPTS} attempts. "
+                                   f"Last problem: {state.get('rework_reason')}"}
+    _emit(state, 'attempt_started', stage=state.get('rework_stage', 'code'),
+          attempt=attempts + 1, max=MAX_ATTEMPTS, reason=state.get('rework_reason', ''))
+    return {'attempts': attempts}
+
+
+def review(state: GenState, config) -> dict:
+    decision = interrupt({'kind': 'review',
+                          'revisions_left': MAX_REVISIONS - state.get('revisions', 0)})
+    action = (decision or {}).get('action', 'save')
+    if action == 'discard':
+        return {'outcome': 'discarded'}
+    if action == 'refine' and (decision or {}).get('feedback'):
+        revisions = state.get('revisions', 0) + 1
+        if revisions > MAX_REVISIONS:
+            return {'outcome': 'save'}  # budget spent; fall through to save
+        _emit(state, 'attempt_started', stage='code', attempt=revisions,
+              max=MAX_REVISIONS, reason='you asked for changes')
+        return {'revisions': revisions,
+                'rework_stage': 'review',
+                'rework_reason': 'user requested changes',
+                'rework_feedback': f"The user reviewed the working strategy and asked for changes:\n"
+                                   f"{decision['feedback']}\n"
+                                   f"Keep everything else as is."}
+    return {'outcome': 'save'}
+
+
+def save(state: GenState, config) -> dict:
+    from db.database import db
+
+    _emit(state, 'stage_started', stage='decision')
+    ai_description = (state.get('analyze') or {}).get('explanation') or state.get('description', '')
+    strategy_id = db.save_custom_strategy(
+        user_id=state['user_id'],
+        strategy_name=state['strategy_name'],
+        class_name=state['class_name'],
+        description=state.get('description', ''),
+        ai_description=ai_description,
+        code=state['code'],
+        parameters_json=state.get('parameters') or {},
+        validation_status='validated',
+        evolution_request=(state['user_request'] if state.get('seed_code') else None),
+        parent_strategy_id=None,
+    )
+    if not strategy_id:
+        raise RuntimeError("save_custom_strategy failed")
+    sg.update_run(state['run_id'], status='completed', final_strategy_id=strategy_id)
+    _emit(state, 'run_completed', strategy_id=strategy_id,
+          strategy_name=state['strategy_name'])
+    return {'outcome': 'saved', 'final_strategy_id': strategy_id}
+
+
+def discard(state: GenState, config) -> dict:
+    sg.update_run(state['run_id'], status='discarded')
+    _emit(state, 'run_discarded')
+    return {'outcome': 'discarded'}
+
+
+def fail(state: GenState, config) -> dict:
+    """Retry cap hit: keep the last draft, be honest about what happened."""
+    from db.database import db
+
+    summary = state.get('failure_summary') or 'Generation failed.'
+    draft_id = None
+    if state.get('code'):
+        try:
+            draft_id = db.save_custom_strategy(
+                user_id=state['user_id'],
+                strategy_name=state['strategy_name'],
+                class_name=state.get('class_name', 'CustomStrategy'),
+                description=state.get('description', ''),
+                ai_description='',
+                code=state['code'],
+                parameters_json=state.get('parameters') or {},
+                validation_status='failed',
+                validation_error=state.get('rework_feedback'),
+            )
+            draft_id = draft_id or None
+        except Exception:
+            logging.exception("draft save failed during fail()")
+    sg.update_run(state['run_id'], status='failed', failure_summary=summary,
+                  final_strategy_id=draft_id)
+    _emit(state, 'run_failed', summary=summary, draft_id=draft_id,
+          last_problem=state.get('rework_reason'))
+    return {'outcome': 'failed', 'final_strategy_id': draft_id}
+
+
+# --- Routing ---------------------------------------------------------------
+
+def _route_after_spec(state: GenState) -> str:
+    return 'clarify' if state['spec'].get('needs_clarification') else 'retrieve'
+
+
+def _route_after_validate(state: GenState) -> str:
+    return 'rework' if state.get('validation_error') else 'static_review'
+
+
+def _route_after_static(state: GenState) -> str:
+    return 'rework' if state.get('rework_stage') == 'static_review' and state.get('rework_feedback') else 'test_sim'
+
+
+def _route_after_test(state: GenState) -> str:
+    return 'rework' if state.get('rework_stage') == 'test_sim' and state.get('rework_feedback') else 'analyze'
+
+
+def _route_after_analyze(state: GenState) -> str:
+    return 'rework' if state.get('rework_stage') == 'analyze' and state.get('rework_feedback') else 'review'
+
+
+def _route_after_rework(state: GenState) -> str:
+    return 'fail' if state.get('failure_summary') else 'generate'
+
+
+def _route_after_review(state: GenState) -> str:
+    outcome = state.get('outcome')
+    if outcome == 'discarded':
+        return 'discard'
+    if state.get('rework_stage') == 'review' and state.get('rework_feedback'):
+        return 'generate'
+    return 'save'
+
+
+def build_graph(checkpointer=None):
+    g = StateGraph(GenState)
+    for name, fn in [('extract_spec', extract_spec), ('clarify', clarify),
+                     ('retrieve', retrieve), ('plan', plan), ('generate', generate),
+                     ('validate', validate), ('static_review', static_review),
+                     ('test_sim', test_sim), ('analyze', analyze),
+                     ('rework', rework), ('review', review), ('save', save),
+                     ('discard', discard), ('fail', fail)]:
+        g.add_node(name, fn)
+
+    g.add_edge(START, 'extract_spec')
+    g.add_conditional_edges('extract_spec', _route_after_spec, ['clarify', 'retrieve'])
+    g.add_edge('clarify', 'retrieve')
+    g.add_edge('retrieve', 'plan')
+    g.add_edge('plan', 'generate')
+    g.add_edge('generate', 'validate')
+    g.add_conditional_edges('validate', _route_after_validate, ['rework', 'static_review'])
+    g.add_conditional_edges('static_review', _route_after_static, ['rework', 'test_sim'])
+    g.add_conditional_edges('test_sim', _route_after_test, ['rework', 'analyze'])
+    g.add_conditional_edges('analyze', _route_after_analyze, ['rework', 'review'])
+    g.add_conditional_edges('rework', _route_after_rework, ['fail', 'generate'])
+    g.add_conditional_edges('review', _route_after_review, ['discard', 'generate', 'save'])
+    g.add_edge('save', END)
+    g.add_edge('discard', END)
+    g.add_edge('fail', END)
+    return g.compile(checkpointer=checkpointer)
