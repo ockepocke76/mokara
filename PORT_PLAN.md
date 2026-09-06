@@ -102,22 +102,22 @@ script, `admin_app.py` as a separate service.
 
 ## Waves
 
-### W0 — Scaffold ✅-when: both halves run locally against btc_simulator_local
-- [ ] Copy `core/ db/ services/ utils/ reporting/ background_tasks.py tests/`
+### W0 — Scaffold ✅ (2026-09-06)
+- [x] Copy `core/ db/ services/ utils/ reporting/ background_tasks.py tests/`
       from `mymontecarlo@pre-port-detangled` into `api/`; make it a proper
       package with `pyproject.toml` (deps: the non-streamlit subset of the
       old requirements.txt).
-- [ ] Prune on copy: `background_tasks.py` UI-era wrappers we don't need,
+- [x] Prune on copy: `background_tasks.py` UI-era wrappers we don't need,
       `config.yml` streamlit-theme keys, `tests/test_portfolio*.py` (broken
       stale imports — fix or drop).
-- [ ] Guardrail test evolves: forbid importing `streamlit` AND any UI-era
+- [x] Guardrail test evolves: forbid importing `streamlit` AND any UI-era
       leftovers in `api/` (streamlit isn't even installed → import test).
-- [ ] FastAPI skeleton: `/healthz`, DB ping, config loading (env-only via
+- [x] FastAPI skeleton: `/healthz`, DB ping, config loading (env-only via
       the phase-1 `core/secrets.py`).
-- [ ] `web/`: create-next-app (TS, App Router, Tailwind), shadcn/ui init,
+- [x] `web/`: create-next-app (TS, App Router, Tailwind), shadcn/ui init,
       layout shell with nav.
-- [ ] CI (GitHub Actions): api pytest + web build/lint on PR.
-- [ ] `.env.example` for both halves; `.gitignore` correct from commit one.
+- [x] CI (GitHub Actions): api pytest + web build/lint on PR.
+- [x] `.env.example` for both halves; `.gitignore` correct from commit one.
 
 ### W1 — Auth
 - [ ] Better Auth in `web/` with Google provider; sessions in Postgres.
@@ -193,4 +193,5 @@ script, `admin_app.py` as a separate service.
 | Date | Wave | Notes |
 |------|------|-------|
 | 2026-09-06 | — | Repo created; plan written. Decisions: mokara name, Tailwind+shadcn, docs consolidation. Open: hosting/DB, tier scope, branding. |
+| 2026-09-06 | W0 | Scaffold complete: engine copied from tag (ui/layout→core/param_layout, ui/radar_chart_data→reporting, broken ui.formatting lazy import fixed, snowflake migrations + 4 UI tests + 2 stale tests pruned); pyarrow was a hidden streamlit transitive dep, now explicit. api: venv, 168 tests pass, FastAPI /healthz (db ping) + /internal/ping (BFF secret) verified live. web: create-next-app + shadcn (14 components), Mokara landing verified in browser, prod build clean. CI workflow (api pytest w/ PG service + migrations; web lint+build). |
 | 2026-09-06 | — | Remaining decisions closed: Cloud Run + Cloud SQL, tier system ported as-is, full rebrand to Mokara. All decisions made — W0 is unblocked. |

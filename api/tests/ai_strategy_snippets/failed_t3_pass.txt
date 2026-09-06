@@ -1,0 +1,154 @@
+# Strategy Test File
+# Generated: 2025-12-22T22:58:35.541207
+# Strategy Name: t3
+# Expected Outcome: PASS
+# Validation Error: 'bool' object is not iterable
+# User Prompt: I want a trinity like strategy...
+#
+
+import pandas as pd
+from core.strategy import BaseStrategy
+
+# Note: numpy (as np) is assumed to be available in the execution environment.
+
+class T3(BaseStrategy):
+
+    @property
+    def parameters(self):
+        return {
+            "accumulation_contribution": {
+                "label": "Annual Contribution (Real)",
+                "default": 120000.0,
+                "description": "Annual investment contribution during the accumulation phase (in Year 0 real terms)."
+            },
+            "target_net_worth": {
+                "label": "Target Net Worth (Real)",
+                "default": 10000000.0,
+                "description": "Net worth target (in Year 0 real terms) that triggers the switch from accumulation to retirement phase."
+            },
+            "withdrawal_rate": {
+                "label": "Initial Withdrawal Rate",
+                "default": 0.04,
+                "description": "Percentage of the inflation-adjusted transition net worth to be withdrawn annually in retirement phase."
+            }
+        }
+
+    @property
+    def shortfall_funding_policy(self) -> list[str]:
+        # Standard policy for withdrawal strategies: fund necessary cash (drawdown/costs) by selling assets,
+        # using existing cash only to cover shortfalls caused by tax drag, if necessary.
+        return ['SELL_ASSETS', 'USE_CASH']
+
+    def initialize_portfolio(self, initial_portfolio_state: dict, market_data_at_start: pd.DataFrame) -> dict:
+        # Invest all initial cash immediately.
+        cash = initial_portfolio_state.get('cash', 0.0)
+        return {'action': 'BUY_ASSET', 'cash_amount': cash}
+
+    def _determine_phase_and_transition_value(self, portfolio_history: list[dict]):
+        """Determines if the transition target has been met and returns the nominal value and year if so."""
+        
+        target_real = self.params.get('target_net_worth', 10000000.0)
+        R = self.params.get('inflation_rate', 0.03)
+
+        transition_occurred = False
+        nominal_transition_value = 0.0
+        transition_year = 0
+        
+        # Iterate through history (Year 1 onwards, since Year 0 is just initialization)
+        # Assuming np is available for power calculations.
+        for entry in portfolio_history:
+            year = entry['year']
+            if year == 0:
+                continue
+            
+            current_nominal_net_worth = entry['net_worth']
+            
+            # Calculate the nominal target net worth for this historical year (Y)
+            # Inflation factor converts Year 0 real value to Year Y nominal value.
+            inflation_factor = np.power(1.0 + R, year)
+            target_nominal = target_real * inflation_factor
+            
+            if current_nominal_net_worth >= target_nominal:
+                transition_occurred = True
+                nominal_transition_value = current_nominal_net_worth 
+                transition_year = year
+                
+                # Stop searching once transition is found (we only care about the *first* trigger)
+                break
+
+        return transition_occurred, nominal_transition_value, transition_year
+
+
+    def get_annual_drawdown(self, year: int, portfolio_state: dict, portfolio_history: list[dict]) -> float:
+        
+        transition_occurred, V_T, T = self._determine_phase_and_transition_value(portfolio_history)
+        
+        if not transition_occurred:
+            # Accumulation Phase: No drawdown for consumption
+            return 0.0
+        
+        # Retirement Phase
+        withdrawal_rate = self.params.get('withdrawal_rate', 0.04)
+        R = self.params.get('inflation_rate', 0.03)
+
+        # Calculate inflation adjustment since transition (T) up to the current year (Y).
+        # Drawdown for Year Y (current `year` parameter) is based on inflation adjustment Y - T.
+        inflation_exponent = year - T
+        
+        # Safety check: Drawdown should only happen after transition year T.
+        if inflation_exponent <= 0:
+            return 0.0 
+
+        # Calculate inflation factor for maintaining real value
+        inflation_factor = np.power(1.0 + R, inflation_exponent)
+        
+        # Nominal withdrawal amount: V_T * Rate * Inflation Adjustment
+        drawdown = V_T * withdrawal_rate * inflation_factor
+        
+        return drawdown
+
+    def execute_strategy_for_year(self, year: int, portfolio_state: dict, portfolio_history: list[dict], desired_drawdown: float, mandatory_costs: float) -> dict:
+        
+        R = self.params.get('inflation_rate', 0.03)
+        
+        transition_occurred, V_T, T = self._determine_phase_and_transition_value(portfolio_history)
+        
+        amount_contributed = 0.0
+        amount_sold = 0.0
+        amount_bought = 0.0
+        
+        if not transition_occurred:
+            # Accumulation Phase: Contribute and Invest
+            C_R = self.params.get('accumulation_contribution', 120000.0)
+            
+            # Calculate nominal contribution for the current year (Year Y)
+            inflation_factor = np.power(1.0 + R, year)
+            C_N = C_R * inflation_factor
+            
+            amount_contributed = C_N
+            
+            # Immediately buy assets with the entire contribution to maximize investment
+            amount_bought = C_N
+            
+            # Mandatory costs and potential shortfalls are handled by the shortfall policy 
+            # (which defaults to SELL_ASSETS if cash is insufficient)
+            
+        else:
+            # Retirement Phase: Fund Drawdown and Mandatory Costs by Selling Assets
+            
+            total_cash_needed = desired_drawdown + mandatory_costs
+            
+            # Sell assets to cover the required cash flow.
+            # The simulation engine will handle calculating the tax consequences and ensuring liquidity 
+            # according to the 'shortfall_funding_policy'.
+            amount_sold = total_cash_needed
+            
+            # No buying or contribution in retirement phase
+            
+        return {
+            'amount_contributed': amount_contributed,
+            'amount_bought': amount_bought,
+            'amount_sold': amount_sold,
+            'debt_increase': 0.0,
+            'debt_repayment': 0.0
+        }

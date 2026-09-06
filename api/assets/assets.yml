@@ -1,0 +1,657 @@
+# --- Default Parameter Templates ---
+# This section defines the full configuration for common parameters.
+# Individual assets below can then override just the 'value' or other specific fields.
+_defaults:
+  num_years:
+    display_name: Number of Years
+    description: Simulation horizon in years.
+    min: 1
+    max: 50
+    step: 1
+    slider_format: '%d'
+  asset_management_fee:
+    display_name: Asset Management Fee
+    description: Annual fee on total asset value.
+    min: 0.0
+    max: 0.05
+    step: 0.001
+    slider_format: '%.3f%%'
+  loan_interest_rate:
+    display_name: Loan Interest Rate
+    description: Annual loan interest rate when using this asset as collateral.
+    min: 0.0
+    max: 0.15
+    step: 0.01
+    slider_format: '%.2f%%'
+  return_threshold_rate:
+    display_name: Return Threshold
+    description: For bootstrap models, this caps the maximum annual return that can be sampled from historical data.
+    min: 0.5
+    max: 5.0
+    step: 0.1
+    slider_format: '%.2f%%'
+  annual_return:
+    display_name: Annual Return
+    description: Assumed average annual return for the asset.
+    min: 0.0
+    max: 0.5
+    step: 0.01
+    slider_format: '%.1f%%'
+  annual_volatility:
+    display_name: Annual Volatility
+    description: Assumed annual volatility (risk) of the asset.
+    min: 0.0
+    max: 0.5
+    step: 0.01
+    slider_format: '%.1f%%'
+  synthetic_data_years:
+    display_name: Synthetic Data Years
+    description: Number of years of synthetic history to generate for bootstrapping.
+    min: 5
+    max: 50
+    step: 5
+    slider_format: '%d'
+
+# --- Asset-Specific Definitions ---
+
+bootstrap_gspc:
+  display_name: "S&P 500"
+  type: "historical_bootstrap"
+  ticker_symbol: "^GSPC"
+  enabled: true
+  description: "The S&P 500 is a stock market index that tracks the stock performance of 500 of the largest public companies in the United States. It is widely considered a key indicator of the overall health of the U.S. stock market and economy."
+  parameters:
+    local_file_path: "assets/bootstrap_gspc.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1927-12-30"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null # This parameter will not be shown in the UI
+
+bootstrap_btc:
+  display_name: "Bitcoin (BTC/USD)"
+  type: "historical_bootstrap"
+  ticker_symbol: "BTC/USD"
+  enabled: true
+  parameters:
+    local_file_path: "assets/btcusd_1-min_data_compressed.csv"
+    date_column: "Timestamp"
+    price_column: "Close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "2012-01-01"
+    end_date: "latest_available"
+    num_years: 10
+    asset_management_fee: 0.0
+    loan_interest_rate: 0.10
+    return_threshold_rate: 1.0
+
+bootstrap_dji:
+  display_name: "Dow Jones Industrial Average"
+  type: "historical_bootstrap"
+  ticker_symbol: "^DJI"
+  enabled: true
+  description: "The Dow Jones Industrial Average (DJIA), or simply the Dow, is a stock market index that tracks 30 large, publicly-owned blue-chip companies trading on the New York Stock Exchange (NYSE) and the NASDAQ."
+  parameters:
+    local_file_path: "assets/bootstrap_dji.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1985-01-29"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_ixic:
+  display_name: "NASDAQ Composite"
+  type: "historical_bootstrap"
+  ticker_symbol: "^IXIC"
+  enabled: true
+  description: "The NASDAQ Composite is a stock market index of the common stocks and similar securities listed on the Nasdaq stock market. It is heavily weighted towards information technology companies."
+  parameters:
+    local_file_path: "assets/bootstrap_ixic.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1971-02-05"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+parametric:
+  display_name: "Synthetic Parametric Model"
+  type: "parametric"
+  enabled: true
+  description: A synthetic model that generates returns based on a normal distribution with a user-defined mean (annual return) and volatility. Useful for testing theoretical scenarios.
+  parameters:
+    num_years: 30
+    annual_return: 0.09
+    annual_volatility: 0.10
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+
+parametric_60_40:
+  display_name: "Synthetic 60/40 Stock/Bond Portfolio"
+  type: "parametric"
+  enabled: true
+  description: A synthetic model representing a classic 60/40 portfolio of stocks and bonds, assuming long-term historical averages for returns and volatility.
+  parameters:
+    num_years: 30
+    annual_return: 0.07
+    annual_volatility: 0.11
+    asset_management_fee: 0.01
+    loan_interest_rate: 0.05
+
+bootstrap_synthetic:
+  display_name: "Synthetic Bootstrap Model"
+  type: "synthetic_bootstrap"
+  enabled: true
+  description: Generates a synthetic price history based on user-defined parameters, then uses that history for bootstrapping. Combines parametric control with bootstrap's ability to capture sequence risk.
+  parameters:
+    num_years: 30
+    annual_return: 0.09
+    annual_volatility: 0.15
+    asset_management_fee: 0.004
+    synthetic_data_years: 30
+
+bootstrap_000001_ss:
+  display_name: "SSE Composite Index (Shanghai)"
+  type: "historical_bootstrap"
+  ticker_symbol: "000001.SS"
+  enabled: true
+  description: "The SSE Composite Index is a stock market composite index of all stocks that are traded at the Shanghai Stock Exchange."
+  parameters:
+    local_file_path: "assets/bootstrap_000001.ss.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1997-07-02"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_399001_sz:
+  display_name: "SZSE Component Index (Shenzhen)"
+  type: "historical_bootstrap"
+  ticker_symbol: "399001.SZ"
+  enabled: true
+  description: "The Shenzhen Stock Exchange Component Index is an index of 500 stocks that are traded at the Shenzhen Stock Exchange (SZSE)."
+  parameters:
+    local_file_path: "assets/bootstrap_399001.sz.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1997-08-22"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_aord:
+  display_name: "All Ordinaries (AORD)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^AORD"
+  enabled: false
+  description: "The All Ordinaries (XAO) is a total market stock market index of the largest 500 companies listed on the Australian Securities Exchange."
+  parameters:
+    local_file_path: "assets/bootstrap_aord.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1984-08-03"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_axjo:
+  display_name: "S&P/ASX 200 (Australia)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^AXJO"
+  enabled: false
+  description: "The S&P/ASX 200 index is a market-capitalization weighted and float-adjusted stock market index of stocks listed on the Australian Securities Exchange."
+  parameters:
+    local_file_path: "assets/bootstrap_axjo.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1992-11-23"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_bfx:
+  display_name: "BEL 20 (Belgium)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^BFX"
+  enabled: false
+  description: "The BEL 20 is the benchmark stock market index of Euronext Brussels, representing the 20 most actively traded stocks in Belgium."
+  parameters:
+    local_file_path: "assets/bootstrap_bfx.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1991-04-09"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_bsesn:
+  display_name: "S&P BSE SENSEX (India)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^BSESN"
+  enabled: false
+  description: "The S&P BSE SENSEX is a free-float market-weighted stock market index of 30 well-established and financially sound companies listed on the Bombay Stock Exchange."
+  parameters:
+    local_file_path: "assets/bootstrap_bsesn.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1997-07-01"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_buk100p:
+  display_name: "FTSE 100 Price Index (UK)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^BUK100P"
+  enabled: false
+  description: "The FTSE 100 Price Index is a stock market index of the 100 largest companies listed on the London Stock Exchange by market capitalization (Price Return)."
+  parameters:
+    local_file_path: "assets/bootstrap_buk100p.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1984-01-03"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_bvsp:
+  display_name: "IBOVESPA (Brazil)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^BVSP"
+  enabled: false
+  description: "The IBOVESPA is the benchmark index of about 86 stocks that are traded on the B3 (Brasil Bolsa Balcão S.A.)."
+  parameters:
+    local_file_path: "assets/bootstrap_bvsp.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1993-04-27"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_fchi:
+  display_name: "CAC 40 (France)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^FCHI"
+  enabled: false
+  description: "The CAC 40 is a benchmark French stock market index, representing a capitalization-weighted measure of the 40 most significant stocks among the 100 largest market caps on the Euronext Paris."
+  parameters:
+    local_file_path: "assets/bootstrap_fchi.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1987-07-09"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_ftse:
+  display_name: "FTSE 100 (UK)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^FTSE"
+  enabled: false
+  description: "The FTSE 100 Index is a stock market index of the 100 largest companies listed on the London Stock Exchange by market capitalization."
+  parameters:
+    local_file_path: "assets/bootstrap_ftse.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1984-01-03"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_gdaxi:
+  display_name: "DAX (Germany)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^GDAXI"
+  enabled: false
+  description: "The DAX is a stock market index consisting of the 40 major German blue chip companies trading on the Frankfurt Stock Exchange."
+  parameters:
+    local_file_path: "assets/bootstrap_gdaxi.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1987-12-30"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_gsptse:
+  display_name: "S&P/TSX Composite (Canada)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^GSPTSE"
+  enabled: false
+  description: "The S&P/TSX Composite Index is the benchmark index for the Canadian stock market, representing about 70% of the total market capitalization on the Toronto Stock Exchange."
+  parameters:
+    local_file_path: "assets/bootstrap_gsptse.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1978-12-29"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_hsi:
+  display_name: "Hang Seng Index (Hong Kong)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^HSI"
+  enabled: false
+  description: "The Hang Seng Index is a freefloat-adjusted market capitalization-weighted stock market index in Hong Kong."
+  parameters:
+    local_file_path: "assets/bootstrap_hsi.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1986-12-31"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_imoex_me:
+  display_name: "MOEX Russia Index"
+  type: "historical_bootstrap"
+  ticker_symbol: "IMOEX.ME"
+  enabled: false
+  description: "The MOEX Russia Index is the main ruble-denominated benchmark of the Russian stock market."
+  parameters:
+    local_file_path: "assets/bootstrap_imoex.me.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1997-09-01"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_ipsa:
+  display_name: "S&P CLX IPSA (Chile)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^IPSA"
+  enabled: false
+  description: "The S&P CLX IPSA is a Chilean stock market index composed of the most significant stocks of the Santiago Stock Exchange."
+  parameters:
+    local_file_path: "assets/bootstrap_ipsa.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "2003-01-02"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_jkse:
+  display_name: "Jakarta Composite Index (Indonesia)"
+  type: "historical_bootstrap"
+  ticker_symbol: "^JKSE"
+  enabled: false
+  description: "The Jakarta Composite Index (JCI) is a stock market index of all stocks that are traded on the Indonesia Stock Exchange."
+  parameters:
+    local_file_path: "assets/bootstrap_jkse.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1997-04-01"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null
+
+bootstrap_axjo:
+  display_name: "All Ordinaries"
+  type: "historical_bootstrap"
+  ticker_symbol: "^AXJO"
+  enabled: false
+  description: "The All Ordinaries (XAO) is a total market stock market index of the largest 500 companies listed on the Australian Securities Exchange."
+  parameters:
+    local_file_path: "assets/bootstrap_axjo.csv"
+    date_column: "date"
+    price_column: "close"
+    bootstrap_start_date:
+      display_name: "Bootstrap Start Date"
+      description: "The earliest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    bootstrap_end_date:
+      display_name: "Bootstrap End Date"
+      description: "The latest date to include in the historical data for bootstrapping."
+      widget: "date_input"
+      value: null # This will be dynamically populated
+    start_date: "1992-11-23"
+    end_date: "latest_available"
+    num_years: 30
+    asset_management_fee: 0.0025
+    loan_interest_rate: 0.05
+    return_threshold_rate: null

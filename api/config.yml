@@ -1,0 +1,304 @@
+admin:
+  description: Settings for administrative features like logging.
+  log_to_database_local:
+    description: If true, logs will be written to the database in the local environment.
+    value: false
+  log_to_database_prod:
+    description: If true, logs will be written to the database in the production (Snowflake)
+      environment.
+    value: true
+  enable_performance_logging:
+    description: If true, detailed performance timing logs (PERF_TIMING) will be written. Disable in production for reduced log volume.
+    value: false  # Production default - reduces log noise
+monitoring:
+  description: Performance monitoring and observability settings for Google Cloud Monitoring integration
+  cloud_monitoring_enabled:
+    description: If true, exports performance metrics to Google Cloud Monitoring (requires GCP credentials and project ID)
+    value: true
+  cloud_monitoring_project_id:
+    description: Google Cloud Project ID for monitoring. Leave empty to use GCP_MONITORING_PROJECT_ID environment variable.
+    value: ""
+  metric_export_interval:
+    description: How often to flush buffered metrics to Cloud Monitoring (seconds)
+    value: 60
+  track_web_vitals:
+    description: If true, tracks frontend Web Vitals (LCP, FID, CLS) via JavaScript injection
+    value: true
+  slow_query_threshold:
+    description: Threshold in seconds to log slow database queries
+    value: 1.0
+  enable_memory_tracking:
+    description: If true, tracks memory usage alongside timing metrics (requires psutil). May add overhead.
+    value: false
+
+advanced:
+  enable_gemini_analysis:
+    display_name: Enable Gemini AI Analysis
+    description: Use the Gemini AI model to generate a qualitative analysis of the simulation results. Requires a configured API key.
+    value: true
+  max_llm_retries:
+    display_name: Max LLM Retries
+    description: Number of times to auto-retry strategy generation/evolution if validation fails.
+    value: 2
+    min: 0
+    max: 5
+local_dev:
+  bypass_login:
+    description: If true, bypasses the login screen and authenticates as the default
+      user in a local environment.
+    value: false
+  bypass_login_in_prod:
+    description: 'DANGER: If true, bypasses login in deployed environments (e.g.,
+      Snowflake). Use with extreme caution.'
+    value: false
+  default_user_email:
+    description: The email to use when bypass_login is active.
+    value: oscar.svennesnubben@gmail.com
+  description: Settings for local development to speed up testing.
+  save_pdf_to_disk_local:
+    description: If true, saves PDF reports to the local 'pdfreports' directory during
+      local development. If false, it will attempt to upload to the Snowflake stage.
+    value: true
+  save_plots_to_disk_local:
+    description: If true, saves static plot images to the local 'pregenplots' directory
+      during local development.
+    value: false
+reporting:
+  create_pdf_report:
+    display_name: Create PDF Report
+    description: If True, a full PDF report is generated and saved after each simulation. Disabling this can speed up runs, but reports must be regenerated manually from the "My Simulations" tab.
+    value: false
+  generate_static_plots:
+    display_name: Generate Static Plots
+    description: Generate static (PNG) versions of plots for the PDF report and live
+      UI.
+    value: true
+  report_name:
+    display_name: Report Name
+    description: Custom prefix for the generated PDF report filename.
+    value: Simulation_Report
+  show_ai_prompt:
+    display_name: Show AI Prompt
+    description: Include the full AI analysis prompt in the PDF report appendix.
+    value: true
+  show_all_paths_plot:
+    display_name: Show All Paths Plot
+    description: Show a plot of all individual simulation paths.
+    value: true
+  show_autocorrelation_plot:
+    display_name: Show Autocorrelation Plot
+    description: Show an autocorrelation plot of daily returns (bootstrap only).
+    value: true
+  show_distribution_plot:
+    display_name: Show Distribution Plot
+    description: Show a histogram of the final net worth distribution.
+    value: true
+  show_drawdown_plot:
+    display_name: Show Drawdown Plot
+    description: Show a plot of historical drawdowns from peaks (bootstrap only).
+    value: true
+  show_filtered_rolling_returns_plot:
+    display_name: Show Filtered Rolling Returns Plot
+    description: Show histogram of filtered returns (bootstrap only).
+    value: true
+  show_live_log:
+    display_name: Show Live Log
+    description: Display the live log of events in the UI during a simulation run.
+    value: false
+  show_price_log_plot:
+    display_name: Show Price Log Plot
+    description: Show a log-scale version of the historical price plot.
+    value: true
+  show_price_plot:
+    display_name: Show Price Plot
+    description: Show plot of historical/synthetic asset price history.
+    value: true
+  show_rolling_returns_plot:
+    display_name: Show Rolling Returns Plot
+    description: Show histogram of rolling annual returns (bootstrap only).
+    value: true
+  show_simulation_plot:
+    display_name: Show Simulation Plot
+    description: Show the main Monte Carlo simulation plot.
+    value: true
+  show_yearly_returns_plot:
+    display_name: Show Yearly Returns Plot
+    description: Show bar plot of actual calendar year returns (bootstrap only).
+    value: true
+simulation:
+  asset_model:
+    display_name: Asset Model
+    description: The asset model to use for the simulation.
+    value: bootstrap_gspc
+    options:
+      - bootstrap_gspc
+      - bootstrap_btc
+      - bootstrap_dji
+      - bootstrap_ixic
+      - parametric
+      - parametric_60_40
+      - bootstrap_synthetic
+  cash_interest_rate:
+    display_name: Cash Interest Rate
+    description: Annual interest rate earned on uninvested cash balances.
+    max: 0.1
+    min: 0.0
+    number_format: '%.4f'
+    slider_format: '%.2f%%'
+    step: 0.005
+    value: 0.01
+  inflation_rate:
+    display_name: Inflation Rate
+    description: Assumed annual inflation rate for adjusting drawdowns.
+    max: 0.1
+    min: 0.0
+    number_format: '%.4f'
+    slider_format: '%.2f%%'
+    step: 0.01
+    value: 0.02
+  initial_investment:
+    display_name: Initial Investment
+    description: Initial portfolio value.
+    max: 1000000
+    min: 0
+    slider_format: '%d'
+    step: 100000
+    value: 1000000
+    is_currency: true
+  num_simulations:
+    display_name: Number of Simulations
+    description: Number of Monte Carlo simulations to run.
+    max: 10000
+    min: 1000
+    slider_format: '%d'
+    step: 1000
+    value: 1000
+  strategy:
+    display_name: Strategy
+    description: The core financial strategy to simulate.
+    options:
+    - buy_borrow_die
+    - trinity
+    - get_rich_stay_rich
+    value: trinity
+strategies:
+  buy_borrow_die:
+    description: A leveraging strategy where a new loan is taken out each year against
+      the portfolio's value to fund living expenses. The assets remain invested, allowing
+      them to continue to grow over time. 
+  description: Configuration for different financial strategies.
+  trinity:
+    description: A traditional decumulation strategy where a predetermined portion
+      of the portfolio is sold each year to fund living expenses. The withdrawal amount
+      is typically a percentage of the initial portfolio value, adjusted annually
+      for inflation. 
+  get_rich_stay_rich:
+    description: A two-phase strategy. First, it aggressively invests to reach a target net worth. Then, it switches to a wealth preservation phase with regular withdrawals.
+tax:
+  description: Configuration for tax models.
+  method:
+    display_name: Tax Method
+    description: The tax model to apply during the simulation.
+    options: [isk, capital_gains]
+    display_names:
+      isk: "Whealth Tax (ISK)"
+      capital_gains: "Capital Gains Tax"
+    captions:
+    - "Annual wealth tax on total portfolio value."
+    - "Tax on profits from asset sales."
+    value: isk
+  isk_tax_rate:
+    display_name: ISK Tax Rate
+    description: Annual wealth tax on the total portfolio value (Swedish ISK-style).
+    max: 0.05
+    min: 0.0
+    slider_format: '%.3f%%'
+    step: 0.001
+    value: 0.01
+  capital_gains_tax_rate:
+    display_name: Capital Gains Tax Rate
+    description: Tax rate applied to capital gains when assets are sold.
+    max: 0.5
+    min: 0.0
+    slider_format: '%.1f%%'
+    step: 0.01
+    value: 0.3
+logging:
+  terminal_level:
+    description: Controls the log level for output to the terminal (console). Options DEBUG, INFO, WARNING, ERROR, CRITICAL
+    value: INFO
+ui:
+  description: Configuration for the user interface, including which tabs are enabled.
+  chart_theme:
+    display_name: Chart Theme
+    description: Visual theme for interactive charts and plots
+    value: light
+    options: [dark, light]
+    display_names:
+      dark: "Dark Theme"
+      light: "Light Theme"
+    captions:
+    - "Dark background with bright accents for low-light viewing."
+    - "Light background with dark text for daylight viewing."
+  enabled_tabs:
+    leaderboard:
+      description: Public leaderboard showing strategy rankings based on risk-adjusted performance.
+      enabled: true
+    admin_leaderboard:
+      description: Admin-only tab for triggering strategy evaluations.
+      enabled: true
+    my_simulations:
+      description: Shows the user's own simulation history.
+      enabled: true
+    compare:
+      description: Allows comparing multiple simulations.
+      enabled: false
+    all_simulations:
+      description: Admin-only tab to view all simulations.
+      enabled: false
+    my_strategies:
+      description: Admin-only tab for custom strategy management.
+      enabled: true
+    strategy_designer:
+      description: Admin-only tab for creating custom strategies.
+      enabled: true
+    admin_settings:
+      description: Admin-only tab for application configuration.
+      enabled: false
+    debug:
+      description: Admin-only tab for debugging UI components and background processes.
+      enabled: False
+    example_reports:
+      description: Shows pre-generated example reports.
+      enabled: False
+    strategies:
+      description: Static content about financial strategies.
+      enabled: False
+    assets:
+      description: Static content about asset models.
+      enabled: true
+    methodology:
+      description: Static content about the simulation methodology.
+      enabled: true
+    glossary:
+      description: A glossary of financial terms.
+      enabled: true
+    disclaimer:
+      description: Important legal disclaimer.
+      enabled: true
+  # Sidebar is now disabled in favor of Streamlit's native multipage navigation
+  sidebar_enabled:
+    description: If true, the sidebar with simulation parameters is displayed.
+    enabled: false  # Changed to false for multipage mode
+  show_glossary:
+    description: If true, the glossary popups for assets and strategies appear.
+    enabled: true
+  show_glossary_sidebar:
+    description: If true, a dedicated Glossary tab is shown.
+    enabled: true
+database:
+  dialect: postgresql
+  host: localhost
+  port: 5432
+  database: btc_simulator_dev
+  user: oscarsverud

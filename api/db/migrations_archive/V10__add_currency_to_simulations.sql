@@ -1,0 +1,21 @@
+-- Migration V10: Add currency field to simulations
+-- This migration is a no-op for the current architecture.
+-- 
+-- BACKGROUND:
+-- The SIMULATIONS table from V1 schema is no longer used for new simulations.
+-- The current architecture uses CACHED_SIMULATIONS where all parameters
+-- (including currency) are stored in the 'parameters' JSON column.
+--
+-- CURRENCY STORAGE:
+-- Currency is now stored in the parameters JSON blob as:
+-- {
+--   "initial_investment": 5000000,
+--   "currency": "SEK",
+--   ...
+-- }
+--
+-- This migration file exists for documentation purposes and to maintain
+-- the migration version sequence. No schema changes are needed.
+
+-- No-op: Currency is already stored in CACHED_SIMULATIONS.parameters JSON
+SELECT 'Migration V10: Currency storage is handled via parameters JSON' AS migration_note;

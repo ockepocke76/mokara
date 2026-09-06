@@ -1,0 +1,174 @@
+# Strategy Test File
+# Generated: 2025-12-29T12:06:37.303089
+# Strategy Name: Die with zero four
+# Expected Outcome: PASS
+# Validation Error: 'consumption_delivered'
+# User Prompt: I want to create an advanced retirement withdrawal strategy optimized for the "Die With Zero" philosophy (inspired by Bill Perkins' book). The core principle is to maximize lifetime consumption and ex...
+
+import numpy as np
+import pandas as pd
+from core.strategy import BaseStrategy
+
+class DieWithZeroFour(BaseStrategy):
+    
+    # --- Helper Methods ---
+
+    def _inflation_factor(self, year):
+        """Calculates (1 + inflation_rate)^year."""
+        inflation_rate = self.params.get('inflation_rate', 0.03)
+        # Ensure year is treated as float for np.power
+        return np.power(1.0 + inflation_rate, float(year))
+        
+    def _get_initial_investment_value(self, portfolio_history):
+        """Retrieves the starting investment value."""
+        # Use initial_investment global parameter if available
+        return self.params.get('initial_investment', 
+                               portfolio_history[0]['asset_value'] + portfolio_history[0]['cash'])
+
+    # --- Configuration ---
+
+    @property
+    def parameters(self):
+        return {
+            "initial_withdrawal_rate": {
+                "label": "Initial Withdrawal Rate",
+                "default": 0.055,
+                "description": "The starting withdrawal rate applied to the initial investment (Year 0), calculated before the impact of capital gains tax on the sale."
+            },
+            "funeral_reserve": {
+                "label": "Target Ending Reserve (Nominal)",
+                "default": 100000.0,
+                "description": "The nominal (non-inflation-adjusted) target cash reserve to be maintained at the end of the simulation."
+            },
+            "preservation_threshold": {
+                "label": "Preservation Trigger (Ratio)",
+                "default": 0.70,
+                "description": "If the real portfolio value drops below this ratio of the initial real value, withdrawals are reduced."
+            },
+            "prosperity_threshold": {
+                "label": "Prosperity Trigger (Ratio)",
+                "default": 1.10,
+                "description": "If the real portfolio value exceeds this ratio of the initial real value, withdrawals are increased."
+            },
+            "adjustment_factor": {
+                "label": "Dynamic Adjustment Factor",
+                "default": 0.15,
+                "description": "The proportional change applied to the withdrawal amount when hitting prosperity or preservation thresholds (e.g., 0.15 = 15% increase/decrease)."
+            }
+        }
+
+    def evaluation_category(self):
+        return 'WITHDRAWAL_ONLY'
+
+    @property
+    def shortfall_funding_policy(self):
+        # Prefer selling assets to cover shortfalls caused by costs/taxes
+        return ['SELL_ASSETS', 'USE_CASH', 'BORROW'] 
+
+    # --- Strategy Implementation ---
+    
+    def initialize_portfolio(self, initial_portfolio_state: dict, market_data_at_start: pd.DataFrame) -> dict:
+        # Invest all initial cash into assets to achieve 100% allocation
+        initial_cash = initial_portfolio_state.get('cash', 0.0)
+        return {'action': 'BUY_ASSET', 'cash_amount': initial_cash}
+
+    def get_annual_drawdown(self, year: int, portfolio_state: dict, portfolio_history: list[dict]) -> float:
+        
+        # 1. Get parameters and constants
+        initial_investment = self._get_initial_investment_value(portfolio_history)
+        num_years = self.params.get('num_years')
+        inflation_rate = self.params.get('inflation_rate', 0.03)
+        
+        initial_withdrawal_rate = self.params.get('initial_withdrawal_rate')
+        preservation_threshold = self.params.get('preservation_threshold')
+        prosperity_threshold = self.params.get('prosperity_threshold')
+        adjustment_factor = self.params.get('adjustment_factor')
+        funeral_reserve = self.params.get('funeral_reserve')
+
+        current_nominal_net_worth = portfolio_state['net_worth']
+        
+        # 2. Determine Base Withdrawal (Inflation Adjusted)
+        
+        if year == 0:
+            # Base withdrawal is calculated from the initial investment
+            base_drawdown = initial_investment * initial_withdrawal_rate
+        else:
+            # Inflation adjust last year's delivered consumption
+            last_consumption = portfolio_history[-1]['consumption_delivered']
+            base_drawdown = last_consumption * (1.0 + inflation_rate)
+            
+        adjusted_drawdown = base_drawdown
+
+        # 3. Dynamic Adjustment (Prosperity/Preservation Rules)
+        
+        # Calculate current net worth in Year 0 real terms
+        current_real_net_worth = current_nominal_net_worth / self._inflation_factor(year)
+        
+        # Prosperity Rule
+        if current_real_net_worth > initial_investment * prosperity_threshold:
+            adjusted_drawdown = base_drawdown * (1.0 + adjustment_factor)
+        
+        # Preservation Rule
+        elif current_real_net_worth < initial_investment * preservation_threshold:
+            adjusted_drawdown = base_drawdown * (1.0 - adjustment_factor)
+
+        # 4. Final Accelerated Drawdown (Die With Zero logic)
+        
+        years_remaining = num_years - year
+        
+        if years_remaining > 0 and years_remaining <= 5:
+            
+            # Calculate the average nominal amount needed to spend down to the nominal funeral reserve
+            spendable_capital = current_nominal_net_worth - funeral_reserve
+            
+            if spendable_capital > 0:
+                target_spend_per_year = spendable_capital / years_remaining
+                
+                # Use the greater of the dynamically adjusted withdrawal or the aggressive spend-down target
+                final_drawdown = np.maximum(adjusted_drawdown, target_spend_per_year)
+            else:
+                # If we are already below the reserve, stick to the adjusted withdrawal
+                final_drawdown = adjusted_drawdown
+            
+            # Prevent requesting a withdrawal that risks falling far below the reserve immediately
+            max_safe_drawdown = current_nominal_net_worth - (funeral_reserve * 0.5)
+            return np.maximum(0.0, np.minimum(final_drawdown, max_safe_drawdown))
+
+        # 5. Return the dynamically adjusted drawdown for normal years
+        return adjusted_drawdown
+
+    def execute_strategy_for_year(self, year: int, portfolio_state: dict, portfolio_history: list[dict], desired_drawdown: float, mandatory_costs: float) -> dict:
+        
+        amount_needed = desired_drawdown + mandatory_costs
+        years_remaining = self.params.get('num_years') - year
+        
+        # De-risking Threshold
+        DE_RISK_THRESHOLD = 500000.0 
+        
+        amount_sold = amount_needed
+        amount_bought = 0.0
+
+        # Check for mandatory liquidation phase (Years remaining <= 5 AND Net Worth < 500k)
+        if years_remaining <= 5 and portfolio_state['net_worth'] < DE_RISK_THRESHOLD:
+            
+            # Instruct a sale covering needs AND requesting the liquidation of all remaining assets.
+            # The engine will cap the sale at the total asset value, resulting in 100% liquidation.
+            
+            # We add a buffer (1000.0) to ensure the instruction exceeds the available asset value.
+            amount_sold = portfolio_state['asset_value'] + amount_needed + 1000.0
+            
+            # Explicitly halt all purchases to ensure cash is held
+            amount_bought = 0.0 
+            
+        else:
+            # Normal execution path: Fund withdrawal only by selling assets.
+            amount_sold = amount_needed
+            amount_bought = 0.0 # No contributions, so no explicit buying is needed unless the engine mandates it.
+            
+        return {
+            'amount_sold': amount_sold,
+            'amount_bought': amount_bought,
+            'debt_increase': 0.0,
+            'debt_repayment': 0.0,
+            'amount_contributed': 0.0
+        }

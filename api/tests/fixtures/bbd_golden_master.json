@@ -1,0 +1,90 @@
+{
+  "0": {
+    "Net Worth": 2000000.0,
+    "Asset Value": 2000000.0,
+    "Cash": 0.0,
+    "Debt": 0.0,
+    "Amount Sold": 0.0,
+    "Consumption Delivered": 0.0
+  },
+  "1": {
+    "Net Worth": 1520000.0,
+    "Asset Value": 1600000.0,
+    "Cash": 0.0,
+    "Debt": 80000.0,
+    "Amount Sold": 0.0,
+    "Consumption Delivered": 80000.0
+  },
+  "2": {
+    "Net Worth": 1136000.0,
+    "Asset Value": 1280000.0,
+    "Cash": 0.0,
+    "Debt": 144000.0,
+    "Amount Sold": 0.0,
+    "Consumption Delivered": 64000.0
+  },
+  "3": {
+    "Net Worth": 828800.0,
+    "Asset Value": 920888.89,
+    "Cash": 0.0,
+    "Debt": 92088.89,
+    "Amount Sold": 103111.11,
+    "Consumption Delivered": 51200.0
+  },
+  "4": {
+    "Net Worth": 607786.67,
+    "Asset Value": 675318.52,
+    "Cash": 0.0,
+    "Debt": 67531.85,
+    "Amount Sold": 61392.59,
+    "Consumption Delivered": 36835.56
+  },
+  "5": {
+    "Net Worth": 445710.22,
+    "Asset Value": 495233.58,
+    "Cash": 0.0,
+    "Debt": 49523.36,
+    "Amount Sold": 45021.23,
+    "Consumption Delivered": 27012.74
+  },
+  "6": {
+    "Net Worth": 326854.16,
+    "Asset Value": 363171.29,
+    "Cash": 0.0,
+    "Debt": 36317.13,
+    "Amount Sold": 33015.57,
+    "Consumption Delivered": 19809.34
+  },
+  "7": {
+    "Net Worth": 239693.05,
+    "Asset Value": 266325.61,
+    "Cash": 0.0,
+    "Debt": 26632.56,
+    "Amount Sold": 24211.42,
+    "Consumption Delivered": 14526.85
+  },
+  "8": {
+    "Net Worth": 175774.91,
+    "Asset Value": 195305.45,
+    "Cash": 0.0,
+    "Debt": 19530.55,
+    "Amount Sold": 17755.04,
+    "Consumption Delivered": 10653.02
+  },
+  "9": {
+    "Net Worth": 128901.6,
+    "Asset Value": 143224.0,
+    "Cash": 0.0,
+    "Debt": 14322.4,
+    "Amount Sold": 13020.36,
+    "Consumption Delivered": 7812.22
+  },
+  "10": {
+    "Net Worth": 94527.84,
+    "Asset Value": 105030.93,
+    "Cash": 0.0,
+    "Debt": 10503.09,
+    "Amount Sold": 9548.27,
+    "Consumption Delivered": 5728.96
+  }
+}
