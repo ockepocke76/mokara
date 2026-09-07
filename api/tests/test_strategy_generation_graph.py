@@ -127,8 +127,12 @@ def test_broken_codegen_exhausts_attempts_and_saves_draft(monkeypatch):
     types = _types(run_id)
     assert 'run_failed' in types
     assert types.count('attempt_started') == 2  # attempts 2 and 3 announced
-    # Draft kept with failed status
+    # Draft kept with failed status, under a suffixed name so it can never
+    # overwrite an existing strategy of the same name (evolve seeds reuse
+    # the seed's name).
     failed_event = [e for e in sg.list_events(run_id) if e['type'] == 'run_failed'][0]
     draft_id = failed_event['payload'].get('draft_id')
     assert draft_id
-    assert db.get_custom_strategy(draft_id)['validation_status'] == 'failed'
+    draft = db.get_custom_strategy(draft_id)
+    assert draft['validation_status'] == 'failed'
+    assert '(draft ' in draft['strategy_name']

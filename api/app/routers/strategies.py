@@ -29,6 +29,11 @@ def _require_user(user: Optional[dict]) -> dict:
     return user
 
 
+def _stringify_dates(row: dict) -> dict:
+    """datetime -> str for JSON, whatever the column is called."""
+    return {k: (str(v) if hasattr(v, 'isoformat') else v) for k, v in row.items()}
+
+
 def _serialize_strategy(row: dict, include_code: bool = True) -> dict:
     from db.database import db
 
@@ -36,10 +41,7 @@ def _serialize_strategy(row: dict, include_code: bool = True) -> dict:
     out['parameters_json'] = db.deserialize_json_column(out.get('parameters_json')) or {}
     if not include_code:
         out.pop('code', None)
-    for key in ('created_at', 'updated_at', 'last_validation_timestamp', 'cloned_at'):
-        if out.get(key) is not None:
-            out[key] = str(out[key])
-    return out
+    return _stringify_dates(out)
 
 
 def _owned_strategy(strategy_id: int, user: dict) -> dict:
@@ -63,10 +65,8 @@ def list_strategies(user: Optional[dict] = Depends(get_current_user)) -> dict:
     user = _require_user(user)
     rows = db.get_user_custom_strategies(user['id']) or []
     runs = sg.list_runs(user['id'])
-    active_runs = [
-        {**r, 'created_at': str(r['created_at']), 'updated_at': str(r['updated_at'])}
-        for r in runs if r['status'] in ('running', 'needs_input')
-    ]
+    active_runs = [_stringify_dates(r) for r in runs
+                   if r['status'] in ('running', 'needs_input')]
     return {
         'strategies': [_serialize_strategy(r, include_code=False) for r in rows],
         'active_runs': active_runs,
@@ -129,6 +129,8 @@ def evaluate_strategy(strategy_id: int,
 
     user = _require_user(user)
     strategy = _owned_strategy(strategy_id, user)
+    if strategy['user_id'] != user['id']:
+        raise HTTPException(status_code=403, detail="Only the owner can run an evaluation")
     if not strategy.get('code'):
         raise HTTPException(status_code=422, detail="Strategy has no code to evaluate")
     job_id = BackgroundManager.start_strategy_evaluation(
@@ -157,10 +159,7 @@ def strategy_evaluation(strategy_id: int,
         lookup_fallback_sha=strategy.get('clone_source_commit_sha'))
     if not evaluation:
         return {'evaluation': None}
-    out = dict(evaluation)
-    for key, value in list(out.items()):
-        if hasattr(value, 'isoformat'):
-            out[key] = str(value)
+    out = _stringify_dates(dict(evaluation))
     if out.get('scenario_results_json'):
         out['scenario_results'] = db.deserialize_json_column(out.pop('scenario_results_json'))
     return {'evaluation': out}
@@ -227,10 +226,8 @@ def generation_run(run_id: str, user: Optional[dict] = Depends(get_current_user)
     run = _owned_run(run_id, user)
     events = sg.list_events(run_id)
     return {
-        'run': {k: (str(v) if k in ('created_at', 'updated_at') else v)
-                for k, v in run.items() if k != 'thread_id'},
-        'events': [{'seq': e['seq'], 'type': e['type'], 'payload': e['payload'],
-                    'created_at': str(e['created_at'])} for e in events],
+        'run': _stringify_dates({k: v for k, v in run.items() if k != 'thread_id'}),
+        'events': [_stringify_dates(e) for e in events],
     }
 
 
@@ -279,6 +276,8 @@ async def generation_events(run_id: str, request: Request, after: int = 0,
     async def stream():
         cursor = after
         idle = 0.0
+        empty_polls = 0
+        delay = 0.8
         while True:
             if await request.is_disconnected():
                 return
@@ -296,12 +295,33 @@ async def generation_events(run_id: str, request: Request, after: int = 0,
                     return
             if events:
                 idle = 0.0
+                empty_polls = 0
+                delay = 0.8
             else:
-                idle += 0.8
+                empty_polls += 1
+                # A reconnect can arrive with `after` already past the terminal
+                # event — end the stream instead of polling a finished run
+                # forever. Interrupted runs (needs_input) wait on the user for
+                # a long time, so back the poll cadence off while idle.
+                if empty_polls % 5 == 0:
+                    run = await asyncio.to_thread(sg.get_run, run_id)
+                    if not run or run['status'] in ('completed', 'failed', 'discarded'):
+                        # Status flips just before the terminal event lands —
+                        # drain once so a live client still gets it.
+                        final = await asyncio.to_thread(sg.list_events, run_id, cursor)
+                        for event in final:
+                            cursor = event['seq']
+                            data = json.dumps({'seq': event['seq'], 'type': event['type'],
+                                               'payload': event['payload']})
+                            yield f"id: {event['seq']}\nevent: {event['type']}\ndata: {data}\n\n"
+                        return
+                    if run['status'] == 'needs_input':
+                        delay = min(5.0, delay * 1.5)
+                idle += delay
                 if idle >= 15.0:
                     yield ": keepalive\n\n"
                     idle = 0.0
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(delay)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",

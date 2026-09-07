@@ -37,6 +37,10 @@ export const STAGE_LABELS: Record<StageKey, string> = {
 
 export type StageStatus = "pending" | "active" | "done" | "needs_you" | "failed";
 
+/** Which rail stage an interrupt kind belongs to (server emits kind on both
+ * needs_input and input_received). */
+const STAGE_FOR_KIND = { clarify: "understanding", review: "decision" } as const;
+
 export type CheckItem = {
   check: string;
   passed: boolean;
@@ -180,17 +184,19 @@ export function buildModel(events: RunEvent[]): RunModel {
           afterSeq: event.seq,
         });
         break;
-      case "needs_input":
+      case "needs_input": {
         model.needsInput = p as NeedsInput;
-        if (p.kind === "clarify") model.stages.understanding = "needs_you";
-        if (p.kind === "review") model.stages.decision = "needs_you";
+        const stage = STAGE_FOR_KIND[p.kind as keyof typeof STAGE_FOR_KIND];
+        if (stage) model.stages[stage] = "needs_you";
         break;
-      case "input_received":
+      }
+      case "input_received": {
         model.needsInput = null;
-        if (model.stages.understanding === "needs_you")
-          model.stages.understanding = "active";
-        if (model.stages.decision === "needs_you") model.stages.decision = "active";
+        const stage = STAGE_FOR_KIND[p.kind as keyof typeof STAGE_FOR_KIND];
+        if (stage && model.stages[stage] === "needs_you")
+          model.stages[stage] = "active";
         break;
+      }
       case "run_completed":
         model.terminal = { type: event.type, payload: p };
         model.stages.decision = "done";

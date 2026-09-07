@@ -110,6 +110,19 @@ def test_evolve_uses_seed_strategy():
     assert started["payload"]["seed_strategy"]["id"] == strategy_id
     assert body["run"]["status"] == "needs_input"  # reached review
 
+    # Saving an evolve run updates the SEED strategy in place (old-app
+    # semantic) — no sibling copy, no name collision.
+    from db.database import db
+    before = db.get_custom_strategy(strategy_id)
+    r = client.post(f"/strategies/generate/{run_id}/resume", headers=headers,
+                    json={"kind": "review", "action": "save"})
+    assert r.status_code == 200
+    r = client.get(f"/strategies/generate/{run_id}", headers=headers)
+    assert r.json()["run"]["final_strategy_id"] == strategy_id
+    after = db.get_custom_strategy(strategy_id)
+    assert after["strategy_name"] == before["strategy_name"]
+    assert after["validation_status"] == "validated"
+
 
 def test_resume_validation_and_conflicts():
     headers = _auth()

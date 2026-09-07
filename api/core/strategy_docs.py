@@ -5,6 +5,7 @@ The old app hand-maintained this text inside prompt templates (twice), and it
 drifted from core/strategy.py. Prompt builders render it from inspect instead,
 so the contract the LLM sees is always the one the engine enforces.
 """
+import functools
 import inspect
 
 from core.strategy import BaseStrategy
@@ -53,8 +54,9 @@ def _member_doc(name: str) -> str:
     return f"### {kind} {name}{sig} — {required}\n{doc}"
 
 
+@functools.lru_cache(maxsize=1)
 def strategy_api_docs() -> str:
-    """The full BaseStrategy contract as prompt-ready text."""
+    """The full BaseStrategy contract as prompt-ready text (process-constant)."""
     parts = [
         "## The BaseStrategy contract (from the engine source — authoritative)",
         inspect.getdoc(BaseStrategy) or '',

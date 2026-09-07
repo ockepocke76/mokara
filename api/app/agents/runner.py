@@ -84,35 +84,20 @@ def _execute(run_id: str, thread_id: str, graph_input) -> None:
 
 
 def _fail_run(run_id: str, thread_id: str, error: Exception) -> None:
-    """Unexpected crash (LLM outage, budget, bug): keep any draft, be honest."""
-    from db.database import db
+    """Unexpected crash (LLM outage, budget, bug): keep any draft, be honest.
+    Shares graph.fail_run so both failure paths behave identically."""
+    from app.agents.graph import fail_run
 
-    summary = f"Generation stopped unexpectedly: {error}"
-    draft_id = None
+    state: dict = {}
     try:
         snapshot = get_graph().get_state(_config(thread_id))
-        state = snapshot.values if snapshot else {}
-        if state.get('code'):
-            draft_id = db.save_custom_strategy(
-                user_id=state['user_id'],
-                strategy_name=state.get('strategy_name', 'Unnamed draft'),
-                class_name=state.get('class_name', 'CustomStrategy'),
-                description=state.get('description', ''),
-                ai_description='',
-                code=state['code'],
-                parameters_json=state.get('parameters') or {},
-                validation_status='failed',
-                validation_error=str(error),
-            ) or None
+        state = dict(snapshot.values) if snapshot else {}
     except Exception:
-        logging.exception("draft salvage failed for run %s", run_id)
-    try:
-        sg.update_run(run_id, status='failed', failure_summary=summary,
-                      final_strategy_id=draft_id)
-        sg.append_event(run_id, 'run_failed',
-                        {'summary': summary, 'draft_id': draft_id})
-    except Exception:
-        logging.exception("failure bookkeeping failed for run %s", run_id)
+        logging.exception("state snapshot failed for run %s", run_id)
+    state.setdefault('user_id', None)
+    fail_run(run_id, state,
+             summary=f"Generation stopped unexpectedly: {error}",
+             validation_error=str(error))
 
 
 def _launch(run_id: str, thread_id: str, graph_input) -> None:
@@ -145,11 +130,15 @@ def start_run(user_id: int, user_request: str, strategy_name: str | None = None,
     }
     if seed_strategy:
         initial_state.update({
+            'seed_id': seed_strategy.get('id'),
             'seed_name': seed_strategy.get('strategy_name'),
             'seed_description': (seed_strategy.get('ai_description')
                                  or seed_strategy.get('description')),
             'seed_code': seed_strategy.get('code'),
         })
+        # Evolve keeps the seed's name — save updates that strategy in place.
+        if not initial_state['strategy_name']:
+            initial_state['strategy_name'] = seed_strategy.get('strategy_name') or ''
     _launch(run_id, thread_id, initial_state)
     return run_id
 

@@ -15,6 +15,7 @@ Hard rules from the design doc:
 """
 import json
 import logging
+import threading
 from typing import Any, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -42,6 +43,7 @@ class GenState(TypedDict, total=False):
     user_request: str
     strategy_name: str
     class_name: str
+    seed_id: Optional[int]      # non-null = evolve; save updates this strategy
     seed_name: Optional[str]
     seed_description: Optional[str]
     seed_code: Optional[str]
@@ -49,13 +51,13 @@ class GenState(TypedDict, total=False):
 
     spec: dict
     clarify_questions: list
-    examples: list
+    examples_meta: list         # name/source/score only — code is rebuilt per
+                                # prompt so the checkpointer doesn't snapshot it
     plan: dict
     description: str
     code: str
     parameters: dict
 
-    validation_error: Optional[str]
     static_review: dict
     test_result: dict
     baseline_result: dict
@@ -136,20 +138,23 @@ def clarify(state: GenState, config) -> dict:
     return update
 
 
+def _fetch_examples(state: GenState) -> list[dict]:
+    category = state['spec'].get('category', 'HYBRID')
+    return (retrieval.builtin_examples(category)
+            + retrieval.public_examples(state['user_id']))
+
+
 def retrieve(state: GenState, config) -> dict:
     _emit(state, 'stage_started', stage='examples')
-    category = state['spec'].get('category', 'HYBRID')
-    examples = retrieval.builtin_examples(category)
-    examples += retrieval.public_examples(state['user_id'])
-    _emit(state, 'stage_completed', stage='examples', artifact={'examples': [
-        {'name': e['name'], 'source': e['source'], 'score': e.get('score')}
-        for e in examples]})
-    return {'examples': examples}
+    meta = [{'name': e['name'], 'source': e['source'], 'score': e.get('score')}
+            for e in _fetch_examples(state)]
+    _emit(state, 'stage_completed', stage='examples', artifact={'examples': meta})
+    return {'examples_meta': meta}
 
 
 def plan(state: GenState, config) -> dict:
     _emit(state, 'stage_started', stage='blueprint')
-    examples_block = prompts.format_examples_block(state.get('examples', []))
+    examples_block = prompts.format_examples_block(_fetch_examples(state))
     plan_obj, calls = _llm(state, config,
                            prompts.plan_prompt(state['spec'], examples_block),
                            tier='strong')
@@ -165,7 +170,7 @@ def generate(state: GenState, config) -> dict:
     if attempt == 0:
         _emit(state, 'stage_started', stage='code')
     class_name = _slugify_to_classname(state['strategy_name']) or 'CustomStrategy'
-    examples_block = prompts.format_examples_block(state.get('examples', []))
+    examples_block = prompts.format_examples_block(_fetch_examples(state))
     text, calls = _llm(state, config, prompts.generate_prompt(
         state['spec'], state['plan'], examples_block, class_name,
         feedback=state.get('rework_feedback'), prior_code=state.get('code')),
@@ -177,7 +182,7 @@ def generate(state: GenState, config) -> dict:
                     'is_evolution': bool(state.get('seed_code'))})
     return {'code': code, 'description': description, 'class_name': class_name,
             'llm_calls': calls, 'rework_feedback': None,
-            'validation_error': None, 'static_review': {}, 'test_result': {},
+            'static_review': {}, 'test_result': {},
             'baseline_result': {}, 'analyze': {}}
 
 
@@ -191,8 +196,7 @@ def validate(state: GenState, config) -> dict:
     except Exception as e:
         _emit(state, 'stage_progress', stage='checks', check='sandbox',
               passed=False, message=str(e)[:500])
-        return {'validation_error': str(e),
-                'rework_stage': 'validate',
+        return {'rework_stage': 'validate',
                 'rework_reason': 'the code failed the sandbox safety checks',
                 'rework_feedback': f"Sandbox compilation/dry-run failed:\n{e}"}
     _emit(state, 'stage_progress', stage='checks', check='sandbox', passed=True)
@@ -201,7 +205,7 @@ def validate(state: GenState, config) -> dict:
         parameters = safe_parse_strategy_parameters(state['code'], state['class_name']) or {}
     except Exception:
         logging.exception("parameter AST parse failed (non-fatal)")
-    return {'validation_error': None, 'parameters': parameters}
+    return {'parameters': parameters}
 
 
 def static_review(state: GenState, config) -> dict:
@@ -235,6 +239,12 @@ def _condense_paths(result: dict) -> list[dict]:
     return paths
 
 
+# The engine seeds the process-global numpy RNG; without this lock a
+# concurrent run reseeding between a candidate sim and its baseline sim would
+# silently break the same-seed pairing the baseline exists to provide.
+_test_sim_lock = threading.Lock()
+
+
 def test_sim(state: GenState, config) -> dict:
     from core.sandbox_tester import run_sandbox_test
 
@@ -247,28 +257,31 @@ def test_sim(state: GenState, config) -> dict:
                    'strategy_params': {p: (v.get('default') if isinstance(v, dict) else v)
                                        for p, v in (state.get('parameters') or {}).items()}}
     seed = state.get('seed', 12345)
-    result = run_sandbox_test(state['code'], state['class_name'], dict(test_params), seed=seed)
+    category = state['spec'].get('category', 'HYBRID')
+    baseline_key, baseline_class, baseline_source = retrieval.baseline_for_category(category)
+    baseline = {}
+    with _test_sim_lock:
+        result = run_sandbox_test(state['code'], state['class_name'],
+                                  dict(test_params), seed=seed)
+        if result.get('success'):
+            # Paired baseline: same category builtin, same seed
+            # => identical market paths.
+            try:
+                baseline_run = run_sandbox_test(baseline_source, baseline_class,
+                                                {'num_years': TEST_YEARS,
+                                                 'num_simulations': TEST_PATHS,
+                                                 'num_random_paths': TEST_PATHS}, seed=seed)
+                if baseline_run.get('success'):
+                    baseline = {'name': baseline_class,
+                                'summary_stats': _sanitize(baseline_run['summary_stats'])}
+            except Exception:
+                logging.exception("baseline test sim failed (non-fatal)")
     if not result.get('success'):
         _emit(state, 'stage_progress', stage='test_flight', passed=False,
               message=str(result.get('error'))[:500])
         return {'rework_stage': 'test_sim',
                 'rework_reason': 'the strategy crashed during the test simulation',
                 'rework_feedback': f"The test simulation failed at runtime:\n{result.get('error')}"}
-
-    # Paired baseline: same category builtin, same seed => identical market paths.
-    category = state['spec'].get('category', 'HYBRID')
-    baseline_key, baseline_class, baseline_source = retrieval.baseline_for_category(category)
-    baseline = {}
-    try:
-        baseline_run = run_sandbox_test(baseline_source, baseline_class,
-                                        {'num_years': TEST_YEARS,
-                                         'num_simulations': TEST_PATHS,
-                                         'num_random_paths': TEST_PATHS}, seed=seed)
-        if baseline_run.get('success'):
-            baseline = {'name': baseline_class,
-                        'summary_stats': _sanitize(baseline_run['summary_stats'])}
-    except Exception:
-        logging.exception("baseline test sim failed (non-fatal)")
 
     test_result = {'summary_stats': _sanitize(result['summary_stats']),
                    'paths': _sanitize(_condense_paths(result)),
@@ -360,6 +373,8 @@ def save(state: GenState, config) -> dict:
 
     _emit(state, 'stage_started', stage='decision')
     ai_description = (state.get('analyze') or {}).get('explanation') or state.get('description', '')
+    # Evolve updates the seed strategy in place (the old app's semantic —
+    # evolution_request lands in its git history); create inserts a new one.
     strategy_id = db.save_custom_strategy(
         user_id=state['user_id'],
         strategy_name=state['strategy_name'],
@@ -369,7 +384,8 @@ def save(state: GenState, config) -> dict:
         code=state['code'],
         parameters_json=state.get('parameters') or {},
         validation_status='validated',
-        evolution_request=(state['user_request'] if state.get('seed_code') else None),
+        strategy_id=state.get('seed_id'),
+        evolution_request=(state['user_request'] if state.get('seed_id') else None),
         parent_strategy_id=None,
     )
     if not strategy_id:
@@ -386,32 +402,49 @@ def discard(state: GenState, config) -> dict:
     return {'outcome': 'discarded'}
 
 
-def fail(state: GenState, config) -> dict:
-    """Retry cap hit: keep the last draft, be honest about what happened."""
+def fail_run(run_id: str, state: dict, summary: str,
+             validation_error: str | None) -> Optional[int]:
+    """Shared failure path (retry cap AND unexpected crash — see runner):
+    keep the last draft, be honest about what happened.
+
+    The draft gets a suffixed name: save_custom_strategy keys on
+    (user_id, strategy_name), and a failed evolve run reusing the seed's
+    name must never overwrite the user's working strategy with broken code.
+    """
     from db.database import db
 
-    summary = state.get('failure_summary') or 'Generation failed.'
     draft_id = None
     if state.get('code'):
+        draft_name = f"{state.get('strategy_name') or 'Unnamed'} (draft {run_id[:6]})"
         try:
             draft_id = db.save_custom_strategy(
                 user_id=state['user_id'],
-                strategy_name=state['strategy_name'],
+                strategy_name=draft_name,
                 class_name=state.get('class_name', 'CustomStrategy'),
                 description=state.get('description', ''),
                 ai_description='',
                 code=state['code'],
                 parameters_json=state.get('parameters') or {},
                 validation_status='failed',
-                validation_error=state.get('rework_feedback'),
-            )
-            draft_id = draft_id or None
+                validation_error=validation_error,
+            ) or None
         except Exception:
-            logging.exception("draft save failed during fail()")
-    sg.update_run(state['run_id'], status='failed', failure_summary=summary,
-                  final_strategy_id=draft_id)
-    _emit(state, 'run_failed', summary=summary, draft_id=draft_id,
-          last_problem=state.get('rework_reason'))
+            logging.exception("draft save failed for run %s", run_id)
+    try:
+        sg.update_run(run_id, status='failed', failure_summary=summary,
+                      final_strategy_id=draft_id)
+        sg.append_event(run_id, 'run_failed', {
+            'summary': summary, 'draft_id': draft_id,
+            'last_problem': state.get('rework_reason')})
+    except Exception:
+        logging.exception("failure bookkeeping failed for run %s", run_id)
+    return draft_id
+
+
+def fail(state: GenState, config) -> dict:
+    summary = state.get('failure_summary') or 'Generation failed.'
+    draft_id = fail_run(state['run_id'], state, summary,
+                        validation_error=state.get('rework_feedback'))
     return {'outcome': 'failed', 'final_strategy_id': draft_id}
 
 
@@ -421,20 +454,13 @@ def _route_after_spec(state: GenState) -> str:
     return 'clarify' if state['spec'].get('needs_clarification') else 'retrieve'
 
 
-def _route_after_validate(state: GenState) -> str:
-    return 'rework' if state.get('validation_error') else 'static_review'
-
-
-def _route_after_static(state: GenState) -> str:
-    return 'rework' if state.get('rework_stage') == 'static_review' and state.get('rework_feedback') else 'test_sim'
-
-
-def _route_after_test(state: GenState) -> str:
-    return 'rework' if state.get('rework_stage') == 'test_sim' and state.get('rework_feedback') else 'analyze'
-
-
-def _route_after_analyze(state: GenState) -> str:
-    return 'rework' if state.get('rework_stage') == 'analyze' and state.get('rework_feedback') else 'review'
+def _rework_or(next_node: str):
+    """A checking rung failed iff it set rework_feedback (generate clears it
+    on every fresh code round) — one router serves every rung."""
+    def route(state: GenState) -> str:
+        return 'rework' if state.get('rework_feedback') else next_node
+    route.__name__ = f"_route_or_{next_node}"
+    return route
 
 
 def _route_after_rework(state: GenState) -> str:
@@ -466,10 +492,10 @@ def build_graph(checkpointer=None):
     g.add_edge('retrieve', 'plan')
     g.add_edge('plan', 'generate')
     g.add_edge('generate', 'validate')
-    g.add_conditional_edges('validate', _route_after_validate, ['rework', 'static_review'])
-    g.add_conditional_edges('static_review', _route_after_static, ['rework', 'test_sim'])
-    g.add_conditional_edges('test_sim', _route_after_test, ['rework', 'analyze'])
-    g.add_conditional_edges('analyze', _route_after_analyze, ['rework', 'review'])
+    g.add_conditional_edges('validate', _rework_or('static_review'), ['rework', 'static_review'])
+    g.add_conditional_edges('static_review', _rework_or('test_sim'), ['rework', 'test_sim'])
+    g.add_conditional_edges('test_sim', _rework_or('analyze'), ['rework', 'analyze'])
+    g.add_conditional_edges('analyze', _rework_or('review'), ['rework', 'review'])
     g.add_conditional_edges('rework', _route_after_rework, ['fail', 'generate'])
     g.add_conditional_edges('review', _route_after_review, ['discard', 'generate', 'save'])
     g.add_edge('save', END)

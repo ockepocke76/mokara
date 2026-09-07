@@ -95,15 +95,22 @@ export function Designer({
           for (;;) {
             const { value, done } = await reader.read();
             if (done) break;
-            buffer += decoder.decode(value, { stream: true });
+            // SSE framing: normalize CRLF, split on blank lines, and join
+            // multi-line data fields per the spec.
+            buffer = (buffer + decoder.decode(value, { stream: true })).replace(
+              /\r\n/g,
+              "\n",
+            );
             const chunks = buffer.split("\n\n");
             buffer = chunks.pop() ?? "";
             for (const chunk of chunks) {
-              const dataLine = chunk
+              const data = chunk
                 .split("\n")
-                .find((l) => l.startsWith("data: "));
-              if (!dataLine) continue;
-              const event: RunEvent = JSON.parse(dataLine.slice(6));
+                .filter((l) => l.startsWith("data:"))
+                .map((l) => l.replace(/^data: ?/, ""))
+                .join("\n");
+              if (!data) continue;
+              const event: RunEvent = JSON.parse(data);
               cursor = Math.max(cursor, event.seq);
               appendEvents([event]);
               if (
@@ -114,6 +121,7 @@ export function Designer({
                 terminal = true;
               }
             }
+            if (terminal) break;
           }
           if (terminal) return;
         } catch {
