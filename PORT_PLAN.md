@@ -347,37 +347,56 @@ against the live old app (bypass_login temporarily enabled, since reverted).
 #### WV.1 — Page by page (each item: compare vs old screenshot, restyle, verify desktop + 375px)
 - [ ] **Landing + Dashboard (the old Home)**: authed → "Welcome back,
       {name} 👋", stat pair (Simulations Run / Strategies Created), recent
-      simulations list, Quick Actions row with the orange "🚀 Run New
-      Simulation" CTA; anonymous → hero with logo, tagline, early-access
-      spots + sign-in CTA. Landing redirects authed users to /dashboard.
+      simulations list (real history rows), Quick Actions row with the
+      orange "🚀 Run New Simulation" CTA; anonymous → hero with logo,
+      tagline, early-access spots + sign-in CTA. Landing redirects authed
+      users to /dashboard.
 - [ ] **Login**: logo + tagline above the card; orange primary buttons.
 - [ ] **Simulate**: sections as collapsible accordions like the old
       expanders (⚙️ Simulation Settings, Economic Assumptions, Tax
       Settings); orange sliders w/ value bubbles; per-param help tooltips;
       currency hint under Initial Investment; sticky bottom run-bar with
-      inline progress.
-- [ ] **Results**: emoji section headers; stat cards restyled (score-sized
-      numbers, success green / ruin red accents); charts on the brand
-      chart theme (median red line, purple/green band edges, teal fill);
-      ISK-tax WarningBox; AI-analysis card styled like the old report
-      sections.
-- [ ] **My Simulations**: richer preview cards — mini net-worth sparkline,
-      status chips, orange primary "New simulation". NOTE: old page had a
-      **Compare** tab — not ported anywhere yet; decide scope (backlog or
-      part of this wave).
+      inline progress. FUNCTIONAL: the sim-limit flow — when the user is at
+      their tier's simulation cap, show the old confirm-delete-oldest
+      dialog before running (old `_confirm_and_delete_sims`).
+- [ ] **Results — FULL REPORT PARITY (the big one)**: replace the bespoke
+      3-chart page with the old app's complete report, by running the same
+      engine renderer server-side: new `GET /simulations/{hash}/report`
+      executes `regenerate_ui_results` with a local queue and returns the
+      ordered item stream (types: intro/text/plotly/dataframe/
+      key_value_table/key_stats_table/settings_table/advanced_stats_table/
+      glossary/warning/error), Plotly figs serialized via
+      `plotly.io.to_json` — identical charts, sections, and light theme
+      by construction. ttl_cache by hash. React item renderers per type,
+      grouped by section like `ui/simulation_results.py`.
+- [ ] **My Simulations**: richer preview cards — preview stats, verdict
+      accents, status chips, orange primary "New simulation". Compare tab:
+      **DROPPED** (decided 2026-09-06, not wanted).
 - [ ] **Leaderboard**: entry cards instead of a bare table — medal, name,
       category, big **score/100**, expandable details with sub-score bars
-      (scores dict already served); "🧠 Wisdom of the Crowd" InfoBox;
-      ISK-tax WarningBox; persona profile cards with descriptions
-      (extend /leaderboard/meta with profile descriptions).
+      AND the radar chart (engine's radar_chart_data + reporting/
+      radar_chart_data.create_radar_chart served as plotly JSON);
+      score-components explainer ("How scores work"); "🧠 Wisdom of the
+      Crowd" InfoBox; ISK-tax WarningBox; persona profile cards with
+      descriptions (extend /leaderboard/meta).
 - [ ] **Strategies**: branded placeholder until W5 ships (logo, one-line
       pitch, "the AI designer is being rebuilt" + link to leaderboard).
 - [ ] **Docs**: emoji page titles, InfoBox for key callouts, brand link
       color; otherwise typography is fine.
-- [ ] **Settings + Admin**: light touch — brand header/footer, orange
-      primaries, consistent page titles.
+- [ ] **Settings**: parity with old ⚙️ Settings & Profile — profile block
+      (avatar/name/email/plan), currency preference, AND **public username**
+      (shown on leaderboards): text input + 🎲 Random generator, saved via
+      the engine's display-name functions. API: extend /me + settings
+      endpoint.
+- [ ] **Admin**: light touch — brand header/footer, orange primaries,
+      consistent page titles.
 - [ ] **Mobile pass**: hamburger/sheet nav for <md (replaces the old app's
       bottom-nav hacks properly); every page checked at 375px.
+
+**Scope note (2026-09-06):** Oscar's bar is *"UI looks the same, with all
+functionality we had in Streamlit"* for every page except Strategies (W5).
+Compare tab explicitly dropped. Anything else found missing during the page
+passes gets added here, not silently skipped.
 
 #### WV.2 — Exit checks
 - [ ] Side-by-side screenshot review vs the old app, page by page (Oscar
