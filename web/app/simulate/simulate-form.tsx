@@ -48,7 +48,7 @@ type LimitConflict = {
 };
 
 const SECTION_EMOJI: Record<string, string> = {
-  "Simulation Settings": "⚙️",
+  "Simulation Settings": "🎛️",
   "Economic Assumptions": "📈",
   "Tax Settings": "💰",
 };
@@ -199,7 +199,7 @@ export function SimulateForm({
       >
         <AccordionItem value="setup" className="rounded-lg border bg-card px-4">
           <AccordionTrigger className="text-base font-semibold">
-            🎯 Strategy &amp; Asset
+            ⚙️ Simulation Settings
           </AccordionTrigger>
           <AccordionContent className="flex flex-col gap-4 pt-1">
             <div className="grid gap-1.5">

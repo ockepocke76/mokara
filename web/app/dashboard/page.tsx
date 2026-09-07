@@ -20,7 +20,7 @@ export default async function DashboardPage() {
     return (
       <main className="flex flex-1 flex-col items-center justify-center gap-6 px-6 py-24 text-center">
         <Image
-          src="/mokara-logo.png"
+          src="/mokara-mark.jpg"
           alt="Mokara"
           width={96}
           height={96}
@@ -65,7 +65,7 @@ export default async function DashboardPage() {
   return (
     <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-10">
       <h1 className="mb-6 text-3xl font-bold tracking-tight">
-        Welcome back, {viewer.name?.split(" ")[0] ?? "there"} 👋
+        Welcome back, {viewer.name ?? "there"} 👋
       </h1>
 
       <div className="mb-8 grid grid-cols-2 gap-6 sm:max-w-md">

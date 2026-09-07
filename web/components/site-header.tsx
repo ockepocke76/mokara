@@ -20,18 +20,21 @@ export async function SiteHeader() {
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
-      <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-6 px-4">
+      <div className="mx-auto flex h-[72px] w-full max-w-6xl items-center gap-6 px-4">
         <Link href="/" className="flex items-center gap-3">
           <Image
-            src="/mokara-logo.png"
+            src="/mokara-mark.jpg"
             alt="Mokara logo"
-            width={40}
-            height={40}
+            width={48}
+            height={48}
+            className="rounded-lg"
             priority
           />
           <span className="flex flex-col leading-tight">
-            <span className="text-lg font-bold tracking-tight">mokara.ai</span>
-            <span className="hidden text-[11px] text-muted-foreground sm:block">
+            <span className="text-2xl font-semibold tracking-tight">
+              mokara.ai
+            </span>
+            <span className="hidden text-xs text-muted-foreground sm:block">
               Wisdom of the Crowd, Applied
             </span>
           </span>
