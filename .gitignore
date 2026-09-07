@@ -31,3 +31,4 @@ backups/
 
 # Claude session-local files (worktrees, launch config)
 .claude/
+api/pdf_cache/
