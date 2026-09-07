@@ -28,3 +28,6 @@ web/out/
 *.log
 output/
 backups/
+
+# Claude session-local files (worktrees, launch config)
+.claude/

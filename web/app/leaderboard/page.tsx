@@ -1,43 +1,23 @@
 import type { Metadata } from "next";
 
 import { apiFetch } from "@/lib/api";
-import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { InfoBox, WarningBox } from "@/components/info-box";
+import { Card, CardContent } from "@/components/ui/card";
+import { EntryCard, categoryLabel, type Entry } from "./entry-card";
 import { LeaderboardFilters } from "./filters";
 
 export const metadata: Metadata = { title: "Leaderboard" };
 
-type Entry = {
-  rank: number;
-  id: number;
-  strategy_name: string;
-  category: string | null;
-  is_custom: boolean;
-  author: string | null;
-  score: number | null;
+type Profile = {
+  key: string;
+  name: string;
+  description?: string | null;
+  emoji?: string | null;
+  category_label?: string | null;
+  applicable_categories?: string[] | null;
 };
 
-type Meta = {
-  categories: string[];
-  profiles: { key: string; name: string }[];
-};
-
-const MEDALS = ["🥇", "🥈", "🥉"];
-
-function categoryLabel(category: string | null): string {
-  if (!category) return "—";
-  return category
-    .split("_")
-    .map((w) => w[0] + w.slice(1).toLowerCase())
-    .join(" ");
-}
+type Meta = { categories: string[]; profiles: Profile[] };
 
 export default async function LeaderboardPage({
   searchParams,
@@ -56,15 +36,59 @@ export default async function LeaderboardPage({
   const meta: Meta = await metaRes.json();
   const board: { entries: Entry[] } = await boardRes.json();
 
+  const profileName =
+    meta.profiles.find((p) => p.key === profile)?.name ??
+    "Balanced";
+  const visibleProfiles = category
+    ? meta.profiles.filter(
+        (p) =>
+          !p.applicable_categories ||
+          p.applicable_categories.includes(category),
+      )
+    : meta.profiles;
+
   return (
     <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-10">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Leaderboard</h1>
-          <p className="text-sm text-muted-foreground">
-            Strategy rankings by evaluated excellence score.
-          </p>
-        </div>
+      <h1 className="text-3xl font-bold tracking-tight">
+        🏆 Strategy Leaderboard
+      </h1>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Strategies ranked by category and investor profile
+      </p>
+
+      <InfoBox className="mb-3">
+        🧠 <strong>Wisdom of the Crowd</strong>
+        <p className="mt-2">
+          This leaderboard is a <strong>collective intelligence engine</strong>.
+          As thousands of users create and refine strategies, the top
+          performers represent approaches that{" "}
+          <strong>no single financial advisor would design alone</strong>.
+        </p>
+        <p className="mt-2">
+          Research shows diverse groups outperform individual experts when
+          there&apos;s a clear scoring mechanism, independent contributors, and
+          effective aggregation — exactly what this leaderboard provides.
+        </p>
+        <p className="mt-2 text-xs">
+          📖 Based on{" "}
+          <a
+            href="https://en.wikipedia.org/wiki/The_Wisdom_of_Crowds"
+            className="underline"
+            target="_blank"
+            rel="noreferrer"
+          >
+            &ldquo;The Wisdom of Crowds&rdquo; (Surowiecki, 2004)
+          </a>
+        </p>
+      </InfoBox>
+
+      <WarningBox className="mb-6">
+        ⚠️ <strong>Note</strong>: All strategies are evaluated using ISK
+        taxation (1% annual wealth tax). Final rankings do not account for exit
+        taxation that would apply under capital gains regimes.
+      </WarningBox>
+
+      <div className="mb-6">
         <LeaderboardFilters
           categories={meta.categories}
           profiles={meta.profiles}
@@ -79,44 +103,39 @@ export default async function LeaderboardPage({
           {category ? ` in ${categoryLabel(category)}` : ""}.
         </p>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-14">#</TableHead>
-              <TableHead>Strategy</TableHead>
-              <TableHead>Category</TableHead>
-              <TableHead>Author</TableHead>
-              <TableHead className="text-right">Score</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {board.entries.map((e) => (
-              <TableRow key={e.id}>
-                <TableCell className="text-lg">
-                  {MEDALS[e.rank - 1] ?? e.rank}
-                </TableCell>
-                <TableCell className="font-medium">
-                  {e.strategy_name}
-                  {e.is_custom && (
-                    <Badge variant="secondary" className="ml-2">
-                      community
-                    </Badge>
-                  )}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {categoryLabel(e.category)}
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {e.author ?? "Mokara"}
-                </TableCell>
-                <TableCell className="text-right font-mono">
-                  {e.score?.toFixed(1) ?? "—"}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <div className="flex flex-col gap-3">
+          {board.entries.map((e) => (
+            <EntryCard
+              key={e.id}
+              entry={e}
+              profile={profile}
+              profileName={profileName}
+            />
+          ))}
+        </div>
       )}
+
+      <section className="mt-10">
+        <h2 className="mb-1 text-xl font-semibold">⚖️ Weighting Profiles</h2>
+        <p className="mb-4 text-sm text-muted-foreground">
+          Choose a weighting profile above to see how strategies rank for
+          different investor personas. Each profile emphasizes different
+          performance metrics to match specific goals and risk preferences.
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {visibleProfiles.map((p) => (
+            <Card key={p.key}>
+              <CardContent className="py-3 text-sm">
+                <strong>
+                  {p.emoji ? `${p.emoji} ` : ""}
+                  {p.name}
+                </strong>
+                {p.description ? ` — ${p.description}` : ""}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </section>
     </main>
   );
 }

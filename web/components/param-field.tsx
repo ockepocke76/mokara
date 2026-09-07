@@ -11,21 +11,43 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { ParamSpec } from "@/lib/param-types";
+
+function FieldLabel({ spec }: { spec: ParamSpec }) {
+  if (!spec.description) return <Label>{spec.label}</Label>;
+  return (
+    <div className="flex items-center gap-1.5">
+      <Label>{spec.label}</Label>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="cursor-help text-xs text-muted-foreground">ⓘ</span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-72">{spec.description}</TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
 
 export function ParamField({
   spec,
   value,
   onChange,
+  currency,
 }: {
   spec: ParamSpec;
   value: unknown;
   onChange: (v: unknown) => void;
+  currency?: string;
 }) {
   if (spec.type === "select") {
     return (
       <div className="grid gap-1.5">
-        <Label title={spec.description ?? undefined}>{spec.label}</Label>
+        <FieldLabel spec={spec} />
         <Select
           value={String(value ?? spec.default ?? "")}
           onValueChange={(v) => onChange(v)}
@@ -67,28 +89,34 @@ export function ParamField({
     const min = (spec.min ?? 0) * scale;
     const max = (spec.max ?? 100) * scale;
     const step = (spec.step ?? (spec.is_percent ? 0.001 : 1)) * scale;
+    const pct =
+      max > min ? Math.min(100, Math.max(0, ((display - min) / (max - min)) * 100)) : 0;
+    const bubble = spec.is_percent
+      ? `${display}%`
+      : spec.is_currency
+        ? display.toLocaleString()
+        : String(display);
 
     return (
-      <div className="grid gap-1.5">
-        <div className="flex items-center justify-between">
-          <Label title={spec.description ?? undefined}>{spec.label}</Label>
-          <span className="text-xs tabular-nums text-muted-foreground">
-            {spec.is_percent
-              ? `${display}%`
-              : spec.is_currency
-                ? display.toLocaleString()
-                : display}
-          </span>
-        </div>
+      <div className="grid gap-1">
+        <FieldLabel spec={spec} />
         <div className="flex items-center gap-3">
-          <Slider
-            value={[display]}
-            min={min}
-            max={max}
-            step={step}
-            onValueChange={([v]) => onChange(v / scale)}
-            className="flex-1"
-          />
+          <div className="relative flex-1 pt-5">
+            {/* Value bubble above the thumb, like the old app's sliders */}
+            <span
+              className="pointer-events-none absolute top-0 -translate-x-1/2 text-xs font-medium text-primary"
+              style={{ left: `${pct}%` }}
+            >
+              {bubble}
+            </span>
+            <Slider
+              value={[display]}
+              min={min}
+              max={max}
+              step={step}
+              onValueChange={([v]) => onChange(v / scale)}
+            />
+          </div>
           <Input
             type="number"
             className="w-28"
@@ -97,13 +125,18 @@ export function ParamField({
             onChange={(e) => onChange(Number(e.target.value) / scale)}
           />
         </div>
+        {spec.is_currency && currency && (
+          <p className="text-xs text-muted-foreground">
+            → {display.toLocaleString("sv-SE")} {currency}
+          </p>
+        )}
       </div>
     );
   }
 
   return (
     <div className="grid gap-1.5">
-      <Label title={spec.description ?? undefined}>{spec.label}</Label>
+      <FieldLabel spec={spec} />
       <Input
         value={String(value ?? spec.default ?? "")}
         onChange={(e) => onChange(e.target.value)}

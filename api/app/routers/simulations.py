@@ -7,12 +7,14 @@ The UI-only behavior (toasts, rerun loops, progress bars) maps to response
 statuses the frontend acts on: 'cached' | 'running' | 'queued'.
 """
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.deps import get_current_user, verify_internal_secret
+from core.cache import ttl_cache
 
 router = APIRouter(dependencies=[Depends(verify_internal_secret)])
 
@@ -170,6 +172,10 @@ def config_params() -> dict:
 class CreateSimulation(BaseModel):
     params: Dict[str, Any] = Field(default_factory=dict)
     simulation_name: Optional[str] = None
+    # Sim-limit flow (old confirm-delete-oldest dialog): when the user is at
+    # their tier's cap, the first submit returns 409 with the sims that would
+    # be deleted; a resubmit with replace_oldest=True deletes them and runs.
+    replace_oldest: bool = False
 
 
 @router.post("/simulations")
@@ -196,6 +202,36 @@ def create_simulation(
     allowed, msg, _ = limiter.check_ai_credits(user["id"])
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
+
+    # Saved-simulation cap (old _handle_run_button_click confirm flow)
+    sim_ok, sim_msg, usage = limiter.check_simulation_limit(user["id"])
+    if not sim_ok:
+        limit = usage.get("limit")
+        rows = db.get_user_simulations_with_params(user["email"]) or []
+        rows = sorted(rows, key=lambda r: r.get("timestamp") or "")
+        overflow = max(1, len(rows) - int(limit) + 1) if isinstance(limit, int) else 1
+        oldest = rows[:overflow]
+        if not body.replace_oldest:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": sim_msg,
+                    "limit": limit,
+                    "to_delete": [
+                        {
+                            "history_id": r.get("id"),
+                            "name": r.get("simulation_name"),
+                            "created_at": str(r.get("timestamp")),
+                        }
+                        for r in oldest
+                    ],
+                },
+            )
+        from core.cache import clear_all
+
+        for r in oldest:
+            db.permanently_delete_simulation(r["id"])
+        clear_all()
 
     ui_params = dict(body.params)
     if body.simulation_name:
@@ -364,3 +400,80 @@ def simulation_results(simulation_hash: str) -> dict:
             "median_yearly_results": df_series("median_yearly_results_df"),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Full report — the old Streamlit results view, served as an item stream.
+# Runs the same engine renderer (background_tasks.regenerate_ui_results) and
+# returns its ordered typed items; Plotly figures are serialized to JSON so
+# the web app renders the identical charts (light theme per config.yml).
+# ---------------------------------------------------------------------------
+
+@ttl_cache(ttl=600, maxsize=16)
+def _render_report_json(simulation_hash: str, viewer_is_admin: bool) -> str:
+    import base64
+    import json as _json
+    import queue as _queue
+
+    import plotly.io as pio
+
+    from background_tasks import regenerate_ui_results
+    from db.utils import _sanitize_for_json
+
+    q: _queue.Queue = _queue.Queue()
+    regenerate_ui_results(
+        simulation_hash, q, viewer_is_admin=viewer_is_admin
+    )
+
+    items = []
+    while not q.empty():
+        item = q.get()
+        kind = item.get("type")
+        if kind == "regeneration_package":
+            # Session-state payload for the old UI's follow-up interactions —
+            # multi-MB and unused by the web report.
+            continue
+        try:
+            if kind == "plotly":
+                fig = item["data"]
+                if isinstance(fig, str):
+                    item["data"] = _json.loads(fig)
+                else:
+                    item["data"] = _json.loads(pio.to_json(fig, validate=False))
+            elif kind == "plot":
+                # A PNG file path (strategy flowchart) → data URI
+                path = item.get("data")
+                if path and os.path.exists(str(path)):
+                    with open(path, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode()
+                    item["data"] = f"data:image/png;base64,{b64}"
+                    item["type"] = "image"
+                else:
+                    continue
+            else:
+                item["data"] = _sanitize_for_json(item.get("data"))
+        except Exception:
+            logging.exception("report item serialization failed (type=%s)", kind)
+            continue
+        items.append(item)
+
+    if not items:
+        raise HTTPException(status_code=404, detail="Report could not be generated")
+    return _json.dumps({"simulation_hash": simulation_hash, "items": items})
+
+
+@router.get("/simulations/{simulation_hash}/report")
+def get_report(
+    simulation_hash: str,
+    user: Optional[dict] = Depends(get_current_user),
+):
+    from fastapi.responses import Response as _Response
+
+    viewer_is_admin = False
+    if user:
+        from db.database import db
+
+        viewer_is_admin = db.get_user_tier(user["id"]) == "ADMIN"
+
+    payload = _render_report_json(simulation_hash, viewer_is_admin)
+    return _Response(content=payload, media_type="application/json")

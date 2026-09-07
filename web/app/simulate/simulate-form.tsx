@@ -3,14 +3,21 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
@@ -35,7 +42,24 @@ type Phase =
   | { kind: "polling"; jobId: string; hash: string; message?: string; value?: number }
   | { kind: "error"; message: string };
 
-export function SimulateForm({ schema }: { schema: ParamSchema }) {
+type LimitConflict = {
+  message: string;
+  to_delete: { history_id: number; name: string | null; created_at: string }[];
+};
+
+const SECTION_EMOJI: Record<string, string> = {
+  "Simulation Settings": "⚙️",
+  "Economic Assumptions": "📈",
+  "Tax Settings": "💰",
+};
+
+export function SimulateForm({
+  schema,
+  currency,
+}: {
+  schema: ParamSchema;
+  currency?: string;
+}) {
   const router = useRouter();
   const [strategyKey, setStrategyKey] = useState(schema.defaults.strategy);
   const [assetKey, setAssetKey] = useState(schema.defaults.asset_model);
@@ -54,6 +78,7 @@ export function SimulateForm({ schema }: { schema: ParamSchema }) {
     };
   });
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const [conflict, setConflict] = useState<LimitConflict | null>(null);
 
   const strategy = useMemo(
     () => schema.strategies.find((s) => s.key === strategyKey),
@@ -83,10 +108,7 @@ export function SimulateForm({ schema }: { schema: ParamSchema }) {
         return;
       }
       if (job.status === "FAILED") {
-        setPhase({
-          kind: "error",
-          message: job.error ?? "Simulation failed",
-        });
+        setPhase({ kind: "error", message: job.error ?? "Simulation failed" });
         return;
       }
       setPhase({
@@ -99,10 +121,7 @@ export function SimulateForm({ schema }: { schema: ParamSchema }) {
     }
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setPhase({ kind: "submitting" });
-
+  function buildParams(): Record<string, unknown> {
     const params: Record<string, unknown> = {
       strategy: strategyKey,
       asset_model: assetKey,
@@ -117,25 +136,38 @@ export function SimulateForm({ schema }: { schema: ParamSchema }) {
       if (!isVisible(p, values)) continue;
       if (values[p.key] !== undefined) params[p.key] = values[p.key];
     }
+    return params;
+  }
+
+  async function run(replaceOldest: boolean) {
+    setPhase({ kind: "submitting" });
+    setConflict(null);
 
     const res = await fetch("/api/bff/simulations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        params,
+        params: buildParams(),
         simulation_name: name || undefined,
+        replace_oldest: replaceOldest,
       }),
     });
     const body = await res.json();
 
+    if (res.status === 409 && body.detail?.to_delete) {
+      setPhase({ kind: "idle" });
+      setConflict(body.detail as LimitConflict);
+      return;
+    }
     if (!res.ok) {
       const detail = Array.isArray(body.detail)
         ? body.detail.join(" ")
-        : (body.detail ?? "Failed to start simulation");
+        : typeof body.detail === "string"
+          ? body.detail
+          : "Failed to start simulation";
       setPhase({ kind: "error", message: detail });
       return;
     }
-
     if (body.status === "cached") {
       router.push(`/simulations/${body.simulation_hash}`);
       return;
@@ -152,134 +184,205 @@ export function SimulateForm({ schema }: { schema: ParamSchema }) {
   const busy = phase.kind === "submitting" || phase.kind === "polling";
 
   return (
-    // noValidate: engine-side validate_params is authoritative; native number
-    // validation rejects legitimate config defaults that sit off step grids.
-    <form onSubmit={submit} noValidate className="flex flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Strategy</CardTitle>
-          {strategy?.description && (
-            <CardDescription>{strategy.description}</CardDescription>
-          )}
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <Select
-            value={strategyKey}
-            onValueChange={(v) => {
-              setStrategyKey(v);
-              adoptDefaults(
-                schema.strategies.find((s) => s.key === v)?.params ?? [],
-              );
-            }}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {schema.strategies.map((s) => (
-                <SelectItem key={s.key} value={s.key}>
-                  {s.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {(strategy?.params ?? [])
-            .filter((p) => isVisible(p, values))
-            .map((p) => (
-              <ParamField
-                key={p.key}
-                spec={p}
-                value={values[p.key]}
-                onChange={(v) => set(p.key, v)}
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void run(false);
+      }}
+      noValidate
+      className="flex flex-col gap-4"
+    >
+      <Accordion
+        type="multiple"
+        defaultValue={["setup", "Simulation Settings"]}
+        className="flex flex-col gap-3"
+      >
+        <AccordionItem value="setup" className="rounded-lg border bg-card px-4">
+          <AccordionTrigger className="text-base font-semibold">
+            🎯 Strategy &amp; Asset
+          </AccordionTrigger>
+          <AccordionContent className="flex flex-col gap-4 pt-1">
+            <div className="grid gap-1.5">
+              <Label htmlFor="sim-name">Name of Simulation</Label>
+              <Input
+                id="sim-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Trinity 4% on S&P 500"
               />
-            ))}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Asset model</CardTitle>
-          {asset?.description && (
-            <CardDescription>{asset.description}</CardDescription>
-          )}
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <Select
-            value={assetKey}
-            onValueChange={(v) => {
-              setAssetKey(v);
-              adoptDefaults(schema.assets.find((a) => a.key === v)?.params ?? []);
-            }}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {schema.assets.map((a) => (
-                <SelectItem key={a.key} value={a.key}>
-                  {a.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {(asset?.params ?? []).map((p) => (
-            <ParamField
-              key={p.key}
-              spec={p}
-              value={values[p.key]}
-              onChange={(v) => set(p.key, v)}
-            />
-          ))}
-        </CardContent>
-      </Card>
-
-      {schema.sections.map((section) => (
-        <Card key={section.title}>
-          <CardHeader>
-            <CardTitle>{section.title}</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            {section.params.map((p) => (
-              <ParamField
-                key={p.key}
-                spec={p}
-                value={values[p.key]}
-                onChange={(v) => set(p.key, v)}
-              />
-            ))}
-          </CardContent>
-        </Card>
-      ))}
-
-      <Card>
-        <CardContent className="flex flex-col gap-4 pt-6">
-          <div className="grid gap-1.5">
-            <Label htmlFor="sim-name">Simulation name (optional)</Label>
-            <Input
-              id="sim-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Trinity 4% on S&P 500"
-            />
-          </div>
-
-          {phase.kind === "error" && (
-            <p className="text-sm text-destructive">{phase.message}</p>
-          )}
-          {phase.kind === "polling" && (
-            <div className="flex flex-col gap-2">
-              <Progress value={(phase.value ?? 0) * 100} />
-              <p className="text-sm text-muted-foreground">
-                {phase.message ?? "Running…"}
-              </p>
             </div>
-          )}
 
-          <Button type="submit" disabled={busy} size="lg">
-            {busy ? "Running…" : "Run simulation"}
-          </Button>
-        </CardContent>
-      </Card>
+            <div className="grid gap-1.5">
+              <Label>Strategy</Label>
+              <Select
+                value={strategyKey}
+                onValueChange={(v) => {
+                  setStrategyKey(v);
+                  adoptDefaults(
+                    schema.strategies.find((s) => s.key === v)?.params ?? [],
+                  );
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {schema.strategies.map((s) => (
+                    <SelectItem key={s.key} value={s.key}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {strategy?.description && (
+                <p className="text-xs text-muted-foreground">
+                  {strategy.description}
+                </p>
+              )}
+            </div>
+
+            {(strategy?.params ?? []).filter((p) => isVisible(p, values))
+              .length > 0 && (
+              <div className="rounded-lg border bg-secondary/40 p-4">
+                <p className="mb-3 text-sm font-medium">Strategy Settings</p>
+                <div className="flex flex-col gap-4">
+                  {(strategy?.params ?? [])
+                    .filter((p) => isVisible(p, values))
+                    .map((p) => (
+                      <ParamField
+                        key={p.key}
+                        spec={p}
+                        value={values[p.key]}
+                        onChange={(v) => set(p.key, v)}
+                        currency={currency}
+                      />
+                    ))}
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-1.5">
+              <Label>Asset Model</Label>
+              <Select
+                value={assetKey}
+                onValueChange={(v) => {
+                  setAssetKey(v);
+                  adoptDefaults(
+                    schema.assets.find((a) => a.key === v)?.params ?? [],
+                  );
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {schema.assets.map((a) => (
+                    <SelectItem key={a.key} value={a.key}>
+                      {a.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {asset?.description && (
+                <p className="text-xs text-muted-foreground">
+                  {asset.description}
+                </p>
+              )}
+            </div>
+
+            {(asset?.params ?? []).length > 0 && (
+              <div className="rounded-lg border bg-secondary/40 p-4">
+                <p className="mb-3 text-sm font-medium">Asset Settings</p>
+                <div className="flex flex-col gap-4">
+                  {(asset?.params ?? []).map((p) => (
+                    <ParamField
+                      key={p.key}
+                      spec={p}
+                      value={values[p.key]}
+                      onChange={(v) => set(p.key, v)}
+                      currency={currency}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </AccordionContent>
+        </AccordionItem>
+
+        {schema.sections.map((section) => (
+          <AccordionItem
+            key={section.title}
+            value={section.title}
+            className="rounded-lg border bg-card px-4"
+          >
+            <AccordionTrigger className="text-base font-semibold">
+              {SECTION_EMOJI[section.title] ?? "🔧"} {section.title}
+            </AccordionTrigger>
+            <AccordionContent className="flex flex-col gap-4 pt-1">
+              {section.params.map((p) => (
+                <ParamField
+                  key={p.key}
+                  spec={p}
+                  value={values[p.key]}
+                  onChange={(v) => set(p.key, v)}
+                  currency={currency}
+                />
+              ))}
+            </AccordionContent>
+          </AccordionItem>
+        ))}
+      </Accordion>
+
+      <div className="sticky bottom-0 -mx-4 border-t bg-background/95 px-4 py-3 backdrop-blur">
+        {phase.kind === "error" && (
+          <p className="mb-2 text-sm text-destructive">{phase.message}</p>
+        )}
+        {phase.kind === "polling" && (
+          <div className="mb-2 flex flex-col gap-1">
+            <Progress value={(phase.value ?? 0) * 100} />
+            <p className="text-sm text-muted-foreground">
+              {phase.message ?? "Running…"}
+            </p>
+          </div>
+        )}
+        <Button type="submit" disabled={busy} size="lg" className="w-full">
+          {busy ? "Running…" : "🚀 Run Simulation"}
+        </Button>
+      </div>
+
+      <Dialog open={conflict !== null} onOpenChange={() => setConflict(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Simulation limit reached</DialogTitle>
+            <DialogDescription>
+              {conflict?.message} Running this simulation will permanently
+              delete your oldest saved simulation
+              {(conflict?.to_delete.length ?? 0) > 1 ? "s" : ""}:
+            </DialogDescription>
+          </DialogHeader>
+          <ul className="list-disc pl-5 text-sm">
+            {conflict?.to_delete.map((s) => (
+              <li key={s.history_id}>
+                {s.name || "Untitled simulation"}{" "}
+                <span className="text-muted-foreground">
+                  ({new Date(s.created_at).toLocaleDateString()})
+                </span>
+              </li>
+            ))}
+          </ul>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConflict(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void run(true)}
+            >
+              Delete &amp; run
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </form>
   );
 }

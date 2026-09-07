@@ -49,14 +49,13 @@ export default async function SimulatePage() {
 
   return (
     <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-10">
-      <h1 className="mb-1 text-3xl font-semibold tracking-tight">
-        Run a simulation
+      <h1 className="mb-1 text-3xl font-bold tracking-tight">
+        🚀 Run Simulation
       </h1>
-      <p className="mb-8 text-sm text-muted-foreground">
-        Configure a strategy and asset model, then stress-test it across
-        thousands of Monte Carlo scenarios.
+      <p className="mb-6 text-sm text-muted-foreground">
+        Configure and run a simulation for your financial strategy.
       </p>
-      <SimulateForm schema={schema} />
+      <SimulateForm schema={schema} currency={viewer.currency} />
     </main>
   );
 }

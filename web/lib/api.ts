@@ -41,6 +41,7 @@ export type Viewer = {
   is_admin?: boolean;
   tier?: string | null;
   currency?: string;
+  username?: string | null;
   beta: {
     current_users: number;
     max_users: number;

@@ -38,7 +38,14 @@ def leaderboard_meta() -> dict:
     return {
         "categories": CATEGORIES,
         "profiles": [
-            {"key": key, "name": profile.get("name", key)}
+            {
+                "key": key,
+                "name": profile.get("name", key),
+                "description": profile.get("description"),
+                "emoji": profile.get("emoji"),
+                "category_label": profile.get("category_label"),
+                "applicable_categories": profile.get("applicable_categories"),
+            }
             for key, profile in WEIGHTING_PROFILES.items()
         ],
     }
@@ -85,6 +92,32 @@ def leaderboard(
     for rank, e in enumerate(entries, start=1):
         e["rank"] = rank
     return {"profile": profile, "category": category, "entries": entries}
+
+
+@router.get("/leaderboard/{evaluation_id}/radar")
+def leaderboard_radar(evaluation_id: int, profile: str = Query(default="balanced")) -> dict:
+    """The old expander's radar chart for one leaderboard entry, as Plotly JSON."""
+    import json
+
+    from core.weighting_profiles import WEIGHTING_PROFILES
+    from db.database import db
+    from fastapi import HTTPException
+    from reporting.radar_chart_data import create_radar_chart
+
+    rows = db.get_leaderboard_with_profile(profile_key=profile, limit=200) or []
+    row = next((dict(r) for r in rows if r.get("id") == evaluation_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Evaluation not found")
+
+    weights = (WEIGHTING_PROFILES.get(profile) or {}).get("weights")
+    fig = create_radar_chart(
+        row,
+        profile_weights=weights,
+        strategy_name=row.get("strategy_name"),
+        excellence_score=row.get("profile_excellence_score")
+        or row.get("excellence_score"),
+    )
+    return {"figure": json.loads(fig.to_json())}
 
 
 @router.get("/community-stats")

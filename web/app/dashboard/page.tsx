@@ -1,126 +1,132 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import Link from "next/link";
 
 import { apiFetch, getViewer } from "@/lib/api";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Chart } from "@/components/chart";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import type { HistoryItem } from "@/app/simulations/simulation-card";
 
-export const metadata: Metadata = { title: "Dashboard" };
-
-type CommunityStats = {
-  total_simulations: number;
-  total_strategies: number;
-  total_years_simulated: number;
-  top_strategies: { strategy_identifier: string; count: number }[];
-};
+export const metadata: Metadata = { title: "Home" };
 
 export default async function DashboardPage() {
-  const [viewer, statsRes] = await Promise.all([
-    getViewer(),
-    apiFetch("/community-stats"),
+  const viewer = await getViewer();
+
+  if (!viewer.authenticated) {
+    const spotsLeft = Math.max(
+      0,
+      viewer.beta.max_users - viewer.beta.current_users,
+    );
+    return (
+      <main className="flex flex-1 flex-col items-center justify-center gap-6 px-6 py-24 text-center">
+        <Image
+          src="/mokara-logo.png"
+          alt="Mokara"
+          width={96}
+          height={96}
+          priority
+        />
+        <h1 className="text-5xl font-bold tracking-tight">mokara.ai</h1>
+        <p className="text-lg text-muted-foreground">
+          Wisdom of the Crowd, Applied
+        </p>
+        <p className="max-w-md text-muted-foreground">
+          Design, stress-test and share investment strategies across thousands
+          of Monte Carlo futures.
+        </p>
+        <div className="flex items-center gap-3">
+          <Button asChild size="lg">
+            <Link href="/login">
+              {viewer.beta.is_full
+                ? "Sign in"
+                : `Join early access — ${spotsLeft} spots left`}
+            </Link>
+          </Button>
+          <Button asChild size="lg" variant="outline">
+            <Link href="/leaderboard">🏆 View Leaderboard</Link>
+          </Button>
+        </div>
+      </main>
+    );
+  }
+
+  const [statsRes, simsRes] = await Promise.all([
+    apiFetch("/me/stats"),
+    apiFetch("/simulations"),
   ]);
-  const stats: CommunityStats = await statsRes.json();
-
-  const top = (stats.top_strategies ?? []).slice().reverse();
+  const stats = statsRes.ok
+    ? await statsRes.json()
+    : { simulations: 0, strategies: 0 };
+  const sims: { items: HistoryItem[] } = simsRes.ok
+    ? await simsRes.json()
+    : { items: [] };
+  const recent = sims.items.slice(0, 5);
 
   return (
-    <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-10">
-      <h1 className="mb-1 text-3xl font-semibold tracking-tight">Dashboard</h1>
-      <p className="mb-8 text-sm text-muted-foreground">
-        {viewer.authenticated
-          ? `Welcome back${viewer.name ? `, ${viewer.name}` : ""}.`
-          : "Community overview — sign in to run your own simulations."}
-      </p>
+    <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-10">
+      <h1 className="mb-6 text-3xl font-bold tracking-tight">
+        Welcome back, {viewer.name?.split(" ")[0] ?? "there"} 👋
+      </h1>
 
-      <div className="mb-8 grid gap-4 sm:grid-cols-3">
-        <StatCard
-          label="Simulations run"
-          value={stats.total_simulations.toLocaleString()}
-        />
-        <StatCard
-          label="Strategies created"
-          value={stats.total_strategies.toLocaleString()}
-        />
-        <StatCard
-          label="Years simulated"
-          value={stats.total_years_simulated.toLocaleString()}
-        />
+      <div className="mb-8 grid grid-cols-2 gap-6 sm:max-w-md">
+        <div>
+          <p className="text-sm text-muted-foreground">Simulations Run</p>
+          <p className="text-4xl font-bold tabular-nums">{stats.simulations}</p>
+        </div>
+        <div>
+          <p className="text-sm text-muted-foreground">Strategies Created</p>
+          <p className="text-4xl font-bold tabular-nums">{stats.strategies}</p>
+        </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Most-run strategies</CardTitle>
-            <CardDescription>Completed simulation runs</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {top.length === 0 ? (
-              <p className="py-12 text-center text-sm text-muted-foreground">
-                No completed simulations yet — be the first:{" "}
-                <Link href="/simulate" className="underline">
-                  run a simulation
-                </Link>
-                .
-              </p>
-            ) : (
-              <Chart
-                className="h-72"
-                data={[
-                  {
-                    type: "bar",
-                    orientation: "h",
-                    x: top.map((s) => s.count),
-                    y: top.map((s) => s.strategy_identifier),
-                    marker: { color: "#171717" },
-                  },
-                ]}
-                layout={{
-                  xaxis: { title: { text: "runs" } },
-                  yaxis: { automargin: true },
-                }}
-              />
-            )}
-          </CardContent>
-        </Card>
+      <section className="mb-8">
+        <h2 className="mb-3 text-lg font-semibold">Recent simulations</h2>
+        {recent.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Here are your recent simulations — none yet.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {recent.map((s) => (
+              <Card key={s.history_id}>
+                <CardContent className="flex items-center justify-between gap-3 py-3">
+                  <div className="min-w-0">
+                    <Link
+                      href={`/simulations/${s.simulation_hash}`}
+                      className="font-medium hover:underline"
+                    >
+                      {s.name || "Untitled simulation"}
+                    </Link>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {s.description}
+                    </p>
+                  </div>
+                  {typeof s.success_rate === "number" && (
+                    <span className="shrink-0 text-sm font-semibold tabular-nums">
+                      {(s.success_rate * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </section>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Getting started</CardTitle>
-            <CardDescription>What you can do on Mokara</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3 text-sm">
-            <Link href="/simulate" className="underline">
-              Run a Monte Carlo simulation
-            </Link>
-            <Link href="/leaderboard" className="underline">
-              Browse the strategy leaderboard
-            </Link>
-            <Link href="/strategies" className="underline">
-              Design a strategy with AI
-            </Link>
-            <Link href="/docs/methodology" className="underline">
-              Read the methodology
-            </Link>
-          </CardContent>
-        </Card>
-      </div>
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">Quick Actions</h2>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Button asChild size="lg">
+            <Link href="/simulate">🚀 Run New Simulation</Link>
+          </Button>
+          <Button asChild size="lg" variant="outline">
+            <Link href="/strategies">✨ Design Strategy</Link>
+          </Button>
+          <Button asChild size="lg" variant="outline">
+            <Link href="/leaderboard">🏆 View Leaderboard</Link>
+          </Button>
+        </div>
+      </section>
     </main>
-  );
-}
-
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardDescription>{label}</CardDescription>
-        <CardTitle className="text-3xl tabular-nums">{value}</CardTitle>
-      </CardHeader>
-    </Card>
   );
 }

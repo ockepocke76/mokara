@@ -50,24 +50,31 @@
 }
 
 :root {
+  /* Mokara brand (from the original Streamlit theme):
+     orange #FF6B35 primary, navy #2E4057 text, #F4F6F8 secondary surfaces */
   --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --foreground: #2e4057;
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: #2e4057;
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --popover-foreground: #2e4057;
+  --primary: #ff6b35;
+  --primary-foreground: oklch(1 0 0);
+  --secondary: #f4f6f8;
+  --secondary-foreground: #2e4057;
+  --muted: #f4f6f8;
+  --muted-foreground: #64748b;
+  --accent: #fff1ea;
+  --accent-foreground: #c2410c;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #ff6b35;
+  /* Old-app banner colors (st.info soft blue / st.warning soft yellow) */
+  --info-bg: #e8f0fb;
+  --info-fg: #1a4d8f;
+  --warning-bg: #fff8e1;
+  --warning-fg: #7a5c00;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -91,9 +98,13 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: #ff6b35;
+  --primary-foreground: oklch(1 0 0);
   --secondary: oklch(0.269 0 0);
+  --info-bg: #16283f;
+  --info-fg: #9cc2f0;
+  --warning-bg: #3a3000;
+  --warning-fg: #e5c95c;
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
   --muted-foreground: oklch(0.708 0 0);

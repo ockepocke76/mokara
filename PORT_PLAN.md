@@ -323,43 +323,43 @@ against the live old app (bypass_login temporarily enabled, since reverted).
   one-line descriptions, orange sliders with value bubble + currency hint
   ("→ 1 000 000 SEK").
 
-#### WV.0 — Foundation (do first; everything else inherits it)
-- [ ] Design tokens: map brand into shadcn CSS vars in `globals.css` —
+#### WV.0 — Foundation ✅ (2026-09-07)
+- [x] Design tokens: map brand into shadcn CSS vars in `globals.css` —
       `--primary` = orange (+hover), headings/foreground toward navy,
       `--secondary`/muted surfaces = `#F4F6F8`; info/warning banner
       utility classes. Keep light as the designed theme (old app was
       light-only); dark stays functional but is not the target look.
-- [ ] Brand assets: copy `mokara_logo.png` from the old repo →
+- [x] Brand assets: copy `mokara_logo.png` from the old repo →
       `web/public/`; favicon + og-image from it.
-- [ ] `SiteHeader` v2: logo mark + "mokara.ai" wordmark (+ tagline on
+- [x] `SiteHeader` v2: logo mark + "mokara.ai" wordmark (+ tagline on
       desktop), orange active-link states. `SiteFooter` (Stockholm line) on
       all pages. Dismissible Early-Access banner (localStorage) fed by
       `/beta-status`.
-- [ ] Chart theme module (`lib/chart-theme.ts`): one Plotly layout+color
+- [x] Chart theme module (`lib/chart-theme.ts`): one Plotly layout+color
       preset matching LightChartColors (median red, p25 purple, p75 green,
       teal IQR fill, blue sampled paths) — used by every Chart call.
-- [ ] `InfoBox` / `WarningBox` components (soft blue / soft yellow, emoji
+- [x] `InfoBox` / `WarningBox` components (soft blue / soft yellow, emoji
       slot) replicating the old `st.info`/`st.warning` look.
-- [ ] Slider v2 in `ParamField`: orange track, value bubble above thumb,
+- [x] Slider v2 in `ParamField`: orange track, value bubble above thumb,
       currency hint line for `is_currency` params, proper Tooltip (shadcn)
       for param descriptions instead of `title=`.
 
-#### WV.1 — Page by page (each item: compare vs old screenshot, restyle, verify desktop + 375px)
-- [ ] **Landing + Dashboard (the old Home)**: authed → "Welcome back,
+#### WV.1 — Page by page (2026-09-07: all pages done at desktop; 375px pass pending)
+- [x] **Landing + Dashboard (the old Home)**: authed → "Welcome back,
       {name} 👋", stat pair (Simulations Run / Strategies Created), recent
       simulations list (real history rows), Quick Actions row with the
       orange "🚀 Run New Simulation" CTA; anonymous → hero with logo,
       tagline, early-access spots + sign-in CTA. Landing redirects authed
       users to /dashboard.
-- [ ] **Login**: logo + tagline above the card; orange primary buttons.
-- [ ] **Simulate**: sections as collapsible accordions like the old
+- [x] **Login**: logo + tagline above the card; orange primary buttons.
+- [x] **Simulate**: sections as collapsible accordions like the old
       expanders (⚙️ Simulation Settings, Economic Assumptions, Tax
       Settings); orange sliders w/ value bubbles; per-param help tooltips;
       currency hint under Initial Investment; sticky bottom run-bar with
       inline progress. FUNCTIONAL: the sim-limit flow — when the user is at
       their tier's simulation cap, show the old confirm-delete-oldest
       dialog before running (old `_confirm_and_delete_sims`).
-- [ ] **Results — FULL REPORT PARITY (the big one)**: replace the bespoke
+- [x] **Results — FULL REPORT PARITY (the big one)**: replace the bespoke
       3-chart page with the old app's complete report, by running the same
       engine renderer server-side: new `GET /simulations/{hash}/report`
       executes `regenerate_ui_results` with a local queue and returns the
@@ -369,26 +369,26 @@ against the live old app (bypass_login temporarily enabled, since reverted).
       `plotly.io.to_json` — identical charts, sections, and light theme
       by construction. ttl_cache by hash. React item renderers per type,
       grouped by section like `ui/simulation_results.py`.
-- [ ] **My Simulations**: richer preview cards — preview stats, verdict
+- [x] **My Simulations**: richer preview cards — preview stats, verdict
       accents, status chips, orange primary "New simulation". Compare tab:
       **DROPPED** (decided 2026-09-06, not wanted).
-- [ ] **Leaderboard**: entry cards instead of a bare table — medal, name,
+- [x] **Leaderboard**: entry cards instead of a bare table — medal, name,
       category, big **score/100**, expandable details with sub-score bars
       AND the radar chart (engine's radar_chart_data + reporting/
       radar_chart_data.create_radar_chart served as plotly JSON);
       score-components explainer ("How scores work"); "🧠 Wisdom of the
       Crowd" InfoBox; ISK-tax WarningBox; persona profile cards with
       descriptions (extend /leaderboard/meta).
-- [ ] **Strategies**: branded placeholder until W5 ships (logo, one-line
+- [x] **Strategies**: branded placeholder until W5 ships (logo, one-line
       pitch, "the AI designer is being rebuilt" + link to leaderboard).
-- [ ] **Docs**: emoji page titles, InfoBox for key callouts, brand link
+- [x] **Docs**: emoji page titles, InfoBox for key callouts, brand link
       color; otherwise typography is fine.
-- [ ] **Settings**: parity with old ⚙️ Settings & Profile — profile block
+- [x] **Settings**: parity with old ⚙️ Settings & Profile — profile block
       (avatar/name/email/plan), currency preference, AND **public username**
       (shown on leaderboards): text input + 🎲 Random generator, saved via
       the engine's display-name functions. API: extend /me + settings
       endpoint.
-- [ ] **Admin**: light touch — brand header/footer, orange primaries,
+- [x] **Admin**: light touch — brand header/footer, orange primaries,
       consistent page titles.
 - [ ] **Mobile pass**: hamburger/sheet nav for <md (replaces the old app's
       bottom-nav hacks properly); every page checked at 375px.
@@ -433,5 +433,6 @@ passes gets added here, not silently skipped.
 | 2026-09-06 | W3 | Core flow complete + browser-verified e2e. Found: engine config oddity (return_threshold_rate default 0 < min 0.5 — surfaced by native form validation, now bypassed; engine validates server-side). 178 api tests green. |
 | 2026-09-06 | W4 | My Simulations + PDF done, browser-verified; 45-page PDF through worker→storage→API→BFF. Engine pdf_status vocabulary is lowercase pending/ready/failed. STOPPED HERE per Oscar: W5 on hold for agentic-flow redesign; W6+W7 not started. |
 | 2026-09-06 | W6 | Settings + Admin done, browser-verified. Only W5 (agentic designer, design settled) and W7 (deploy — needs Oscar's go for billing) remain. |
+| 2026-09-07 | WV | Foundation + all pages done at desktop, browser-verified: brand tokens (orange/navy), logo header + tagline, footer, early-access banner, InfoBox/WarningBox; **full report parity** via GET /simulations/{hash}/report streaming the engine's own item stream (13 interactive charts incl. the Portfolio Health gauges) rendered by typed React renderers with the old chapter/appendix grouping; simulate accordions w/ orange value-bubble sliders + tooltips + currency hint + sim-limit delete-oldest 409 flow; dashboard = old Home (welcome/stats/recent/quick actions); leaderboard rich cards (score/100, sub-score bars, on-demand radar endpoint, Wisdom-of-the-Crowd + ISK boxes, persona cards); settings profile + public username w/ 🎲 Random (engine generator); strategies branded placeholder; docs emoji titles. Remaining: mobile 375px pass + Oscar's side-by-side eyeball (WV.2). |
 | 2026-09-06 | — | Remaining decisions closed: Cloud Run + Cloud SQL, tier system ported as-is, full rebrand to Mokara. All decisions made — W0 is unblocked. |
 | 2026-09-06 | W5 | Hold lifted: agentic-generation design settled and written into the W5 section (LangGraph, one graph for create+evolve, validation ladder w/ paired baseline, spec-conformance-only rework, per-run credit metering). Implementation not started. |
