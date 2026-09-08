@@ -65,8 +65,17 @@ def test_different_seeds_give_different_paths():
 
 
 def test_evaluation_category_validated():
+    # Strict at generation time: the validate node rejects a bad category.
     with pytest.raises(ValueError, match="evaluation_category"):
+        execute_strategy_code(
+            BAD_CATEGORY_STRATEGY, 'BadCategoryStrategy', strict_category=True
+        )
+    # Tolerant by default so strategies saved before category validation
+    # existed still load (the category is coerced downstream).
+    assert (
         execute_strategy_code(BAD_CATEGORY_STRATEGY, 'BadCategoryStrategy')
+        is not None
+    )
 
 
 def test_default_evaluation_category_still_passes():

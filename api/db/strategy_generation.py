@@ -60,6 +60,51 @@ def update_run(run_id: str, **fields) -> None:
         db.release_connection(conn)
 
 
+def claim_run(run_id: str, expected_status: str, new_status: str) -> bool:
+    """Atomic status transition — the row is claimed only if it is still in
+    expected_status. Returns False when another caller won the race."""
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE STRATEGY_GENERATION_RUNS SET status = %s, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND status = %s",
+            (new_status, run_id, expected_status),
+        )
+        claimed = cursor.rowcount == 1
+        conn.commit()
+        return claimed
+    finally:
+        db.release_connection(conn)
+
+
+def fail_orphaned_runs() -> int:
+    """Startup reconcile: rows left 'running' by a dead process. Safe to call
+    before any run has started in this process — every 'running' row is then
+    an orphan (its daemon thread died with the old process)."""
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE STRATEGY_GENERATION_RUNS SET status = 'failed', "
+            "failure_summary = 'The server restarted while this run was in "
+            "progress. Start a new run — any draft was kept.', "
+            "updated_at = CURRENT_TIMESTAMP WHERE status = 'running' "
+            "RETURNING id",
+        )
+        rows = cursor.fetchall()
+        conn.commit()
+        for (orphan_id,) in rows:
+            try:
+                append_event(orphan_id, 'run_failed',
+                             {'summary': 'The server restarted while this run was in progress.'})
+            except Exception:
+                pass
+        return len(rows)
+    finally:
+        db.release_connection(conn)
+
+
 def get_run(run_id: str) -> dict | None:
     conn = db.get_connection()
     try:

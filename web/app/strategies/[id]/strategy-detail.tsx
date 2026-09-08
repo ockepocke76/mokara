@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -32,7 +32,13 @@ import { TestArtifact } from "../model";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Strategy = Record<string, any>;
 
-export function StrategyDetail({ strategy }: { strategy: Strategy }) {
+export function StrategyDetail({
+  strategy,
+  autoEvaluate = false,
+}: {
+  strategy: Strategy;
+  autoEvaluate?: boolean;
+}) {
   const router = useRouter();
   const [showCode, setShowCode] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -75,6 +81,17 @@ export function StrategyDetail({ strategy }: { strategy: Strategy }) {
       toast.error("Could not queue the evaluation.");
     }
   }
+
+  // The designer's "Save & evaluate" CTA lands here with ?evaluate=1.
+  const autoEvaluated = useRef(false);
+  useEffect(() => {
+    if (!autoEvaluate || autoEvaluated.current) return;
+    autoEvaluated.current = true;
+    void evaluate();
+    // Strip the query so a reload doesn't queue a second evaluation.
+    window.history.replaceState(null, "", `/strategies/${strategy.id}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoEvaluate]);
 
   async function remove() {
     const res = await fetch(`/api/bff/strategies/${strategy.id}`, {

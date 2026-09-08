@@ -18,7 +18,7 @@ import uuid
 
 from langgraph.types import Command
 
-from app.agents.graph import build_graph
+from app.agents.graph import GenerationNeedsDecision, build_graph
 from app.agents.llm import get_llm_call
 from db import strategy_generation as sg
 
@@ -70,6 +70,13 @@ def _execute(run_id: str, thread_id: str, graph_input) -> None:
     config = _config(thread_id)
     try:
         result = graph.invoke(graph_input, config)
+    except GenerationNeedsDecision as e:
+        # Not a failure: the resume couldn't be honored (e.g. revision budget
+        # spent) — hand the decision back to the user.
+        sg.update_run(run_id, status='needs_input')
+        sg.append_event(run_id, 'needs_input',
+                        {'kind': 'review', 'revisions_left': 0, 'note': str(e)})
+        return
     except Exception as e:
         logging.exception("strategy generation run %s crashed", run_id)
         _fail_run(run_id, thread_id, e)
@@ -149,6 +156,9 @@ def resume_run(run_id: str, payload: dict) -> None:
         raise KeyError(f"unknown run {run_id}")
     if run['status'] != 'needs_input':
         raise ValueError(f"run {run_id} is not waiting for input (status={run['status']})")
-    sg.update_run(run_id, status='running')
+    # Atomic claim: two concurrent resumes (second tab, retry) must not both
+    # launch graph threads on the same thread_id.
+    if not sg.claim_run(run_id, 'needs_input', 'running'):
+        raise ValueError(f"run {run_id} was just resumed by another request")
     sg.append_event(run_id, 'input_received', {'kind': payload.get('kind')})
     _launch(run_id, run['thread_id'], Command(resume=payload))

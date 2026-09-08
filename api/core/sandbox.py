@@ -33,6 +33,40 @@ _safe_globals['math'] = math
 _safe_globals['np'] = np
 _safe_globals['pd'] = pd
 
+# Modules strategy code may import. The import machinery resolves __import__
+# through __builtins__, so this is enforced by _sandbox_builtins below.
+_ALLOWED_IMPORTS = frozenset({'math', 'numpy', 'pandas', 'core.strategy'})
+
+
+def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level != 0 or name not in _ALLOWED_IMPORTS:
+        raise ImportError(
+            f"import of '{name}' is not allowed in the sandbox "
+            f"(allowed: {sorted(_ALLOWED_IMPORTS)})"
+        )
+    return __import__(name, globals, locals, fromlist, level)
+
+
+# CRITICAL: exec() injects the REAL builtins module into any globals dict that
+# lacks a '__builtins__' key. Pin it to a copy of RestrictedPython's
+# safe_builtins (plus the allowlisted __import__) so sandboxed code cannot
+# resolve open/eval/exec or arbitrary imports through the backdoor.
+_sandbox_builtins = dict(safe_builtins)
+_sandbox_builtins['__import__'] = _guarded_import
+# safe_builtins is minimal; strategy code legitimately uses these harmless
+# extras (they carry no filesystem/process/introspection reach).
+import builtins as _real_builtins
+for _name in (
+    'dict', 'list', 'set', 'frozenset', 'min', 'max', 'sum', 'any', 'all',
+    'enumerate', 'map', 'filter', 'reversed', 'iter', 'next',
+    'property', 'classmethod', 'staticmethod', 'super', 'object',
+):
+    _sandbox_builtins[_name] = getattr(_real_builtins, _name)
+_safe_globals['__builtins__'] = _sandbox_builtins
+# Class creation reads __name__ from globals to set __module__; the real
+# builtins module used to supply it ('builtins') before the pin above.
+_safe_globals['__name__'] = 'sandboxed_strategy'
+
 def _sandboxed_getattr(obj, name):
     """
     Custom `_getattr_` guard for RestrictedPython.
@@ -220,7 +254,7 @@ def _slugify_to_classname(text: str) -> str:
     text = re.sub(r'[^a-zA-Z0-9_ ]', '', text)
     return "".join(word.capitalize() for word in text.split())
 
-def _validate_strategy_class(strategy_class):
+def _validate_strategy_class(strategy_class, strict_category=False):
     """
     Validates a strategy class by attempting to instantiate it.
     Raises an exception if the class cannot be instantiated.
@@ -306,10 +340,20 @@ def _validate_strategy_class(strategy_class):
 
         # 7. Validate evaluation_category. The base class defaults to 'HYBRID',
         # so this only fails when a strategy overrides it with a bad value.
-        category = instance.evaluation_category()
+        # Strict mode is opt-in (agent-generated code): stored strategies keep
+        # the historical tolerant behavior (coerced to HYBRID downstream).
         valid_categories = {'WITHDRAWAL_ONLY', 'CONTRIBUTION_ONLY', 'HYBRID'}
-        if category not in valid_categories:
-            raise ValueError(f"evaluation_category() returned '{category}'. Valid options are: {valid_categories}")
+        try:
+            category = instance.evaluation_category()
+        except Exception as e:
+            if strict_category:
+                raise ValueError(f"evaluation_category() raised: {e}")
+            logging.warning(f"evaluation_category() raised ({e}); tolerating for stored strategy.")
+            category = None
+        if category is not None and category not in valid_categories:
+            if strict_category:
+                raise ValueError(f"evaluation_category() returned '{category}'. Valid options are: {valid_categories}")
+            logging.warning(f"evaluation_category() returned invalid '{category}'; will be coerced downstream.")
 
         logging.info(f"Dry run validation successful for {strategy_class.__name__}")
         return True
@@ -365,7 +409,7 @@ def _rewrite_inplace_assignments(code: str) -> str:
     return '\n'.join(rewritten_lines)
 
 
-def execute_strategy_code(code_string: str, strategy_class_name: str = "CustomStrategy"):
+def execute_strategy_code(code_string: str, strategy_class_name: str = "CustomStrategy", strict_category=False):
     """
     Safely compiles and executes a string of Python code to define a custom strategy class.
 
@@ -442,7 +486,7 @@ def execute_strategy_code(code_string: str, strategy_class_name: str = "CustomSt
 
         # 5. Perform a dry run validation to catch runtime errors like KeyErrors.
         # This is re-raised as an exception to be handled by the UI.
-        _validate_strategy_class(strategy_class)
+        _validate_strategy_class(strategy_class, strict_category=strict_category)
 
         logging.info(f"Successfully executed and validated sandboxed strategy class: {strategy_class_name}")
         # Return the user's strategy class. The calling code is responsible for wrapping it.

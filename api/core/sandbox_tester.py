@@ -11,6 +11,13 @@ import pandas as pd
 from typing import Dict, List, Any, Optional
 
 
+import threading
+
+# Reentrant so the agent graph can hold it across a candidate+baseline PAIR
+# of calls while each call also acquires it individually.
+SIM_RNG_LOCK = threading.RLock()
+
+
 def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str, Any],
                      seed: Optional[int] = None) -> Dict[str, Any]:
     """
@@ -94,15 +101,25 @@ def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str,
         
         # --- STEP 4: Run the REAL simulation engine ---
         # We pass the real inputs (returns_sources, mu, sigma) just like the main process.
-        if seed is not None:
-            np.random.seed(seed)
-        all_results = run_simulation(
-            params=sim_params,
-            returns_sources=sim_inputs['returns_sources'],
-            mu=sim_inputs['mu'],
-            sigma=sim_inputs['sigma'],
-            strategy_map={'custom': instantiated_strategy}
-        )
+        # SIM_RNG_LOCK serializes every RNG-dependent sandbox sim in this
+        # process (the engine draws from the process-global numpy RNG); when a
+        # seed is given, the prior RNG state is restored afterwards so
+        # unseeded callers keep real entropy.
+        with SIM_RNG_LOCK:
+            _saved_rng_state = np.random.get_state() if seed is not None else None
+            try:
+                if seed is not None:
+                    np.random.seed(seed)
+                all_results = run_simulation(
+                    params=sim_params,
+                    returns_sources=sim_inputs['returns_sources'],
+                    mu=sim_inputs['mu'],
+                    sigma=sim_inputs['sigma'],
+                    strategy_map={'custom': instantiated_strategy}
+                )
+            finally:
+                if _saved_rng_state is not None:
+                    np.random.set_state(_saved_rng_state)
         
         # Extract and format results
         random_paths = []

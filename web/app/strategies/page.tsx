@@ -46,6 +46,9 @@ export default async function StrategiesPage() {
   }
 
   const res = await apiFetch("/strategies");
+  if (!res.ok) {
+    throw new Error(`Failed to load strategies (${res.status})`);
+  }
   const body = await res.json();
   const strategies: StrategyRow[] = body.strategies ?? [];
   const activeRuns: ActiveRun[] = body.active_runs ?? [];

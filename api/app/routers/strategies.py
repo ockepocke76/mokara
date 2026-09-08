@@ -48,7 +48,7 @@ def _owned_strategy(strategy_id: int, user: dict) -> dict:
     from db.database import db
 
     strategy = db.get_custom_strategy(strategy_id)
-    if not strategy:
+    if not strategy or strategy.get('deleted_at'):
         raise HTTPException(status_code=404, detail="Strategy not found")
     if strategy['user_id'] != user['id'] and not strategy.get('is_public'):
         raise HTTPException(status_code=404, detail="Strategy not found")
@@ -106,12 +106,20 @@ def test_strategy(strategy_id: int, body: TestRun,
 
     user = _require_user(user)
     strategy = _owned_strategy(strategy_id, user)
+    if strategy['user_id'] != user['id']:
+        # Test flights execute the strategy's code synchronously in this
+        # process — owner-only, like evaluate. Clone a public strategy first.
+        raise HTTPException(status_code=403, detail="Only the owner can run a test flight")
     if not strategy.get('code'):
         raise HTTPException(status_code=422, detail="Strategy has no code to test")
+    # Never let strategy params override the smoke test's cost bounds.
+    safe_params = {k: v for k, v in (body.strategy_params or {}).items()
+                   if k not in ('num_years', 'num_simulations', 'num_random_paths',
+                                'num_sims')}
     result = run_sandbox_test(
         strategy['code'], strategy['class_name'],
         {'num_years': TEST_YEARS, 'num_simulations': TEST_PATHS,
-         'num_random_paths': TEST_PATHS, 'strategy_params': body.strategy_params})
+         'num_random_paths': TEST_PATHS, 'strategy_params': safe_params})
     if not result.get('success'):
         return {'success': False, 'error': result.get('error')}
     return {'success': True,
@@ -194,6 +202,10 @@ def generate_strategy(body: GenerateRequest,
     seed_strategy = None
     if body.seed_strategy_id is not None:
         seed = _owned_strategy(body.seed_strategy_id, user)
+        if seed['user_id'] != user['id']:
+            # Evolve saves back INTO the seed row — never someone else's.
+            raise HTTPException(status_code=403,
+                                detail="You can only evolve your own strategies — clone it from the leaderboard first")
         if not seed.get('code'):
             raise HTTPException(status_code=422, detail="Seed strategy has no code")
         seed_strategy = {'id': seed['id'], 'strategy_name': seed['strategy_name'],
@@ -201,10 +213,11 @@ def generate_strategy(body: GenerateRequest,
                          'ai_description': seed.get('ai_description'),
                          'code': seed['code']}
 
-    limiter.increment_ai_credits(user['id'])
     run_id = runner.start_run(user['id'], body.request,
                               strategy_name=body.strategy_name,
                               seed_strategy=seed_strategy)
+    # Charge only after the run exists — a start_run failure must not bill.
+    limiter.increment_ai_credits(user['id'])
     return {'run_id': run_id, 'credits': usage}
 
 

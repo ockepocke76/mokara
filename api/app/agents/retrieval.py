@@ -57,8 +57,15 @@ def public_examples(user_id: int, limit: int = 2) -> list[dict]:
                    COALESCE(cs.ai_description, cs.description, '') AS description,
                    se.excellence_score
             FROM CUSTOM_STRATEGIES cs
-            JOIN STRATEGY_EVALUATIONS se ON se.strategy_name = cs.strategy_name
-            WHERE cs.is_public = TRUE
+            JOIN LATERAL (
+                SELECT excellence_score
+                FROM STRATEGY_EVALUATIONS e
+                WHERE e.is_custom = TRUE AND e.custom_strategy_id = cs.id
+                ORDER BY e.excellence_score DESC NULLS LAST
+                LIMIT 1
+            ) se ON TRUE
+            WHERE cs.is_published_to_leaderboard = TRUE
+              AND cs.deleted_at IS NULL
               AND cs.validation_status = 'validated'
               AND cs.code IS NOT NULL
               AND cs.user_id != %s

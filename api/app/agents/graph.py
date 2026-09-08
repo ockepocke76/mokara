@@ -15,6 +15,7 @@ Hard rules from the design doc:
 """
 import json
 import logging
+import math
 import threading
 from typing import Any, Optional, TypedDict
 
@@ -27,7 +28,13 @@ from db import strategy_generation as sg
 
 MAX_ATTEMPTS = 3        # automatic rework rounds (validate/static/analyze failures)
 MAX_REVISIONS = 3       # user-requested "refine" rounds at review
-MAX_LLM_CALLS = 14      # per-run budget backstop (credits are metered per run)
+MAX_LLM_CALLS = 24      # per-run backstop; must cover clarify (1) + full
+                        # rework budget (3x3) + full revision budget (3x3)
+                        # on top of the base 5-call pass, with margin.
+
+class GenerationNeedsDecision(Exception):
+    """A resume request that cannot be honored; the run stays needs_input."""
+
 
 TEST_YEARS = 30
 TEST_PATHS = 10
@@ -170,6 +177,8 @@ def generate(state: GenState, config) -> dict:
     if attempt == 0:
         _emit(state, 'stage_started', stage='code')
     class_name = _slugify_to_classname(state['strategy_name']) or 'CustomStrategy'
+    if not class_name.isidentifier():
+        class_name = 'S' + class_name  # slugs can start with a digit ("4% Rule" -> "4Rule")
     examples_block = prompts.format_examples_block(_fetch_examples(state))
     text, calls = _llm(state, config, prompts.generate_prompt(
         state['spec'], state['plan'], examples_block, class_name,
@@ -192,7 +201,7 @@ def validate(state: GenState, config) -> dict:
 
     _emit(state, 'stage_started', stage='checks')
     try:
-        execute_strategy_code(state['code'], state['class_name'])
+        execute_strategy_code(state['code'], state['class_name'], strict_category=True)
     except Exception as e:
         _emit(state, 'stage_progress', stage='checks', check='sandbox',
               passed=False, message=str(e)[:500])
@@ -239,10 +248,11 @@ def _condense_paths(result: dict) -> list[dict]:
     return paths
 
 
-# The engine seeds the process-global numpy RNG; without this lock a
-# concurrent run reseeding between a candidate sim and its baseline sim would
-# silently break the same-seed pairing the baseline exists to provide.
-_test_sim_lock = threading.Lock()
+# The engine seeds the process-global numpy RNG; the shared reentrant lock
+# (owned by core.sandbox_tester so EVERY caller of run_sandbox_test takes it,
+# including the /test endpoint) is held here across the candidate+baseline
+# PAIR so nothing interleaves between the two same-seed sims.
+from core.sandbox_tester import SIM_RNG_LOCK as _test_sim_lock
 
 
 def test_sim(state: GenState, config) -> dict:
@@ -307,11 +317,19 @@ def _worst_path_trace(result: dict) -> list[dict]:
             worst_final, worst = final, yearly
     if not worst:
         return []
+    def _r(v):
+        # LLM strategies can produce NaN/inf (e.g. 0.0/0.0 on numpy floats);
+        # round() raises on those, and a crash here would bypass the rework
+        # loop entirely. Map non-finite to None instead.
+        try:
+            return round(v) if math.isfinite(v) else None
+        except TypeError:
+            return None
     return _sanitize([
-        {'year': y['Year'], 'net_worth': round(y['Net Worth']),
-         'withdrawal': round(y['Consumption Delivered']),
-         'sold': round(y['Amount Sold']), 'borrowed': round(y['Debt Change']),
-         'contributed': round(y['Amount Contributed'])}
+        {'year': y['Year'], 'net_worth': _r(y['Net Worth']),
+         'withdrawal': _r(y['Consumption Delivered']),
+         'sold': _r(y['Amount Sold']), 'borrowed': _r(y['Debt Change']),
+         'contributed': _r(y['Amount Contributed'])}
         for y in worst])
 
 
@@ -348,18 +366,26 @@ def rework(state: GenState, config) -> dict:
 
 
 def review(state: GenState, config) -> dict:
-    decision = interrupt({'kind': 'review',
-                          'revisions_left': MAX_REVISIONS - state.get('revisions', 0)})
+    revisions = state.get('revisions', 0)
+    revisions_left = max(0, MAX_REVISIONS - revisions)
+    decision = interrupt({'kind': 'review', 'revisions_left': revisions_left})
     action = (decision or {}).get('action', 'save')
     if action == 'discard':
         return {'outcome': 'discarded'}
     if action == 'refine' and (decision or {}).get('feedback'):
-        revisions = state.get('revisions', 0) + 1
-        if revisions > MAX_REVISIONS:
-            return {'outcome': 'save'}  # budget spent; fall through to save
+        if revisions_left <= 0:
+            # Budget spent: never silently save against the user's request.
+            # Surface it and treat the run as still needing a real decision —
+            # the client re-resumes with save or discard.
+            _emit(state, 'stage_progress', stage='decision',
+                  message='Revision budget exhausted — save the strategy as-is or discard it.')
+            raise GenerationNeedsDecision(
+                'Revision budget exhausted; resume with action save or discard.')
+        revisions += 1
         _emit(state, 'attempt_started', stage='code', attempt=revisions,
               max=MAX_REVISIONS, reason='you asked for changes')
         return {'revisions': revisions,
+                'attempts': 0,  # a fresh user-requested round gets the full automatic-rework budget
                 'rework_stage': 'review',
                 'rework_reason': 'user requested changes',
                 'rework_feedback': f"The user reviewed the working strategy and asked for changes:\n"

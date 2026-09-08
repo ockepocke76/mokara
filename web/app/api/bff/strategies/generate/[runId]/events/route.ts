@@ -4,6 +4,9 @@ import { apiFetch } from "@/lib/api";
 
 type Ctx = { params: Promise<{ runId: string }> };
 
+// SSE must never be statically cached or buffered.
+export const dynamic = "force-dynamic";
+
 /** SSE pass-through: pipe the API's event stream body to the browser. */
 export async function GET(req: NextRequest, { params }: Ctx) {
   const { runId } = await params;
@@ -20,6 +23,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }
