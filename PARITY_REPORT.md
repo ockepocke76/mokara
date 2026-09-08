@@ -43,7 +43,7 @@ motivation. Strategies (W5) is excluded by decision.
 | Run Simulation | ✅ parity (see D1) |
 | Results report | ✅ item-stream parity, 13 charts (see D2, D3) |
 | My Simulations | ✅ parity + preview expander (see D4; Compare dropped by decision) |
-| Leaderboard | ✅ parity (cards, score/100, sub-scores, radar, personas, info boxes) |
+| Leaderboard | ✅ full parity after 2026-09-08 redesign (category-scoped model: audience-framed category selector w/ Withdrawal default, cascading per-category profiles defaulting to the balanced variant, profile-weighted rankings + note, entries w/ source badges, description, medal-colored weight-marked radar, category+profile-filtered Component Scores grid, per-scenario table, Clone CTA w/ in-library state, usage badges, creator shown to logged-in only; Load More pagination; per-category Weighting Profiles w/ weight bars; Scenario Performance Heatmap; per-category How Evaluation Works; Try These CTAs) |
 | Assets | ✅ parity (see D5) |
 | Methodology | ✅ parity incl. flowchart |
 | Glossary / Disclaimer | ✅ verbatim (generated from the same engine functions) |
