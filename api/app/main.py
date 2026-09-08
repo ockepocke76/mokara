@@ -31,6 +31,17 @@ app.include_router(history_router.router)
 app.include_router(admin_router.router)
 
 
+@app.get("/")
+def root() -> dict:
+    """Friendly root: this is the API, not the app."""
+    return {
+        "service": "mokara-api",
+        "hint": "This is the backend API. The app runs on the web frontend (locally: http://localhost:3100).",
+        "openapi_docs": "/docs",
+        "health": "/healthz",
+    }
+
+
 @app.get("/healthz")
 def healthz() -> dict:
     """Liveness + DB reachability. No auth — used by infra health checks."""
