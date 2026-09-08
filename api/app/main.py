@@ -18,12 +18,32 @@ configure_logging()
 
 app = FastAPI(title="Mokara API", version="0.1.0")
 
+
+@app.on_event("startup")
+def _reconcile_orphaned_generation_runs() -> None:
+    # Runs still marked 'running' at startup belong to a dead process (the
+    # runner is a daemon thread) — fail them so their SSE streams terminate
+    # and users can retry, instead of spinning forever.
+    try:
+        from db import strategy_generation as sg
+
+        count = sg.fail_orphaned_runs()
+        if count:
+            logging.warning(
+                "Startup: marked %d orphaned strategy-generation run(s) as failed",
+                count,
+            )
+    except Exception:
+        logging.exception("Startup orphaned-run reconcile failed; continuing")
+
+
 from app.routers import admin as admin_router
 from app.routers import history as history_router
 from app.routers import home as home_router
 from app.routers import me as me_router
 from app.routers import public as public_router
 from app.routers import simulations as simulations_router
+from app.routers import strategies as strategies_router
 
 app.include_router(me_router.router)
 app.include_router(public_router.router)
@@ -31,6 +51,7 @@ app.include_router(simulations_router.router)
 app.include_router(history_router.router)
 app.include_router(admin_router.router)
 app.include_router(home_router.router)
+app.include_router(strategies_router.router)
 
 
 @app.get("/")

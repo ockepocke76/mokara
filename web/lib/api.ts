@@ -8,6 +8,7 @@
 import "server-only";
 
 import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
 
@@ -30,6 +31,25 @@ export async function apiFetch(
   }
 
   return fetch(`${API_URL}${path}`, { ...init, headers: h, cache: "no-store" });
+}
+
+/**
+ * BFF route boilerplate: forward to the API and relay the JSON response.
+ * Tolerates non-JSON upstream bodies (proxy 502 pages, API down) instead of
+ * turning them into unhandled 500s.
+ */
+export async function proxyJson(
+  path: string,
+  init: RequestInit = {},
+): Promise<NextResponse> {
+  const res = await apiFetch(path, init);
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    body = { detail: res.statusText || "Upstream error" };
+  }
+  return NextResponse.json(body, { status: res.status });
 }
 
 export type Viewer = {
