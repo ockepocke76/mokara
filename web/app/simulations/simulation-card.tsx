@@ -4,9 +4,20 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  SimPreviewCard,
+  type SimPreview,
+} from "@/components/sim-preview-card";
 import {
   Dialog,
   DialogContent,
@@ -40,8 +51,17 @@ export function SimulationCard({ item }: { item: HistoryItem }) {
   const router = useRouter();
   const [pdf, setPdf] = useState<PdfState>("idle");
   const [deleting, setDeleting] = useState(false);
+  const [preview, setPreview] = useState<SimPreview | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
 
   const hash = item.simulation_hash;
+
+  async function loadPreview() {
+    if (preview || previewFailed) return;
+    const res = await fetch(`/api/bff/simulations/${hash}/preview`);
+    if (res.ok) setPreview(await res.json());
+    else setPreviewFailed(true);
+  }
 
   async function generatePdf() {
     setPdf("working");
@@ -159,6 +179,28 @@ export function SimulationCard({ item }: { item: HistoryItem }) {
             </DialogContent>
           </Dialog>
         </div>
+
+        <Accordion type="single" collapsible className="w-full basis-full">
+          <AccordionItem value="preview" className="border-none">
+            <AccordionTrigger
+              className="rounded-md border px-3 py-1.5 text-xs"
+              onClick={() => void loadPreview()}
+            >
+              📊 Preview
+            </AccordionTrigger>
+            <AccordionContent className="pt-3">
+              {preview ? (
+                <SimPreviewCard preview={preview} />
+              ) : previewFailed ? (
+                <p className="text-sm text-muted-foreground">
+                  Preview unavailable — simulation results not yet generated.
+                </p>
+              ) : (
+                <Skeleton className="h-56 w-full" />
+              )}
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
       </CardContent>
     </Card>
   );

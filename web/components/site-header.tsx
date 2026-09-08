@@ -21,7 +21,7 @@ export async function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
       <div className="mx-auto flex h-[72px] w-full max-w-6xl items-center gap-6 px-4">
-        <Link href="/" className="flex items-center gap-3">
+        <Link href="/" className="flex min-w-0 flex-1 items-center gap-3 md:flex-none">
           <Image
             src="/mokara-mark.jpg"
             alt="Mokara logo"
@@ -30,8 +30,8 @@ export async function SiteHeader() {
             className="rounded-lg"
             priority
           />
-          <span className="flex flex-col leading-tight">
-            <span className="text-2xl font-semibold tracking-tight">
+          <span className="hidden min-w-0 flex-col leading-tight min-[480px]:flex">
+            <span className="truncate text-xl font-semibold tracking-tight sm:text-2xl">
               mokara.ai
             </span>
             <span className="hidden text-xs text-muted-foreground sm:block">
@@ -50,7 +50,7 @@ export async function SiteHeader() {
             </Link>
           ))}
         </nav>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {viewer?.authenticated ? (
             <UserMenu
               name={viewer.name ?? viewer.email ?? "Account"}

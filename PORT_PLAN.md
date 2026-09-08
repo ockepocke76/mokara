@@ -398,6 +398,14 @@ functionality we had in Streamlit"* for every page except Strategies (W5).
 Compare tab explicitly dropped. Anything else found missing during the page
 passes gets added here, not silently skipped.
 
+#### WV.1b — Functional-parity sweep ✅ (2026-09-08)
+
+Full page-by-page audit of old code+UI vs new; every functional gap closed
+(landing/home fully rebuilt from pages/0_Dashboard.py via GET /home,
+simulation preview cards w/ mini charts, interactive Assets explorer,
+Methodology mermaid flowchart, About completed). Remaining deliberate
+differences + motivations documented in **PARITY_REPORT.md**.
+
 #### WV.2 — Exit checks
 - [ ] Side-by-side screenshot review vs the old app, page by page (Oscar
       eyeballs — visual verdicts are his).
