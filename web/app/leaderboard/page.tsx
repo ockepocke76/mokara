@@ -1,51 +1,49 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getViewer } from "@/lib/api";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Button } from "@/components/ui/button";
 import { InfoBox, WarningBox } from "@/components/info-box";
-import { Card, CardContent } from "@/components/ui/card";
-import { EntryCard, categoryLabel, type Entry } from "./entry-card";
+import { Markdown } from "@/components/markdown";
 import { LeaderboardFilters } from "./filters";
+import { EntryList } from "./entry-list";
+import { ScenarioHeatmap } from "./heatmap";
+import { WeightingProfilesSection } from "./profiles-section";
+import type { Board, LeaderboardMeta } from "./types";
 
 export const metadata: Metadata = { title: "Leaderboard" };
-
-type Profile = {
-  key: string;
-  name: string;
-  description?: string | null;
-  emoji?: string | null;
-  category_label?: string | null;
-  applicable_categories?: string[] | null;
-};
-
-type Meta = { categories: string[]; profiles: Profile[] };
 
 export default async function LeaderboardPage({
   searchParams,
 }: {
   searchParams: Promise<{ category?: string; profile?: string }>;
 }) {
-  const { category, profile = "balanced" } = await searchParams;
+  const params = await searchParams;
 
-  const qs = new URLSearchParams({ profile, limit: "50" });
-  if (category) qs.set("category", category);
-
-  const [metaRes, boardRes] = await Promise.all([
+  const [viewer, metaRes] = await Promise.all([
+    getViewer(),
     apiFetch("/leaderboard/meta"),
-    apiFetch(`/leaderboard?${qs}`),
   ]);
-  const meta: Meta = await metaRes.json();
-  const board: { entries: Entry[] } = await boardRes.json();
+  const meta: LeaderboardMeta = await metaRes.json();
 
-  const profileName =
-    meta.profiles.find((p) => p.key === profile)?.name ??
-    "Balanced";
-  const visibleProfiles = category
-    ? meta.profiles.filter(
-        (p) =>
-          !p.applicable_categories ||
-          p.applicable_categories.includes(category),
-      )
-    : meta.profiles;
+  const category = meta.categories.some((c) => c.key === params.category)
+    ? params.category!
+    : meta.default_category;
+
+  const qs = new URLSearchParams({ category });
+  if (params.profile) qs.set("profile", params.profile);
+  const boardRes = await apiFetch(`/leaderboard?${qs}`);
+  const board: Board = await boardRes.json();
+
+  const profiles = meta.profiles_by_category[category] ?? [];
+  const categoryInfo = meta.categories.find((c) => c.key === category)!;
+  const evalInfo = meta.evaluation_info[category];
 
   return (
     <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-10">
@@ -70,7 +68,7 @@ export default async function LeaderboardPage({
           effective aggregation — exactly what this leaderboard provides.
         </p>
         <p className="mt-2 text-xs">
-          📖 Based on{" "}
+          📚 Based on{" "}
           <a
             href="https://en.wikipedia.org/wiki/The_Wisdom_of_Crowds"
             className="underline"
@@ -88,52 +86,98 @@ export default async function LeaderboardPage({
         taxation that would apply under capital gains regimes.
       </WarningBox>
 
-      <div className="mb-6">
-        <LeaderboardFilters
-          categories={meta.categories}
-          profiles={meta.profiles}
-          category={category}
-          profile={profile}
-        />
+      <LeaderboardFilters
+        categories={meta.categories}
+        profiles={profiles}
+        category={category}
+        profile={board.profile}
+      />
+
+      <div className="my-4">
+        <p className="text-sm text-muted-foreground">📊 Total Strategies</p>
+        <p className="text-3xl font-bold tabular-nums">{board.total}</p>
       </div>
 
-      {board.entries.length === 0 ? (
-        <p className="py-16 text-center text-muted-foreground">
-          No evaluated strategies yet
-          {category ? ` in ${categoryLabel(category)}` : ""}.
-        </p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {board.entries.map((e) => (
-            <EntryCard
-              key={e.id}
-              entry={e}
-              profile={profile}
-              profileName={profileName}
-            />
-          ))}
-        </div>
+      <hr className="mb-4" />
+      <h2 className="mb-3 text-xl font-semibold">🏆 Rankings</h2>
+
+      {!board.profile_is_balanced && (
+        <InfoBox className="mb-3">
+          📊 Rankings calculated with <strong>{board.profile_name}</strong>{" "}
+          weights
+        </InfoBox>
       )}
 
-      <section className="mt-10">
-        <h2 className="mb-1 text-xl font-semibold">⚖️ Weighting Profiles</h2>
-        <p className="mb-4 text-sm text-muted-foreground">
-          Choose a weighting profile above to see how strategies rank for
-          different investor personas. Each profile emphasizes different
-          performance metrics to match specific goals and risk preferences.
-        </p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {visibleProfiles.map((p) => (
-            <Card key={p.key}>
-              <CardContent className="py-3 text-sm">
-                <strong>
-                  {p.emoji ? `${p.emoji} ` : ""}
-                  {p.name}
-                </strong>
-                {p.description ? ` — ${p.description}` : ""}
-              </CardContent>
-            </Card>
-          ))}
+      {board.entries.length === 0 ? (
+        <InfoBox>No strategies have been evaluated yet. Check back soon!</InfoBox>
+      ) : (
+        <EntryList
+          entries={board.entries}
+          category={category}
+          profile={board.profile}
+          profileName={board.profile_name}
+          loggedIn={viewer.authenticated}
+        />
+      )}
+
+      <hr className="my-8" />
+      <WeightingProfilesSection
+        profiles={profiles}
+        categoryLabel={categoryInfo.label}
+      />
+
+      <hr className="my-8" />
+      <Accordion type="single" collapsible>
+        <AccordionItem value="heatmap" className="rounded-lg border bg-card px-4">
+          <AccordionTrigger className="text-base font-semibold">
+            🎯 Scenario Performance Heatmap
+          </AccordionTrigger>
+          <AccordionContent>
+            <ScenarioHeatmap entries={board.entries} />
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+
+      {evalInfo && (
+        <>
+          <hr className="my-8" />
+          <Accordion type="single" collapsible>
+            <AccordionItem value="how" className="rounded-lg border bg-card px-4">
+              <AccordionTrigger className="text-base font-semibold">
+                ℹ️ How Evaluation Works ({categoryInfo.label})
+              </AccordionTrigger>
+              <AccordionContent>
+                <h3 className="mb-1 font-semibold">Evaluation Process</h3>
+                <p className="mb-2 text-sm">
+                  Strategies on the leaderboard are stress-tested across{" "}
+                  <strong>8 standardized market scenarios</strong> to evaluate
+                  robustness and performance.
+                </p>
+                <Markdown>{evalInfo.settings_markdown}</Markdown>
+                <h3 className="mb-1 mt-4 font-semibold">Market Scenarios</h3>
+                <Markdown>{evalInfo.scenarios_markdown}</Markdown>
+                <h3 className="mb-1 mt-4 font-semibold">Score Components</h3>
+                <Markdown>{evalInfo.score_components_markdown}</Markdown>
+                <h3 className="mb-1 mt-4 font-semibold">
+                  🧠 Wisdom of the Crowd
+                </h3>
+                <Markdown>{evalInfo.wisdom_markdown}</Markdown>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </>
+      )}
+
+      <hr className="my-8" />
+      <section>
+        <h2 className="mb-3 text-xl font-semibold">🚀 Try These Strategies</h2>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Button asChild variant="secondary">
+            <Link href="/simulate">🚀 Run a Simulation</Link>
+          </Button>
+          <Button asChild variant="secondary">
+            <Link href="/strategies">🎨 Design Custom Strategy</Link>
+          </Button>
         </div>
       </section>
     </main>

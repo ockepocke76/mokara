@@ -1,4 +1,4 @@
-"""Tests for the read-only public endpoints."""
+"""Tests for the read-only public endpoints (category-scoped leaderboard)."""
 import os
 
 from fastapi.testclient import TestClient
@@ -11,40 +11,66 @@ client = TestClient(app)
 SECRET = {"X-Internal-Secret": os.environ["INTERNAL_API_SECRET"]}
 
 
-def test_leaderboard_meta():
+def test_leaderboard_meta_is_category_scoped():
     r = client.get("/leaderboard/meta", headers=SECRET)
     assert r.status_code == 200
     body = r.json()
-    assert "WITHDRAWAL_ONLY" in body["categories"]
-    keys = {p["key"] for p in body["profiles"]}
-    assert "conservative" in keys
-    assert all(p["name"] for p in body["profiles"])
+    keys = [c["key"] for c in body["categories"]]
+    assert keys == ["CONTRIBUTION_ONLY", "WITHDRAWAL_ONLY", "HYBRID"]
+    assert body["default_category"] == "WITHDRAWAL_ONLY"
+    # Profiles cascade per category
+    wd = body["profiles_by_category"]["WITHDRAWAL_ONLY"]
+    assert any(p["key"] == "conservative" for p in wd)
+    assert not any(p["key"] == "aggressive_growth" for p in wd)
+    acc = body["profiles_by_category"]["CONTRIBUTION_ONLY"]
+    assert any(p["key"] == "aggressive_growth" for p in acc)
+    # Every profile ships weights with metric names
+    assert all(p["weights"] and p["weights"][0]["name"] for p in wd)
+    # Per-category evaluation docs
+    assert "score_components_markdown" in body["evaluation_info"]["HYBRID"]
 
 
-def test_leaderboard_entries_shape_and_ranking():
-    r = client.get("/leaderboard?limit=10", headers=SECRET)
-    assert r.status_code == 200
-    entries = r.json()["entries"]
-    scores = [e["score"] or 0 for e in entries]
-    assert scores == sorted(scores, reverse=True)
-    for i, e in enumerate(entries, start=1):
-        assert e["rank"] == i
-        assert "strategy_name" in e and "scores" in e
-
-
-def test_leaderboard_category_filter():
+def test_leaderboard_defaults_profile_to_category_balanced():
     r = client.get("/leaderboard?category=WITHDRAWAL_ONLY", headers=SECRET)
     assert r.status_code == 200
-    for e in r.json()["entries"]:
+    body = r.json()
+    assert body["profile"] == "balanced_withdrawal"
+    assert body["profile_is_balanced"] is True
+    scores = [e["score"] or 0 for e in body["entries"]]
+    assert scores == sorted(scores, reverse=True)
+    for i, e in enumerate(body["entries"], start=1):
+        assert e["rank"] == i
         assert e["category"] == "WITHDRAWAL_ONLY"
+        assert "metric_grid" in e and "scenario_results" in e and "badge" in e
+
+
+def test_leaderboard_rejects_unknown_category():
+    assert (
+        client.get("/leaderboard?category=NOPE", headers=SECRET).status_code
+        == 422
+    )
+
+
+def test_leaderboard_cross_category_profile_falls_back():
+    # A profile from another category is replaced by the category's balanced one
+    r = client.get(
+        "/leaderboard?category=WITHDRAWAL_ONLY&profile=aggressive_growth",
+        headers=SECRET,
+    )
+    assert r.status_code == 200
+    assert r.json()["profile"] == "balanced_withdrawal"
+
+
+def test_leaderboard_clone_requires_auth():
+    r = client.post("/leaderboard/999999/clone", headers=SECRET)
+    assert r.status_code == 401
 
 
 def test_community_stats_and_beta_status():
     r = client.get("/community-stats", headers=SECRET)
     assert r.status_code == 200
-    body = r.json()
     for key in ("total_simulations", "total_strategies", "top_strategies"):
-        assert key in body
+        assert key in r.json()
 
     r = client.get("/beta-status", headers=SECRET)
     assert r.status_code == 200
