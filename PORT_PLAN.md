@@ -277,9 +277,14 @@ Checklist (built on branch `feature/w5-agentic-strategies`, worktree
       `?seed=<id>`.
 - [x] Tiered models per node — env-configured, fake provider for dev.
 
-Open after W5 (small): live validation with a real GEMINI_API_KEY (none on
-this machine — canned provider verified the full flow end-to-end in the
-browser instead); evolve code shown as full block, not a diff view;
+Open after W5 (small): ~~live validation with a real GEMINI_API_KEY~~ DONE
+2026-09-10: key added to api/.env, full designer flow run live end-to-end
+(spec → blueprint → code → checks → paired test flight → review → save →
+full evaluation via worker, Excellence 45.13). Gotcha: new API keys can't
+call gemini-2.5-pro (404 "no longer available to new users") — strong tier
+overridden via GEMINI_MODEL_STRONG=gemini-3.1-pro-preview (documented in
+.env.example); fast tier gemini-2.5-flash still works.
+Still open: evolve code shown as full block, not a diff view;
 pre-run credit count on the Generate button (429 is handled, count isn't
 shown); evaluation charts on the detail page (evaluate queues + leaderboard
 shows results, per-strategy chart panel not built).
