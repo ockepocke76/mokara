@@ -17,7 +17,7 @@ export default function DocsLayout({
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-1 gap-10 px-4 py-10">
       <aside className="hidden w-44 shrink-0 md:block">
-        <nav className="sticky top-20 flex flex-col gap-2 text-sm">
+        <nav className="sticky top-10 flex flex-col gap-2 text-sm">
           {DOCS_NAV.map((item) => (
             <Link
               key={item.href}
