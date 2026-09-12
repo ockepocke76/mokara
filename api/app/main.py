@@ -20,6 +20,30 @@ app = FastAPI(title="Mokara API", version="0.1.0")
 
 
 @app.on_event("startup")
+def _sync_builtin_strategies() -> None:
+    # Idempotent: skips strategies whose code is unchanged. The old app ran
+    # this from an admin button; without it the built-ins never exist as
+    # CUSTOM_STRATEGIES rows, so they can't be listed, viewed, or cloned.
+    try:
+        from db.database import db
+        from services.builtin_sync import sync_all_builtins
+
+        git_service = None
+        try:
+            from services.git_service import get_git_service
+
+            git_service = get_git_service()
+        except Exception:
+            logging.info("Builtin sync: no git service configured, DB-only sync")
+        results = sync_all_builtins(git_service, db)
+        changed = [r for r in results if r[0] not in ('skipped',)]
+        if changed:
+            logging.info("Builtin strategy sync: %s", changed)
+    except Exception:
+        logging.exception("Builtin strategy sync failed; continuing")
+
+
+@app.on_event("startup")
 def _reconcile_orphaned_generation_runs() -> None:
     # Runs still marked 'running' at startup belong to a dead process (the
     # runner is a daemon thread) — fail them so their SSE streams terminate

@@ -152,3 +152,107 @@ def test_sse_replays_persisted_events():
                 break
     assert seen[0] == "run_started"
     assert "run_completed" in seen
+
+
+# --- Detail-page extension endpoints (history/publish/clone/flowchart) -----
+
+def test_list_includes_builtins():
+    headers = _auth()
+    r = client.get("/strategies", headers=headers)
+    assert r.status_code == 200
+    builtins = r.json()["builtins"]
+    names = {b["strategy_name"] for b in builtins}
+    assert {"Trinity", "Buy Borrow Die", "Get Rich Stay Rich"} <= names
+    assert all(b["user_id"] == 0 for b in builtins)
+
+
+def _builtin_id(name="Trinity") -> int:
+    headers = _auth()
+    r = client.get("/strategies", headers=headers)
+    return next(b["id"] for b in r.json()["builtins"]
+                if b["strategy_name"] == name)
+
+
+def test_builtin_detail_flowchart_and_clone():
+    headers = _auth()
+    builtin_id = _builtin_id()
+
+    r = client.get(f"/strategies/{builtin_id}", headers=headers)
+    assert r.status_code == 200
+    detail = r.json()
+    assert detail["is_builtin"] is True and detail["is_owner"] is False
+    assert len(detail["description"] or "") > 100  # rich write-up, not the sync one-liner
+
+    r = client.get(f"/strategies/{builtin_id}/flowchart", headers=headers)
+    assert r.status_code == 200
+    assert "flowchart" in (r.json()["mermaid"] or "")
+
+    # Clone lands in the caller's library; a second clone is a no-op
+    r = client.post(f"/strategies/{builtin_id}/clone", headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cloned"] is True and body["strategy_id"]
+    r = client.post(f"/strategies/{builtin_id}/clone", headers=headers)
+    assert r.json() == {"cloned": False, "in_library": True}
+
+    # Custom strategies have no flowchart
+    r = client.get(f"/strategies/{body['strategy_id']}/flowchart", headers=headers)
+    assert r.status_code == 200 and r.json()["mermaid"] is None
+
+
+def test_publish_requires_evaluation():
+    headers = _auth()
+    _, strategy_id = _generate_and_save(headers)
+
+    r = client.post(f"/strategies/{strategy_id}/publish", headers=headers)
+    assert r.status_code == 409
+    assert "evaluated" in r.json()["detail"]
+
+    # Another user can neither publish nor unpublish it
+    other = _auth()
+    assert client.post(f"/strategies/{strategy_id}/publish",
+                       headers=other).status_code == 404
+    r = client.post(f"/strategies/{strategy_id}/unpublish", headers=headers)
+    assert r.status_code == 200 and r.json() == {"published": False}
+
+
+def test_evaluation_endpoint_shape():
+    headers = _auth()
+    _, strategy_id = _generate_and_save(headers)
+    r = client.get(f"/strategies/{strategy_id}/evaluation", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["evaluation"] is None
+    assert body["in_progress"] is False
+
+    # Queue an evaluation -> the endpoint reports it in progress
+    r = client.post(f"/strategies/{strategy_id}/evaluate", headers=headers)
+    assert r.status_code == 200
+    r = client.get(f"/strategies/{strategy_id}/evaluation", headers=headers)
+    assert r.json()["in_progress"] is True
+
+
+def test_history_records_evolution():
+    headers = _auth()
+    _, strategy_id = _generate_and_save(headers)
+
+    r = client.get(f"/strategies/{strategy_id}/history", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["history"] == []
+    assert "withdraw" in (body["genesis"] or "").lower()
+
+    # Evolve -> the request lands in the DB-native timeline
+    r = client.post("/strategies/generate", headers=headers,
+                    json={"request": "make the withdrawal rate 5%",
+                          "seed_strategy_id": strategy_id})
+    run_id = r.json()["run_id"]
+    r = client.post(f"/strategies/generate/{run_id}/resume", headers=headers,
+                    json={"kind": "review", "action": "save"})
+    assert r.status_code == 200
+
+    r = client.get(f"/strategies/{strategy_id}/history", headers=headers)
+    history = r.json()["history"]
+    assert len(history) == 1
+    assert history[0]["request"] == "make the withdrawal rate 5%"
+    assert history[0]["timestamp"]

@@ -55,6 +55,16 @@ def _owned_strategy(strategy_id: int, user: dict) -> dict:
     return strategy
 
 
+def _builtin_key(strategy: dict) -> Optional[str]:
+    """'trinity'|'bbd'|'grsr' for built-in rows (user_id=0), else None."""
+    if strategy.get('user_id') != 0:
+        return None
+    from services.builtin_sync import BUILTIN_STRATEGIES
+
+    return next((b['key'] for b in BUILTIN_STRATEGIES
+                 if b['name'] == strategy['strategy_name']), None)
+
+
 # --- CRUD ------------------------------------------------------------------
 
 @router.get("/strategies")
@@ -69,16 +79,88 @@ def list_strategies(user: Optional[dict] = Depends(get_current_user)) -> dict:
                    if r['status'] in ('running', 'needs_input')]
     return {
         'strategies': [_serialize_strategy(r, include_code=False) for r in rows],
+        'builtins': [_stringify_dates(r) for r in _builtin_list_rows()],
         'active_runs': active_runs,
     }
 
 
+def _builtin_list_rows() -> list:
+    """Built-in strategies (user_id=0, synced at startup) with their latest
+    evaluation — get_user_custom_strategies deliberately excludes them."""
+    from db.database import db
+    from psycopg2 import extras
+
+    conn = db.get_connection()
+    try:
+        cursor = db._get_cursor(conn, cursor_factory=extras.RealDictCursor)
+        cursor.execute("""
+            SELECT c.id, c.user_id, c.strategy_name, c.description,
+                   c.ai_description, c.validation_status, c.updated_at,
+                   e.excellence_score, (e.id IS NOT NULL) AS has_evaluation
+            FROM CUSTOM_STRATEGIES c
+            LEFT JOIN LATERAL (
+                SELECT id, excellence_score FROM STRATEGY_EVALUATIONS e
+                WHERE e.git_commit_sha = c.git_commit_sha
+                ORDER BY e.created_at DESC LIMIT 1
+            ) e ON TRUE
+            WHERE c.user_id = 0 AND c.deleted_at IS NULL
+            ORDER BY c.strategy_name
+        """)
+        rows = [dict(r) for r in cursor.fetchall()]
+    except Exception:
+        logging.exception("builtin list query failed")
+        return []
+    finally:
+        db.release_connection(conn)
+
+    # Built-in evaluations predate the SHA sync — they live on the
+    # leaderboard under the same name; fill in what the SHA join missed.
+    missing = [r for r in rows if not r.get('has_evaluation')]
+    if missing:
+        try:
+            scores = {e['strategy_name']: e.get('excellence_score')
+                      for e in (db.get_leaderboard(limit=100) or [])}
+            for row in missing:
+                score = scores.get(row['strategy_name'])
+                if score is not None:
+                    row['excellence_score'] = score
+                    row['has_evaluation'] = True
+        except Exception:
+            logging.exception("builtin leaderboard score fallback failed")
+    return rows
+
+
 @router.get("/strategies/{strategy_id}")
 def get_strategy(strategy_id: int, user: Optional[dict] = Depends(get_current_user)) -> dict:
+    from db.database import db
+
     user = _require_user(user)
     strategy = _owned_strategy(strategy_id, user)
     out = _serialize_strategy(strategy)
     out['is_owner'] = strategy['user_id'] == user['id']
+    out['is_builtin'] = strategy['user_id'] == 0
+    builtin_key = _builtin_key(strategy)
+    if builtin_key:
+        # The sync stores a one-liner in BOTH description columns; show the
+        # full write-up (old Info tab).
+        from utils.strategy_utils import get_strategy_description
+
+        out['description'] = get_strategy_description(builtin_key)
+        out['ai_description'] = out['description']
+    out['usage_fork_count'] = strategy.get('fork_count') or 0
+    conn = db.get_connection()
+    try:
+        cursor = db._get_cursor(conn)
+        cursor.execute(
+            "SELECT COUNT(*) FROM CUSTOM_STRATEGIES"
+            " WHERE parent_strategy_id = %s AND deleted_at IS NULL",
+            (strategy_id,))
+        out['usage_clone_count'] = cursor.fetchone()[0]
+    except Exception:
+        logging.exception("clone count query failed")
+        out['usage_clone_count'] = 0
+    finally:
+        db.release_connection(conn)
     return out
 
 
@@ -155,6 +237,27 @@ def evaluate_strategy(strategy_id: int,
     return {'job_id': job_id}
 
 
+def _evaluation_in_progress(strategy_id: int) -> bool:
+    """A pending/processing evaluation job for this strategy (old Info tab)."""
+    from db.database import db
+    from services.background_manager import BackgroundManager
+
+    for status in ('PENDING', 'PROCESSING'):
+        try:
+            jobs = BackgroundManager.list_jobs(
+                job_type='strategy_evaluation', status=status, limit=50) or []
+        except Exception:
+            logging.exception("evaluation job poll failed")
+            return False
+        for job in jobs:
+            payload = job.get('payload')
+            if isinstance(payload, str):
+                payload = db.deserialize_json_column(payload) or {}
+            if (payload or {}).get('custom_strategy_id') == strategy_id:
+                return True
+    return False
+
+
 @router.get("/strategies/{strategy_id}/evaluation")
 def strategy_evaluation(strategy_id: int,
                         user: Optional[dict] = Depends(get_current_user)) -> dict:
@@ -165,12 +268,131 @@ def strategy_evaluation(strategy_id: int,
     evaluation = db.get_strategy_evaluation(
         strategy.get('git_commit_sha'),
         lookup_fallback_sha=strategy.get('clone_source_commit_sha'))
+    if not evaluation and _builtin_key(strategy):
+        # Built-in evaluations predate the SHA sync — they live on the
+        # leaderboard under the same name (old Info tab did the same).
+        evaluation = next(
+            (dict(e) for e in (db.get_leaderboard(limit=100) or [])
+             if e.get('strategy_name') == strategy['strategy_name']), None)
+    in_progress = _evaluation_in_progress(strategy_id)
     if not evaluation:
-        return {'evaluation': None}
+        return {'evaluation': None, 'in_progress': in_progress}
     out = _stringify_dates(dict(evaluation))
     if out.get('scenario_results_json'):
         out['scenario_results'] = db.deserialize_json_column(out.pop('scenario_results_json'))
-    return {'evaluation': out}
+
+    radar = None
+    try:
+        from reporting.radar_chart_data import create_radar_chart
+
+        fig = create_radar_chart(
+            dict(evaluation), metric_source='METRIC_WEIGHTS',
+            strategy_name=strategy['strategy_name'],
+            excellence_score=evaluation.get('excellence_score'), height=340)
+        if fig is not None:
+            radar = json.loads(fig.to_json())
+    except Exception:
+        logging.exception("evaluation radar failed")
+
+    metric_grid = []
+    try:
+        from app.routers.public import _metric_grid
+
+        metric_grid = _metric_grid(dict(evaluation),
+                                   evaluation.get('strategy_category'), {})
+    except Exception:
+        logging.exception("evaluation metric grid failed")
+
+    return {'evaluation': out, 'in_progress': in_progress,
+            'radar': radar, 'metric_grid': metric_grid}
+
+
+# --- Evolution history, publish, clone, flowchart (old Info/History tabs) --
+
+@router.get("/strategies/{strategy_id}/history")
+def strategy_history(strategy_id: int,
+                     user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """Evolution timeline from Git metadata + the genesis request."""
+    from db.database import db
+
+    user = _require_user(user)
+    strategy = _owned_strategy(strategy_id, user)
+    history = db.get_strategy_evolution_history(strategy_id) or []
+    return {
+        'history': [_stringify_dates(dict(h)) for h in history],
+        'genesis': strategy.get('description'),
+        'created_at': str(strategy.get('created_at') or '') or None,
+    }
+
+
+@router.post("/strategies/{strategy_id}/publish")
+def publish_strategy(strategy_id: int,
+                     user: Optional[dict] = Depends(get_current_user)) -> dict:
+    from db.database import db
+
+    user = _require_user(user)
+    strategy = _owned_strategy(strategy_id, user)
+    if strategy['user_id'] != user['id']:
+        raise HTTPException(status_code=403, detail="Only the owner can publish")
+    # Old rule: no unevaluated strategies on the leaderboard.
+    evaluation = db.get_strategy_evaluation(
+        strategy.get('git_commit_sha'),
+        lookup_fallback_sha=strategy.get('clone_source_commit_sha'))
+    if not evaluation or not evaluation.get('excellence_score'):
+        raise HTTPException(
+            status_code=409,
+            detail="Strategy must be evaluated before publishing to the leaderboard")
+    if not db.set_strategy_published_status(strategy_id, user['id'], True):
+        raise HTTPException(status_code=500, detail="Failed to publish strategy")
+    return {'published': True}
+
+
+@router.post("/strategies/{strategy_id}/unpublish")
+def unpublish_strategy(strategy_id: int,
+                       user: Optional[dict] = Depends(get_current_user)) -> dict:
+    from db.database import db
+
+    user = _require_user(user)
+    strategy = _owned_strategy(strategy_id, user)
+    if strategy['user_id'] != user['id']:
+        raise HTTPException(status_code=403, detail="Only the owner can unpublish")
+    if not db.set_strategy_published_status(strategy_id, user['id'], False):
+        raise HTTPException(status_code=500, detail="Failed to unpublish strategy")
+    return {'published': False}
+
+
+@router.post("/strategies/{strategy_id}/clone")
+def clone_strategy_endpoint(strategy_id: int,
+                            user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """Clone a visible strategy (built-in or public) into the viewer's library."""
+    from db.database import db
+    from services.strategy_clone import clone_strategy, has_user_cloned_strategy
+
+    user = _require_user(user)
+    _owned_strategy(strategy_id, user)
+    if has_user_cloned_strategy(user['id'], strategy_id, db):
+        return {'cloned': False, 'in_library': True}
+    result = clone_strategy(strategy_id=strategy_id, user_id=user['id'], db=db)
+    if not result.get('success'):
+        raise HTTPException(status_code=409,
+                            detail=result.get('error') or "Clone failed")
+    return {'cloned': True, 'in_library': True,
+            'strategy_id': result.get('strategy_id')}
+
+
+@router.get("/strategies/{strategy_id}/flowchart")
+def strategy_flowchart(strategy_id: int, theme: str = 'light',
+                       user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """Decision flowchart (mermaid) — built-in strategies only."""
+    user = _require_user(user)
+    strategy = _owned_strategy(strategy_id, user)
+    key = _builtin_key(strategy)
+    if not key:
+        return {'mermaid': None}
+    from reporting.strategy_flowcharts import get_strategy_flowchart
+
+    theme = theme if theme in ('light', 'dark') else 'light'
+    return {'mermaid': get_strategy_flowchart(key, theme=theme)}
 
 
 # --- Agentic generation ----------------------------------------------------
