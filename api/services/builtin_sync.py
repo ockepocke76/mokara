@@ -86,13 +86,14 @@ def sync_builtin_strategy(
 ) -> Tuple[str, str, str]:
     """
     Sync a single built-in strategy to Git and database.
-    
+
     Args:
         strategy_info: Dict with 'key', 'name', 'class', 'description'
-        git_service: GitHubService instance
+        git_service: GitHubService instance, or None to sync DB-only with a
+            local content-hash SHA (mokara runs without the GitHub repo)
         db: Database instance
         force_update: Force update even if code matches
-    
+
     Returns:
         Tuple of (status, strategy_name, message)
         status: 'success' | 'updated' | 'skipped' | 'error'
@@ -124,40 +125,46 @@ def sync_builtin_strategy(
             if existing_code == code:
                 return ('skipped', strategy_name, f'Code unchanged (SHA: {existing_sha[:7] if existing_sha else "N/A"})')
         
-        # 4. Create/update Git branch
-        branch_name = f"strategies/builtin/{strategy_key}"
-        
-        try:
-            # Branch from main instead of empty-template
-            branch_info = git_service.create_branch(branch_name, from_branch='main')
-            if branch_info.get('already_exists'):
-                logging.info(f"Branch exists: {branch_name}")
-            else:
-                logging.info(f"Created branch: {branch_name}")
-        except Exception as e:
-            logging.warning(f"Branch creation warning: {e}")
-            # Branch might already exist, continue
-        
-        # 5. Commit strategy.py to Git
-        commit_sha = git_service.commit_file(
-            branch_name=branch_name,
-            file_path='strategy.py',
-            content=code,
-            message=f"Sync built-in strategy: {strategy_name}"
-        )
-        logging.info(f"Committed strategy.py: {commit_sha[:7]}")
-        
-        # 6. Create metadata.json
-        metadata_content = create_metadata_json(strategy_info, commit_sha)
-        
-        # 7. Commit metadata.json
-        git_service.commit_file(
-            branch_name=branch_name,
-            file_path='metadata.json',
-            content=metadata_content,
-            message=f"Update metadata for {strategy_name}"
-        )
-        
+        # 4-7. Git branch + commits — or a local content-hash SHA when no
+        # git service is configured (mokara: DB is the source of truth).
+        if git_service is None:
+            from utils.strategy_utils import calculate_strategy_hash
+            branch_name = None
+            commit_sha = calculate_strategy_hash(code, {})
+        else:
+            branch_name = f"strategies/builtin/{strategy_key}"
+
+            try:
+                # Branch from main instead of empty-template
+                branch_info = git_service.create_branch(branch_name, from_branch='main')
+                if branch_info.get('already_exists'):
+                    logging.info(f"Branch exists: {branch_name}")
+                else:
+                    logging.info(f"Created branch: {branch_name}")
+            except Exception as e:
+                logging.warning(f"Branch creation warning: {e}")
+                # Branch might already exist, continue
+
+            # 5. Commit strategy.py to Git
+            commit_sha = git_service.commit_file(
+                branch_name=branch_name,
+                file_path='strategy.py',
+                content=code,
+                message=f"Sync built-in strategy: {strategy_name}"
+            )
+            logging.info(f"Committed strategy.py: {commit_sha[:7]}")
+
+            # 6. Create metadata.json
+            metadata_content = create_metadata_json(strategy_info, commit_sha)
+
+            # 7. Commit metadata.json
+            git_service.commit_file(
+                branch_name=branch_name,
+                file_path='metadata.json',
+                content=metadata_content,
+                message=f"Update metadata for {strategy_name}"
+            )
+
         # 8. Save to database
         conn = db.get_connection()
         try:

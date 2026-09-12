@@ -1424,10 +1424,27 @@ class PostgreSQLDatabase(DatabaseInterface):
                         code = CASE WHEN %s = TRUE THEN NULL ELSE code END,
                         git_commit_sha = CASE WHEN %s = TRUE THEN NULL ELSE git_commit_sha END
                     WHERE id = %s
-                """, (class_name, description, ai_description, parameters_json, 
-                      validation_status, validation_error, last_validation_timestamp, 
+                """, (class_name, description, ai_description, parameters_json,
+                      validation_status, validation_error, last_validation_timestamp,
                       parent_strategy_id, clone_source_commit_sha, is_clone_unedited,
                       is_clone_unedited, is_clone_unedited, strategy_id))
+
+                if evolution_request:
+                    # DB-native evolution history (V37). The git metadata above
+                    # is best-effort only — mokara runs without the GitHub repo,
+                    # so this column is the authoritative timeline.
+                    from datetime import datetime, timezone
+                    entry = {
+                        'timestamp': datetime.now(timezone.utc).isoformat(),
+                        'request': evolution_request,
+                        'user_id': user_id,
+                        'commit_sha': git_commit_sha,
+                    }
+                    cursor.execute("""
+                        UPDATE CUSTOM_STRATEGIES
+                        SET evolution_history = COALESCE(evolution_history, '[]'::jsonb) || %s::jsonb
+                        WHERE id = %s
+                    """, (json.dumps([entry]), strategy_id))
 
             else:
                 # === INSERT NEW STRATEGY ===
@@ -1760,17 +1777,27 @@ class PostgreSQLDatabase(DatabaseInterface):
         try:
             cursor = self._get_cursor(conn)
             cursor.execute("""
-                SELECT git_branch_name, git_commit_sha 
-                FROM CUSTOM_STRATEGIES 
+                SELECT git_branch_name, git_commit_sha, evolution_history
+                FROM CUSTOM_STRATEGIES
                 WHERE id = %s
             """, (strategy_id,))
-            
+
             row = cursor.fetchone()
-            if not row or not row[0]:
+            if not row:
+                return []
+
+            branch_name, commit_sha, db_history = row
+
+            # DB-native history (V37) is authoritative; git metadata below is
+            # a fallback for rows migrated from the old GitHub-backed app.
+            if db_history:
+                if isinstance(db_history, str):
+                    db_history = json.loads(db_history)
+                return db_history
+
+            if not branch_name:
                 logging.debug(f"No Git branch found for strategy {strategy_id}")
                 return []
-            
-            branch_name, commit_sha = row
             
             # Fetch from Git
             try:
