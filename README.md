@@ -54,6 +54,12 @@ cd api && .venv/bin/python -c "from db.database import db; db.update_user_tier(d
 Tests: `cd api && .venv/bin/python -m pytest tests/` (needs the local DB) and
 `cd web && npm run lint && npm run build`.
 
+## Deployment
+
+Cloud Run + Cloud SQL. See **[deploy/DEPLOY.md](deploy/DEPLOY.md)** for the
+topology, one-time infra setup (`deploy/setup-infra.sh`), and the deploy
+script (`deploy/deploy.sh`). Nothing is live yet.
+
 ## Ground rule
 
 This repo was started fresh so its history contains **no secrets** — the old

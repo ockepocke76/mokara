@@ -4,6 +4,7 @@ Mokara API — FastAPI application.
 Run locally (from api/):  .venv/bin/uvicorn app.main:app --reload --port 8000
 """
 import logging
+import os
 
 from dotenv import load_dotenv
 
@@ -16,7 +17,16 @@ from app.deps import verify_internal_secret
 
 configure_logging()
 
-app = FastAPI(title="Mokara API", version="0.1.0")
+# The API is internal (BFF pattern); in prod it is HTTPS-reachable, so the
+# interactive docs and the OpenAPI schema must not be served publicly.
+_docs_disabled = os.getenv("DISABLE_API_DOCS") == "1"
+app = FastAPI(
+    title="Mokara API",
+    version="0.1.0",
+    docs_url=None if _docs_disabled else "/docs",
+    redoc_url=None if _docs_disabled else "/redoc",
+    openapi_url=None if _docs_disabled else "/openapi.json",
+)
 
 
 @app.on_event("startup")
@@ -57,12 +67,14 @@ app.include_router(strategies_router.router)
 @app.get("/")
 def root() -> dict:
     """Friendly root: this is the API, not the app."""
-    return {
+    info = {
         "service": "mokara-api",
         "hint": "This is the backend API. The app runs on the web frontend (locally: http://localhost:3100).",
-        "openapi_docs": "/docs",
         "health": "/healthz",
     }
+    if not _docs_disabled:
+        info["openapi_docs"] = "/docs"
+    return info
 
 
 @app.get("/healthz")

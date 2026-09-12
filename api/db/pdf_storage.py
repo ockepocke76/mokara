@@ -209,18 +209,18 @@ def get_pdf_storage() -> PDFStorageBackend:
     if _storage_backend_cache is not None:
         return _storage_backend_cache
 
-    # Check for GCS configuration
+    # Check for GCS configuration. When GCS is explicitly configured, a
+    # failure to initialize it must be fatal — falling back to local disk
+    # would record container-local paths as pdf_status='ready' rows that no
+    # other service can read (and the fallback would be cached for the
+    # process lifetime).
     if os.getenv('PDF_STORAGE_BACKEND') == 'gcs':
         bucket_name = os.getenv('GCS_BUCKET_NAME')
-        if bucket_name:
-            logging.info(f"Using GCS storage backend with bucket: {bucket_name}")
-            try:
-                _storage_backend_cache = GCSStorageBackend(bucket_name)
-                return _storage_backend_cache
-            except Exception as e:
-                logging.error(f"Failed to initialize GCS backend, falling back to local: {e}")
-        else:
-            logging.error("PDF_STORAGE_BACKEND=gcs but GCS_BUCKET_NAME not set")
+        if not bucket_name:
+            raise RuntimeError("PDF_STORAGE_BACKEND=gcs but GCS_BUCKET_NAME not set")
+        logging.info(f"Using GCS storage backend with bucket: {bucket_name}")
+        _storage_backend_cache = GCSStorageBackend(bucket_name)
+        return _storage_backend_cache
     
     # Default to local file storage
     logging.info("Using local file storage backend")

@@ -426,13 +426,21 @@ differences + motivations documented in **PARITY_REPORT.md**.
       designed theme, but must not be broken).
 
 ### W7 — Deploy (Cloud Run + Cloud SQL)
-- [ ] Dockerfiles for api/worker/web; decide worker topology (own Cloud Run
-      service vs. same container as api).
-- [ ] Secrets as env vars in the host — never in the repo.
+- [x] Dockerfiles for api/worker/web; decide worker topology (own Cloud Run
+      service vs. same container as api). → **Decided: own service**
+      (`--no-cpu-throttling`, min=1; sidecar would be CPU-throttled outside
+      requests). One image serves api+worker (command override); `worker.py`
+      grew a stdlib health listener for Cloud Run's `$PORT` requirement.
+      Rationale + full runbook in [deploy/DEPLOY.md](deploy/DEPLOY.md).
+- [x] Secrets as env vars in the host — never in the repo.
+      `deploy/setup-infra.sh` pushes values from the operator's shell to
+      Secret Manager; `deploy/deploy.sh` wires them via `--set-secrets`.
+      Also: `web/.env.example` was never actually committed — now tracked.
 - [ ] Restore-from-backup path: prod DB dump lives at
       `~/dev/mymontecarlo/backups/` — decide whether new prod starts from
-      it or fresh.
-- [ ] Point mokara.ai; smoke test; announce.
+      it or fresh. (Options written up in DEPLOY.md §3 — **Oscar's call.**)
+- [ ] Point mokara.ai; smoke test; announce. (Checklist ready in
+      DEPLOY.md §5–6; blocked on the billing/deploy go-ahead.)
 
 ---
 
@@ -459,3 +467,5 @@ differences + motivations documented in **PARITY_REPORT.md**.
 | 2026-09-06 | W5 | Hold lifted: agentic-generation design settled and written into the W5 section (LangGraph, one graph for create+evolve, validation ladder w/ paired baseline, spec-conformance-only rework, per-run credit metering). Implementation not started. |
 | 2026-09-06 | W5 | BUILT on `feature/w5-agentic-strategies` (worktree, 5 commits: engine prep → DB → graph → API → web). 204 api tests green (+2 skipped) incl. graph/API e2e on the canned LLM; full designer flow browser-verified (create→clarify→review→save, refine, discard, rehydration banner, detail test-flight w/ chart). NOT merged — awaits Oscar's review + explicit merge go-ahead. No Gemini key on this machine: live-LLM run still unvalidated; set GEMINI_API_KEY and unset MOKARA_FAKE_LLM to go live. deps: langgraph 1.2.11 + checkpoint-postgres 3.1.2. |
 | 2026-09-08 | W5 | REVIEWED + MERGED to main (`0fcc191`, pushed). /code-review at high effort → 10 confirmed findings, all fixed on-branch (`a29d133`): sandbox `__builtins__` escape (pinned + guarded import allowlist + regression tests), evolve-seed ownership 403, /test owner-only + sim-size params stripped, RNG lock + state restore around seeded paired sims, atomic needs_input→running claim + startup orphaned-run reconcile, generation-time-only category strictness, review-loop fixes (budget 24, attempts reset, over-budget → needs_input, NaN-safe trace), credits charged after start, retrieval FK join + is_published_to_leaderboard gate; web: SSE no-buffering headers, RSC res.ok guards, ?evaluate=1 honored. Gates on merged main: 212 api tests green (+2 skipped), lint + build clean. Branch + worktree deleted. Still open: real GEMINI_API_KEY live run; deferred non-blocking review notes (efficiency/simplification) surfaced to Oscar in-session. |
+| 2026-09-12 | W7 | Deploy scaffolding BUILT on `feature/w7-deploy` (stacked on `fix/worker-pdf-storage-backend`, which reroutes the worker's PDF save through db/pdf_storage — it wrote local pdf_cache/ directly, broken on Cloud Run's ephemeral disks). Dockerfiles: api+worker share one python:3.14-slim image (worker = command override; worker.py gained a stdlib $PORT health listener, smoke-tested), web = node:22-alpine multi-stage on Next `output: "standalone"` (lint+build clean). Worker topology DECIDED: own Cloud Run service, `--no-cpu-throttling` min=1 (sidecar would throttle outside requests). deploy/: config.sh + idempotent setup-infra.sh (Artifact Registry, Cloud SQL PG17, GCS bucket, dedicated mokara-run SA, secrets from operator shell → Secret Manager — zero secret values in repo) + deploy.sh (Cloud Build, git-SHA tags, --set-secrets) + DEPLOY.md runbook (migrations via SQL proxy, domain, smoke checklist, rollback). Found: web/.env.example was referenced by README but never committed — now tracked. NOTHING DEPLOYED — no docker locally, images unbuilt; awaiting Oscar: billing go-ahead + DB seed decision (dump vs fresh, DEPLOY.md §3). |
+| 2026-09-12 | W7 | REVIEWED (/code-review high, 8 angles) → 10 confirmed findings, all fixed on-branch: python:3.13 base (numpy has no cp314 wheel — 3.14 build would fail), .gcloudignore upload filters (builds submit ignores .dockerignore — api/.env + 741MB .venv would have hit the staging bucket), GCS init failures now fatal instead of silently falling back to local ready-but-unreadable PDFs, PDF errors write pdf_status='failed' (+test), DISABLE_API_DOCS=1 in prod (/docs+/openapi.json were public; DEPLOY.md claim corrected), api runs no-cpu-throttling min=1 (W5 generation daemon threads die under throttling/scale-to-zero — queue-based fix listed as follow-up), GEMINI_MODEL_STRONG + monitoring project/region env now set, setup-infra re-runs sync the SQL password, DATABASE_URL percent-encodes it, web/.env.example port 3100. Deferred to DEPLOY.md follow-ups: IAM/ingress api hardening, generation→job-queue port, worker heartbeat liveness, retention sweep + GCS PDF orphan cleanup (dead pdf_worker_process owns both today). Gates: 214 api tests green, web lint+build clean. Awaits Oscar's review + merge go-ahead. |
