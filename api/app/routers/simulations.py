@@ -206,8 +206,10 @@ def create_simulation(
     # Saved-simulation cap (old _handle_run_button_click confirm flow)
     sim_ok, sim_msg, usage = limiter.check_simulation_limit(user["id"])
     if not sim_ok:
+        from app.access import own_history_rows
+
         limit = usage.get("limit")
-        rows = db.get_user_simulations_with_params(user["email"]) or []
+        rows = own_history_rows(user)
         rows = sorted(rows, key=lambda r: r.get("timestamp") or "")
         overflow = max(1, len(rows) - int(limit) + 1) if isinstance(limit, int) else 1
         oldest = rows[:overflow]
@@ -265,7 +267,9 @@ def create_simulation(
     simulation_name = full.get("simulation_name", "Untitled Simulation")
 
     def ensure_history() -> None:
-        history = db.get_user_simulations_with_params(user["email"]) or []
+        from app.access import own_history_rows
+
+        history = own_history_rows(user)
         if not any(s.get("simulation_hash") == simulation_hash for s in history):
             db.add_to_user_history(user["id"], simulation_hash, simulation_name)
             from db.cache import get_user_simulations_cached
@@ -320,12 +324,18 @@ def job_status(job_id: str) -> dict:
 
 
 @router.get("/simulations/{simulation_hash}/results")
-def simulation_results(simulation_hash: str) -> dict:
-    """Chart series + stats for a completed simulation."""
+def simulation_results(
+    simulation_hash: str,
+    user: Optional[dict] = Depends(get_current_user),
+) -> dict:
+    """Chart series + stats for a completed simulation (own or public)."""
     import pandas as pd
 
+    from app.access import require_simulation_view
     from db.regeneration_db import get_regeneration_data
     from db.utils import _sanitize_for_json
+
+    require_simulation_view(simulation_hash, user)
 
     package = get_regeneration_data(simulation_hash)
     if not package:
@@ -468,6 +478,10 @@ def get_report(
     user: Optional[dict] = Depends(get_current_user),
 ):
     from fastapi.responses import Response as _Response
+
+    from app.access import require_simulation_view
+
+    require_simulation_view(simulation_hash, user)
 
     viewer_is_admin = False
     if user:
