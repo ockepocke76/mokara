@@ -8,8 +8,6 @@
  * collapsible sections, Appendices sub-sections, per-type renderers.
  */
 import { useMemo } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeRaw from "rehype-raw";
 import type { Data, Layout } from "plotly.js";
 
 import {
@@ -28,6 +26,7 @@ import {
 } from "@/components/ui/table";
 import { WarningBox } from "@/components/info-box";
 import { Chart } from "@/components/chart";
+import { Markdown } from "@/components/markdown";
 
 export type ReportItem = {
   type: string;
@@ -62,14 +61,6 @@ const APPENDIX_ORDER = [
 ];
 
 const DEFAULT_OPEN = new Set(["Executive Summary", "Simulation Summary"]);
-
-function Markdown({ children }: { children: string }) {
-  return (
-    <div className="prose prose-sm prose-neutral dark:prose-invert max-w-none">
-      <ReactMarkdown rehypePlugins={[rehypeRaw]}>{children}</ReactMarkdown>
-    </div>
-  );
-}
 
 function MetricsTable({
   metrics,
