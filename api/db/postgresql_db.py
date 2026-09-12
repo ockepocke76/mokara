@@ -1225,6 +1225,43 @@ class PostgreSQLDatabase(DatabaseInterface):
             self.release_connection(conn)
     
     @log_db_call
+    def get_simulation_access(self, simulation_hash, user_id=None):
+        """Access facts for one cached simulation, for router-level checks.
+
+        Returns None when the hash is unknown, else a dict:
+          {'is_public': bool, 'history_id': int or None}
+        history_id is the given user's own live history entry for this hash
+        (None when user_id is None or they have no entry). Simulation hashes
+        are deterministic functions of the parameters — not unguessable —
+        so visibility must be enforced by the caller, not by hash secrecy.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = self._get_cursor(conn)
+            cursor.execute(
+                "SELECT is_public FROM CACHED_SIMULATIONS WHERE simulation_hash = %s",
+                (simulation_hash,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            access = {'is_public': bool(row[0]), 'history_id': None}
+            if user_id is not None:
+                cursor.execute("""
+                    SELECT id FROM USER_SIMULATION_HISTORY
+                    WHERE simulation_hash = %s AND user_id = %s AND is_removed = FALSE
+                    ORDER BY id LIMIT 1
+                """, (simulation_hash, user_id))
+                h = cursor.fetchone()
+                if h:
+                    access['history_id'] = h[0]
+            return access
+        except Exception as e:
+            logging.error(f"Failed to get simulation access: {e}", exc_info=True)
+            return None
+        finally:
+            self.release_connection(conn)
+
+    @log_db_call
     def update_cached_simulation_params(self, simulation_hash, params):
         conn = self.get_connection()
         try:
