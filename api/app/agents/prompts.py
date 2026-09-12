@@ -29,6 +29,21 @@ SANDBOX_RULES = """
 - `evaluation_category()` must return 'WITHDRAWAL_ONLY', 'CONTRIBUTION_ONLY', or 'HYBRID'.
 """
 
+ENGINE_MECHANICS = """
+## Engine mechanics (the engine does these — never re-implement or demand them)
+- Interest on outstanding debt is charged BY THE ENGINE every year, at the
+  simulation's own loan interest rate. Management fees and taxes likewise.
+  Their sum arrives as the `mandatory_costs` argument to
+  execute_strategy_for_year: the strategy's job is only to FUND that amount
+  (plus its desired drawdown), never to compute it.
+- Therefore a strategy must NOT declare interest-rate/fee/tax parameters and
+  must NOT subtract borrowing costs from its cash flows. Borrowing via
+  'debt_increase' pays interest automatically — the bank is the engine.
+- The user sets the simulation's starting capital and horizon at run time;
+  the strategy must work with WHATEVER starting capital the engine hands it.
+  Never treat starting capital as artificial or try to neutralize it.
+"""
+
 COMMON_MISTAKES = """
 ## Common mistakes seen in failed generations (avoid all of these)
 - Using in-place operators (`+=`, `-=`) — the sandbox rewrites them poorly; write it out.
@@ -117,7 +132,7 @@ with the strategy mostly through these.
 
 Spec:
 {json.dumps(spec, indent=2)}
-{examples_block}
+{ENGINE_MECHANICS}{examples_block}
 Respond with JSON:
 {{
   "rules": ["rule 1", "rule 2", ...],
@@ -148,6 +163,7 @@ Spec (for context):
 {json.dumps(spec, indent=2)}
 
 {strategy_api_docs()}
+{ENGINE_MECHANICS}
 {SANDBOX_RULES}
 {COMMON_MISTAKES}
 {examples_block}
@@ -161,6 +177,11 @@ Review this strategy code against its blueprint. For each rule, decide whether
 the code actually implements it (not whether it compiles — a separate check
 handles that). Also flag spec constraints the code violates and parameters
 declared but never read.
+{ENGINE_MECHANICS}
+Judge blueprint rules THROUGH the engine's division of labor: a rule about
+paying interest, fees, or taxes is implemented by borrowing/holding assets at
+all — the engine charges those costs. Never fail a rule because the code does
+not compute interest or deduct borrowing costs itself.
 
 Blueprint rules:
 {json.dumps(plan.get('rules', []), indent=2)}
@@ -193,6 +214,15 @@ Judge ONE thing: does the observed behavior match the spec and blueprint?
 Performance is NOT your verdict — a faithful strategy with poor numbers still
 conforms; report the numbers neutrally and let the user decide. Never use
 advisory language ("you should", "best") — describe only.
+
+The smoke test always runs with the platform's default starting capital and a
+fixed horizon; the strategy does not control that, and the user can set any
+starting capital in real runs. If a spec phase (e.g. an accumulation phase
+before a retirement trigger) simply cannot be observed under these test
+conditions, that is NOT a mismatch: set conforms_to_spec=true and describe
+the untested phase in notes so the user knows. Interest, fees, and taxes are
+charged by the engine automatically — never call their absence from the
+strategy's own arithmetic a mismatch.
 
 Spec:
 {json.dumps(spec, indent=2)}
