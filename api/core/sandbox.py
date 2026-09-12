@@ -8,6 +8,9 @@ from RestrictedPython.Eval import default_guarded_getitem
 from RestrictedPython.Guards import guarded_iter_unpack_sequence
 from .strategy import BaseStrategy
 import logging
+import multiprocessing
+import os
+import types
 import numpy as np
 import pandas as pd
 import re
@@ -26,12 +29,75 @@ _safe_globals['BaseStrategy'] = BaseStrategy
 # We provide the default 'type' to satisfy this requirement.
 _safe_globals['__metaclass__'] = type
 
+# --- Module/attribute access policy ---------------------------------------
+# numpy and pandas are useful to strategies but full of escape hatches:
+# pickle loaders (read_pickle / np.load = arbitrary code execution), file
+# readers/writers (read_csv('/etc/passwd'), df.to_csv(path)), expression
+# evaluators (pd.eval, df.query), and gateway submodules (np.ctypeslib →
+# ctypes). Sandboxed code therefore never touches the raw modules: it gets
+# _SandboxModule proxies, and EVERY attribute access (RestrictedPython
+# routes them all through _getattr_, and the proxies route direct getattr
+# the same way) is checked against the deny-list below. Any attribute that
+# resolves to a module is refused unless that module is explicitly allowed.
+
+# Attribute names refused on every object — module functions and instance
+# methods alike (df.to_csv is as dangerous as pd.read_csv).
+_DENIED_ATTRIBUTES = frozenset({
+    # pandas readers (read_pickle deserializes pickles → code execution)
+    'read_pickle', 'read_csv', 'read_table', 'read_fwf', 'read_clipboard',
+    'read_excel', 'read_json', 'read_html', 'read_xml', 'read_hdf',
+    'read_feather', 'read_parquet', 'read_orc', 'read_sas', 'read_spss',
+    'read_sql', 'read_sql_query', 'read_sql_table', 'read_gbq', 'read_stata',
+    # pandas writers (accept file paths)
+    'to_pickle', 'to_csv', 'to_json', 'to_excel', 'to_hdf', 'to_sql',
+    'to_parquet', 'to_feather', 'to_stata', 'to_gbq', 'to_clipboard',
+    'to_html', 'to_latex', 'to_markdown', 'to_xml',
+    # pandas file-handle classes and expression evaluators
+    'HDFStore', 'ExcelWriter', 'ExcelFile', 'eval', 'query',
+    # numpy file/pickle I/O (ndarray.dump pickles to a file)
+    'load', 'save', 'savez', 'savez_compressed', 'loadtxt', 'savetxt',
+    'genfromtxt', 'fromregex', 'fromfile', 'tofile', 'memmap',
+    'dump', 'dumps',
+})
+
+# Modules whose attributes sandboxed code may use (always via a proxy).
+_ALLOWED_MODULE_NAMES = frozenset({
+    'math', 'numpy', 'numpy.random', 'numpy.linalg', 'numpy.fft', 'pandas',
+    'core.strategy',
+})
+
+
+class _SandboxModule:
+    """Read-only, policy-filtered view of a module for sandboxed code.
+
+    Both RestrictedPython's _getattr_ and plain getattr (e.g. the
+    `from numpy import ...` bytecode, which bypasses _getattr_) end up in
+    __getattr__ here, so the deny-list holds on every path.
+    """
+
+    __slots__ = ('_sandbox_module',)
+
+    def __init__(self, module):
+        object.__setattr__(self, '_sandbox_module', module)
+
+    def __getattr__(self, name):
+        return _sandboxed_getattr(
+            object.__getattribute__(self, '_sandbox_module'), name)
+
+    def __setattr__(self, name, value):
+        raise AttributeError('modules are read-only in the sandbox')
+
+    def __repr__(self):
+        module = object.__getattribute__(self, '_sandbox_module')
+        return f'<sandboxed module {module.__name__!r}>'
+
+
 # Optionally, add other safe utilities if needed.
 # For example, allowing the 'math' library is generally safe.
 import math
-_safe_globals['math'] = math
-_safe_globals['np'] = np
-_safe_globals['pd'] = pd
+_safe_globals['math'] = _SandboxModule(math)
+_safe_globals['np'] = _SandboxModule(np)
+_safe_globals['pd'] = _SandboxModule(pd)
 
 # Modules strategy code may import. The import machinery resolves __import__
 # through __builtins__, so this is enforced by _sandbox_builtins below.
@@ -44,7 +110,11 @@ def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
             f"import of '{name}' is not allowed in the sandbox "
             f"(allowed: {sorted(_ALLOWED_IMPORTS)})"
         )
-    return __import__(name, globals, locals, fromlist, level)
+    module = __import__(name, globals, locals, fromlist, level)
+    # Wrap in the policy proxy: `from numpy import load` extracts attributes
+    # with a direct getattr on the returned module (no _getattr_ involved),
+    # so the module object itself must enforce the deny-list.
+    return _SandboxModule(module)
 
 
 # CRITICAL: exec() injects the REAL builtins module into any globals dict that
@@ -77,12 +147,24 @@ def _sandboxed_getattr(obj, name):
     which is useful for LLM-generated code that uses them for internal helpers.
     It continues to block access to double-underscore attributes (e.g., `__mangled`)
     to maintain a strong security boundary.
+
+    On top of that it enforces the module/attribute policy above: deny-listed
+    attribute names raise everywhere, and attributes that resolve to modules
+    are only handed out (proxied) when the module is explicitly allowed.
     """
     if name == '__init__':
         pass
     elif name.startswith('__'):
         raise AttributeError(f'Access to double-underscore attributes like "{name}" is not allowed in the sandbox.')
-    return getattr(obj, name)
+    if name in _DENIED_ATTRIBUTES:
+        raise AttributeError(f'"{name}" is not allowed in the sandbox.')
+    value = getattr(obj, name)
+    if isinstance(value, types.ModuleType):
+        if value.__name__ in _ALLOWED_MODULE_NAMES:
+            return _SandboxModule(value)
+        raise AttributeError(
+            f'module "{value.__name__}" is not accessible in the sandbox.')
+    return value
 
 _safe_globals['_getattr_'] = _sandboxed_getattr
 
@@ -409,12 +491,98 @@ def _rewrite_inplace_assignments(code: str) -> str:
     return '\n'.join(rewritten_lines)
 
 
-def execute_strategy_code(code_string: str, strategy_class_name: str = "CustomStrategy", strict_category=False):
+# --- Resource-limited validation -------------------------------------------
+# The dry run in _validate_strategy_class executes the untrusted code's
+# methods. RestrictedPython bounds WHAT the code can reach, not how long it
+# runs or how much memory it takes — a `while True:` or a giant allocation
+# would otherwise hang or OOM whichever process is validating (API thread or
+# worker). So the whole compile+exec+dry-run first happens in a throwaway
+# spawn subprocess under a wall-clock timeout, an RLIMIT_CPU, and an
+# RLIMIT_AS cap (best-effort; not enforceable on macOS). Only code that
+# passes within limits is then executed in the calling process.
+#
+# Residual risk (documented in CODE_REVIEW R1.2): code whose runaway path
+# only triggers under later simulation-time conditions passes this gate; the
+# job-level timeout is the backstop for that.
+
+def _validation_timeout_seconds() -> float:
+    return float(os.getenv('SANDBOX_VALIDATION_TIMEOUT_SECONDS', '20'))
+
+
+def _validation_worker(code_string, strategy_class_name, strict_category, queue):
+    """Runs in a spawn subprocess: apply rlimits, then compile+validate."""
+    try:
+        try:
+            import resource
+
+            cpu_budget = max(2, int(_validation_timeout_seconds()) + 5)
+            try:
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu_budget, cpu_budget))
+            except (ValueError, OSError):
+                pass
+            memory_bytes = int(
+                os.getenv('SANDBOX_VALIDATION_MEMORY_MB', '1024')) * 1024 * 1024
+            try:
+                resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+            except (ValueError, OSError):
+                pass  # macOS does not reliably support RLIMIT_AS
+        except ImportError:
+            pass
+        execute_strategy_code(
+            code_string, strategy_class_name,
+            strict_category=strict_category, isolate=False)
+        queue.put(('ok', None))
+    except BaseException as e:  # noqa: BLE001 — report MemoryError etc. too
+        queue.put(('error', f'{type(e).__name__}: {e}'))
+
+
+def _validate_in_subprocess(code_string, strategy_class_name, strict_category):
+    """Dry-run the untrusted code in a resource-limited subprocess.
+
+    Raises ValueError on timeout or when the child dies without reporting
+    (e.g. killed by the kernel on memory exhaustion).
+    """
+    ctx = multiprocessing.get_context('spawn')
+    queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_validation_worker,
+        args=(code_string, strategy_class_name, strict_category, queue),
+        daemon=True,
+    )
+    proc.start()
+    proc.join(_validation_timeout_seconds())
+    try:
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(2)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(2)
+            raise ValueError(
+                "Strategy validation timed out — the code appears to run "
+                "indefinitely (e.g. an infinite loop) and was rejected.")
+        try:
+            status, detail = queue.get(timeout=5)
+        except Exception:
+            raise ValueError(
+                "Strategy validation crashed (likely exceeded the sandbox "
+                "memory limit) and was rejected.")
+        if status != 'ok':
+            raise ValueError(f"Strategy validation failed: {detail}")
+    finally:
+        queue.close()
+
+
+def execute_strategy_code(code_string: str, strategy_class_name: str = "CustomStrategy", strict_category=False, isolate=True):
     """
     Safely compiles and executes a string of Python code to define a custom strategy class.
 
     This function uses RestrictedPython to create a sandboxed environment, preventing
-    the execution of unsafe code (e.g., file I/O, network access).
+    the execution of unsafe code (e.g., file I/O, network access). Unless
+    isolate=False, the compile+dry-run first happens in a resource-limited
+    subprocess so hangs and memory bombs are rejected without harming this
+    process (isolate=False is for the subprocess itself and for callers that
+    already run inside an isolated context).
 
     Args:
         code_string (str): The Python code for the strategy class, as generated by an LLM.
@@ -425,9 +593,9 @@ def execute_strategy_code(code_string: str, strategy_class_name: str = "CustomSt
     """
     try:
         logging.info(f"Attempting to execute sandboxed code for strategy: {strategy_class_name}")
-        
-        if "import os" in code_string:
-            raise ValueError("disallowed import")
+
+        if isolate:
+            _validate_in_subprocess(code_string, strategy_class_name, strict_category)
 
         # --- FIX: Pre-process the code to remove in-place assignments ---
         # This is a workaround for a bug in RestrictedPython's AST transformer
