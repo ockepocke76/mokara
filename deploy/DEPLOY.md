@@ -35,14 +35,23 @@ Streamlit `start.sh` pattern). Reasons:
 - Cloud Run services must listen on `$PORT`; `worker.py` starts a stdlib
   health listener when `PORT` is set (no FastAPI in the worker).
 
+**The api also runs unthrottled with `min-instances 1` for now** — not
+scale-to-zero as originally sketched — because W5 strategy generation
+executes in a daemon thread inside the api process after the HTTP request
+returns; request-based CPU throttling would freeze those runs mid-graph
+and scale-to-zero would kill them. The queue-based fix that lifts this is
+in Follow-ups.
+
 ## 1. Prerequisites
 
 - `gcloud` authenticated with owner/editor on the target project.
 - A GCP project (default `mokara-prod` — override `MOKARA_PROJECT_ID`).
 - A Google OAuth client (web) with redirect URI
   `https://mokara.ai/api/auth/callback/google`; note client id + secret.
-- A Gemini API key. New keys can't call `gemini-2.5-pro` — set
-  `GEMINI_MODEL_STRONG` to a 3.x model on the api/worker services if needed.
+- A Gemini API key. New keys can't call `gemini-2.5-pro` (the code's
+  default) — `deploy/config.sh` pins `GEMINI_MODEL_STRONG` to a 3.x model
+  and deploy.sh sets it on api+worker. Change it in config.sh, not in the
+  Cloud console: `--set-env-vars` replaces console edits on every deploy.
 
 ## 2. One-time infra
 
@@ -122,10 +131,28 @@ DB: nightly automated backups on the instance; restore via
 
 ## Follow-ups (accepted, not blockers)
 
-- **api hardening**: the api is HTTPS-reachable but every endpoint requires
-  the internal secret header. Tighten later with IAM service-to-service
-  auth (ID tokens from web, `--no-allow-unauthenticated`) or
-  `--ingress internal` + Direct VPC egress on web.
+- **api hardening**: the api is HTTPS-reachable; business endpoints require
+  the internal secret header, and `DISABLE_API_DOCS=1` removes `/docs` +
+  `/openapi.json` in prod — but `/` and `/healthz` are open (probes need
+  `/healthz`, which pings the DB per hit). Tighten later with IAM
+  service-to-service auth (ID tokens from web, `--no-allow-unauthenticated`)
+  or `--ingress internal` + Direct VPC egress on web.
+- **Move W5 strategy generation out of api daemon threads** into the
+  BACKGROUND_JOBS queue (worker executes, api serves SSE from DB events —
+  the events already live in the DB). That lets the api go back to
+  scale-to-zero, survives instance replacement mid-run, and fixes the
+  charged-but-lost credit when a run dies with its instance.
+- **Worker liveness is shallow**: the health listener answers 200 while it
+  can bind a socket, even if the job loop is wedged (e.g. DB unreachable —
+  the loop swallows exceptions and retries forever). Add a loop heartbeat
+  the listener checks (stale → 503) plus a Cloud Monitoring alert on
+  BACKGROUND_JOBS queue age.
+- **Retention + PDF cleanup don't run anywhere**: the old Streamlit-era
+  `pdf_worker_process` (dead code, no caller) owned the daily
+  `cleanup_old_simulations()` sweep, and nothing calls `delete_pdf` — so
+  GCS blobs outlive their DB rows (cost + deletion-request gap). Wire the
+  sweep into the worker's existing cleanup thread and delete blobs when
+  simulations are deleted; then remove the dead function.
 - **Worker autoscaling on queue depth** (manual `max-instances` for now).
 - CI/CD: deploys are manual `deploy.sh` runs for now; a GitHub Actions
   deploy on main can come later.

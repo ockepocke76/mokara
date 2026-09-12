@@ -5,7 +5,7 @@
 # Secrets are read from your shell environment at run time and pushed to
 # Secret Manager — they are NEVER stored in this repo. Before running:
 #
-#   export DB_PASSWORD="$(openssl rand -base64 24)"
+#   export DB_PASSWORD="$(openssl rand -hex 24)"
 #   export INTERNAL_API_SECRET="$(openssl rand -hex 32)"
 #   export BETTER_AUTH_SECRET="$(openssl rand -hex 32)"
 #   export GEMINI_API_KEY="..."          # from AI Studio
@@ -60,8 +60,13 @@ if ! gcloud sql instances describe "$SQL_INSTANCE" --project="$PROJECT_ID" >/dev
 fi
 gcloud sql databases describe "$DB_NAME" --instance="$SQL_INSTANCE" --project="$PROJECT_ID" >/dev/null 2>&1 || \
   gcloud sql databases create "$DB_NAME" --instance="$SQL_INSTANCE" --project="$PROJECT_ID"
-gcloud sql users list --instance="$SQL_INSTANCE" --project="$PROJECT_ID" --format='value(name)' | grep -qx "$DB_USER" || \
+if gcloud sql users list --instance="$SQL_INSTANCE" --project="$PROJECT_ID" --format='value(name)' | grep -qx "$DB_USER"; then
+  # Keep the real password in sync with the secret we're about to write —
+  # a re-run with a new DB_PASSWORD must rotate both or neither.
+  gcloud sql users set-password "$DB_USER" --instance="$SQL_INSTANCE" --password="$DB_PASSWORD" --project="$PROJECT_ID"
+else
   gcloud sql users create "$DB_USER" --instance="$SQL_INSTANCE" --password="$DB_PASSWORD" --project="$PROJECT_ID"
+fi
 
 echo "--- GCS bucket (PDFs)"
 if ! gcloud storage buckets describe "gs://$BUCKET_NAME" --project="$PROJECT_ID" >/dev/null 2>&1; then
@@ -85,9 +90,12 @@ create_secret "$SECRET_BETTER_AUTH"    "$BETTER_AUTH_SECRET"
 create_secret "$SECRET_GEMINI"         "$GEMINI_API_KEY"
 create_secret "$SECRET_GOOGLE_CLIENT"  "$GOOGLE_CLIENT_SECRET"
 create_secret "$SECRET_ADMIN_PASSWORD" "$ADMIN_PASSWORD"
-# Full pg URL for Better Auth (unix socket through the Cloud Run SQL connector)
+# Full pg URL for Better Auth (unix socket through the Cloud Run SQL
+# connector). The password goes into URI userinfo, so percent-encode it —
+# a '/' or '+' in a raw password silently breaks pg's URL parsing.
+DB_PASSWORD_ENC="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$DB_PASSWORD")"
 create_secret "$SECRET_DATABASE_URL" \
-  "postgresql://${DB_USER}:${DB_PASSWORD}@localhost/${DB_NAME}?host=/cloudsql/${SQL_CONNECTION}"
+  "postgresql://${DB_USER}:${DB_PASSWORD_ENC}@localhost/${DB_NAME}?host=/cloudsql/${SQL_CONNECTION}"
 
 echo "--- IAM for runtime SA"
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
