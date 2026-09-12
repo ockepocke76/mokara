@@ -21,7 +21,13 @@ export default function LoginPage() {
           Wisdom of the Crowd, Applied
         </p>
       </div>
-      <LoginForm devLogin={process.env.AUTH_DEV_LOGIN === "1"} />
+      <LoginForm
+        devLogin={
+          // Must match lib/auth.ts's gate: dev login never exists in prod.
+          process.env.AUTH_DEV_LOGIN === "1" &&
+          process.env.NODE_ENV !== "production"
+        }
+      />
     </main>
   );
 }

@@ -1,7 +1,11 @@
 import { betterAuth } from "better-auth";
 import { Pool } from "pg";
 
-const devLogin = process.env.AUTH_DEV_LOGIN === "1";
+// Hard-gated to non-production: open email+password sign-up with no
+// verification would let anyone claim an arbitrary email — and the BFF's
+// X-User-Email identity forwarding turns that into full account takeover.
+const devLogin =
+  process.env.AUTH_DEV_LOGIN === "1" && process.env.NODE_ENV !== "production";
 const googleConfigured =
   !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET;
 
