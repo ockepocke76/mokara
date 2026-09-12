@@ -1,0 +1,14 @@
+# Governs what `gcloud builds submit api` UPLOADS (the .dockerignore only
+# governs the docker build inside Cloud Build). Without this file gcloud
+# would tar the whole directory — including the real .env and the venv —
+# into the Cloud Build staging bucket.
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+tests/
+pdf_cache/
+*.log
+assets/all_indices_data.csv
