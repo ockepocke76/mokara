@@ -44,3 +44,33 @@ class TestWorkerPdfStorageBackend:
         assert kwargs["status"] == "ready"
         assert result["success"] is True
         assert result["pdf_path"] == fake_backend.save_pdf.return_value
+
+    def test_pdf_generation_failure_marks_pdf_status_failed(self):
+        """A save/generate error must move pdf_status to 'failed' — the UI
+        polls the simulation row, not the job row."""
+        from services.background_worker import JobWorker
+        import pytest
+
+        worker = JobWorker("test_worker")
+
+        fake_cursor = Mock()
+        fake_cursor.fetchone.return_value = ("ab" * 32,)
+        fake_conn = Mock()
+
+        fake_backend = Mock()
+        fake_backend.save_pdf.side_effect = RuntimeError("gcs 503")
+
+        with patch("db.database.db") as fake_db, \
+             patch("db.pdf_storage.get_pdf_storage", return_value=fake_backend), \
+             patch("background_tasks._generate_pdf_for_simulation",
+                   return_value=BytesIO(b"%PDF-1.4 fake")):
+            fake_db.get_connection.return_value = fake_conn
+            fake_db._get_cursor.return_value = fake_cursor
+
+            with pytest.raises(RuntimeError):
+                worker._process_pdf_generation("test-job-2", {"history_id": 42})
+
+        kwargs = fake_db.update_simulation_pdf_storage.call_args.kwargs
+        assert kwargs["status"] == "failed"
+        assert kwargs["storage_path"] is None
+        assert "gcs 503" in kwargs["error_msg"]

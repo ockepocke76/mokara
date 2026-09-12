@@ -132,13 +132,26 @@ class JobWorker:
                 
         logging.info(f"Resolved history_id {history_id} -> hash {simulation_hash[:10]}")
 
-        # 2. Generate PDF (returns BytesIO buffer)
-        pdf_buffer = _generate_pdf_for_simulation(simulation_hash)
-        if not pdf_buffer:
-            raise RuntimeError("PDF generation returned None")
-        
-        # 3. Save PDF via the storage backend (local pdf_cache/ in dev, GCS in prod)
-        pdf_path = get_pdf_storage().save_pdf(simulation_hash, pdf_buffer)
+        try:
+            # 2. Generate PDF (returns BytesIO buffer)
+            pdf_buffer = _generate_pdf_for_simulation(simulation_hash)
+            if not pdf_buffer:
+                raise RuntimeError("PDF generation returned None")
+
+            # 3. Save PDF via the storage backend (local pdf_cache/ in dev, GCS in prod)
+            pdf_path = get_pdf_storage().save_pdf(simulation_hash, pdf_buffer)
+        except Exception as e:
+            # The job row gets its own failure handling upstream, but the
+            # simulation row is what the UI polls — without this it stays
+            # 'pending' forever.
+            db.update_simulation_pdf_storage(
+                simulation_hash=simulation_hash,
+                storage_path=None,
+                status='failed',
+                gen_time_ms=int((time.time() - start_time) * 1000),
+                error_msg=str(e)[:500],
+            )
+            raise
 
         logging.info(f"💾 Saved PDF to {pdf_path}")
         
