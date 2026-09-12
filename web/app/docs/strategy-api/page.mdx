@@ -1,0 +1,189 @@
+# 📚 Strategy API Reference
+
+Every strategy — built-in or AI-generated — is a Python class that inherits
+from `BaseStrategy`. The simulation engine manages portfolio state, market
+events, taxes, and bookkeeping; your strategy receives the state each year and
+returns **action dictionaries** telling the engine what to do.
+
+You normally don't write this code by hand — the
+[strategy designer](/strategies/new) generates it from a plain-language
+request. This reference is for reading and understanding the generated code
+(the *View the Python* toggle on any strategy page).
+
+## Required methods
+
+These abstract members **must** be implemented by every strategy.
+
+### `shortfall_funding_policy` (property)
+
+```python
+@property
+def shortfall_funding_policy(self) -> list[str]: ...
+```
+
+The strategy's ordered preference for funding cash shortfalls when the primary
+plan doesn't generate enough cash. Valid entries, in your preferred order:
+
+- `'USE_CASH'` — use available cash reserves
+- `'SELL_ASSETS'` — sell assets to raise cash
+- `'BORROW'` — take loans against portfolio value
+
+```python
+@property
+def shortfall_funding_policy(self):
+    return ['USE_CASH', 'SELL_ASSETS', 'BORROW']
+```
+
+### `initialize_portfolio()`
+
+```python
+def initialize_portfolio(
+    self,
+    initial_portfolio_state: dict,
+    market_data_at_start: pd.DataFrame,
+) -> dict: ...
+```
+
+Decides the initial allocation at Year 0. `initial_portfolio_state` typically
+only contains cash (e.g. `{'cash': 1_000_000, 'asset_value': 0, 'debt': 0}`).
+Returns an action dictionary:
+
+```python
+def initialize_portfolio(self, initial_portfolio_state, market_data_at_start):
+    # Invest all cash into the asset
+    return {'action': 'BUY_ASSET', 'cash_amount': initial_portfolio_state['cash']}
+```
+
+### `execute_strategy_for_year()`
+
+```python
+def execute_strategy_for_year(
+    self,
+    year: int,                    # 1, 2, 3, …
+    portfolio_state: dict,        # asset_value, debt, cash, net_worth, ltv, cost_basis
+    portfolio_history: list[dict],  # state snapshots from previous years
+    desired_drawdown: float,      # this year's consumption (from get_annual_drawdown)
+    mandatory_costs: float,       # fees + interest that must be funded
+) -> dict: ...
+```
+
+The main annual decision: how to fund the desired consumption.
+
+```python
+def execute_strategy_for_year(self, year, portfolio_state,
+                              portfolio_history, desired_drawdown, mandatory_costs):
+    total_needed = desired_drawdown + mandatory_costs
+    # Trinity approach: sell assets to fund consumption
+    return {'action': 'SELL_ASSETS', 'amount_sold': total_needed}
+```
+
+## Optional methods
+
+These have default implementations you can override.
+
+### `__init__(params)`
+
+Default stores `params` on `self.params`. Override to extract the parameters
+your strategy needs and initialize state variables.
+
+### `reset()`
+
+Called by the engine before each new simulation run. Override if your strategy
+keeps state across years (counters, suspension flags, high-water marks):
+
+```python
+def reset(self):
+    self.years_in_drawdown = 0
+    self.suspended = False
+```
+
+### `get_annual_drawdown()`
+
+```python
+def get_annual_drawdown(self, year, portfolio_state, portfolio_history) -> float: ...
+```
+
+The desired consumption for the year. Default is `0.0` (no consumption).
+Override for inflation-adjusted withdrawals, percentage rules, or dynamic
+adjustments:
+
+```python
+def get_annual_drawdown(self, year, portfolio_state, portfolio_history):
+    base = self.params['initial_investment'] * self.params['withdrawal_rate']
+    inflation = self.params.get('inflation_rate', 0.02)
+    return base * ((1 + inflation) ** year)
+```
+
+### `default_tax_method` (property)
+
+Default `'isk'` (Swedish investment savings account taxation); return
+`'capital_gains'` for standard capital-gains taxation instead.
+
+## Action dictionary format
+
+| Action | Shape |
+| --- | --- |
+| Buy assets | `{'action': 'BUY_ASSET', 'cash_amount': 50000.0}` |
+| Sell assets | `{'action': 'SELL_ASSETS', 'amount_sold': 30000.0}` |
+| Take loan | `{'action': 'BORROW', 'debt_increase': 25000.0}` |
+| Repay debt | `{'action': 'REPAY_DEBT', 'debt_repayment': 10000.0}` |
+| Multiple | `{'action': 'MIXED', 'amount_sold': …, 'debt_increase': …, 'debt_repayment': …}` |
+| Nothing | `{'action': 'NONE'}` |
+
+## Complete example
+
+```python
+from core.strategy import BaseStrategy
+
+
+class MyCustomStrategy(BaseStrategy):
+    """Withdraws a fixed percentage annually and suspends withdrawals
+    if the portfolio falls below a safety threshold."""
+
+    def __init__(self, params: dict):
+        super().__init__(params)
+        self.withdrawal_rate = params.get('withdrawal_rate', 0.04)
+        self.safety_threshold = params.get('safety_threshold', 0.5)
+        self.suspended = False
+
+    def reset(self):
+        self.suspended = False
+
+    @property
+    def default_tax_method(self):
+        return 'capital_gains'
+
+    @property
+    def shortfall_funding_policy(self):
+        return ['USE_CASH', 'SELL_ASSETS']  # Never borrow
+
+    def initialize_portfolio(self, initial_portfolio_state, market_data_at_start):
+        return {'action': 'BUY_ASSET',
+                'cash_amount': initial_portfolio_state['cash']}
+
+    def get_annual_drawdown(self, year, portfolio_state, portfolio_history):
+        if self.suspended:
+            return 0.0
+        base = self.params['initial_investment'] * self.withdrawal_rate
+        inflation = self.params.get('inflation_rate', 0.02)
+        return base * ((1 + inflation) ** year)
+
+    def execute_strategy_for_year(self, year, portfolio_state,
+                                  portfolio_history, desired_drawdown,
+                                  mandatory_costs):
+        if portfolio_history:
+            initial = portfolio_history[0]['net_worth']
+            if portfolio_state['net_worth'] < initial * self.safety_threshold:
+                self.suspended = True
+                return {'action': 'SELL_ASSETS', 'amount_sold': mandatory_costs}
+        return {'action': 'SELL_ASSETS',
+                'amount_sold': desired_drawdown + mandatory_costs}
+```
+
+## Reference implementations
+
+Study the [built-in strategies](/strategies) for working examples:
+**Trinity** (asset withdrawals, inflation-adjusted, never leveraged),
+**Buy Borrow Die** (loan-based funding with LTV risk management), and
+**Get Rich Stay Rich** (hybrid accumulation + withdrawal). Each one's page
+shows its decision flowchart and full Python source.
