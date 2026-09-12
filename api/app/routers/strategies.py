@@ -65,6 +65,20 @@ def _builtin_key(strategy: dict) -> Optional[str]:
                  if b['name'] == strategy['strategy_name']), None)
 
 
+def _builtin_leaderboard_evaluations() -> Dict[str, dict]:
+    """Built-in evaluations predate the SHA sync — they live on the
+    leaderboard as is_custom=FALSE rows keyed by name (V34). The is_custom
+    filter matters: without it a user-published strategy sharing a built-in's
+    name would be served as the built-in's evaluation."""
+    from db.database import db
+
+    rows: Dict[str, dict] = {}
+    for e in (db.get_leaderboard(limit=500) or []):
+        if not e.get('is_custom') and e.get('strategy_name') not in rows:
+            rows[e['strategy_name']] = dict(e)
+    return rows
+
+
 # --- CRUD ------------------------------------------------------------------
 
 @router.get("/strategies")
@@ -113,17 +127,15 @@ def _builtin_list_rows() -> list:
     finally:
         db.release_connection(conn)
 
-    # Built-in evaluations predate the SHA sync — they live on the
-    # leaderboard under the same name; fill in what the SHA join missed.
+    # Fill in scores the SHA join couldn't find (see helper docstring).
     missing = [r for r in rows if not r.get('has_evaluation')]
     if missing:
         try:
-            scores = {e['strategy_name']: e.get('excellence_score')
-                      for e in (db.get_leaderboard(limit=100) or [])}
+            evaluations = _builtin_leaderboard_evaluations()
             for row in missing:
-                score = scores.get(row['strategy_name'])
-                if score is not None:
-                    row['excellence_score'] = score
+                evaluation = evaluations.get(row['strategy_name'])
+                if evaluation and evaluation.get('excellence_score') is not None:
+                    row['excellence_score'] = evaluation['excellence_score']
                     row['has_evaluation'] = True
         except Exception:
             logging.exception("builtin leaderboard score fallback failed")
@@ -139,26 +151,23 @@ def get_strategy(strategy_id: int, user: Optional[dict] = Depends(get_current_us
     out = _serialize_strategy(strategy)
     out['is_owner'] = strategy['user_id'] == user['id']
     out['is_builtin'] = strategy['user_id'] == 0
-    builtin_key = _builtin_key(strategy)
-    if builtin_key:
-        # The sync stores a one-liner in BOTH description columns; show the
-        # full write-up (old Info tab).
-        from utils.strategy_utils import get_strategy_description
-
-        out['description'] = get_strategy_description(builtin_key)
-        out['ai_description'] = out['description']
-    out['usage_fork_count'] = strategy.get('fork_count') or 0
     conn = db.get_connection()
     try:
+        # Same clone/fork definition as the leaderboard query, so the two
+        # pages never disagree about one strategy's usage numbers.
         cursor = db._get_cursor(conn)
-        cursor.execute(
-            "SELECT COUNT(*) FROM CUSTOM_STRATEGIES"
-            " WHERE parent_strategy_id = %s AND deleted_at IS NULL",
-            (strategy_id,))
-        out['usage_clone_count'] = cursor.fetchone()[0]
+        cursor.execute("""
+            SELECT COUNT(*) FILTER (WHERE is_clone_unedited = TRUE),
+                   COUNT(*) FILTER (WHERE is_clone_unedited = FALSE)
+            FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = %s
+        """, (strategy_id,))
+        clones, forks = cursor.fetchone()
+        out['usage_clone_count'] = clones or 0
+        out['usage_fork_count'] = forks or 0
     except Exception:
-        logging.exception("clone count query failed")
+        logging.exception("usage count query failed")
         out['usage_clone_count'] = 0
+        out['usage_fork_count'] = 0
     finally:
         db.release_connection(conn)
     return out
@@ -238,24 +247,28 @@ def evaluate_strategy(strategy_id: int,
 
 
 def _evaluation_in_progress(strategy_id: int) -> bool:
-    """A pending/processing evaluation job for this strategy (old Info tab)."""
+    """A pending/processing evaluation job for this strategy (old Info tab).
+    Targeted SQL, not a job listing: this runs on every Evaluation-tab poll,
+    and a newest-N listing both hauls full-source payloads and misses the
+    user's own job once the queue is deeper than the window."""
     from db.database import db
-    from services.background_manager import BackgroundManager
 
-    for status in ('PENDING', 'PROCESSING'):
-        try:
-            jobs = BackgroundManager.list_jobs(
-                job_type='strategy_evaluation', status=status, limit=50) or []
-        except Exception:
-            logging.exception("evaluation job poll failed")
-            return False
-        for job in jobs:
-            payload = job.get('payload')
-            if isinstance(payload, str):
-                payload = db.deserialize_json_column(payload) or {}
-            if (payload or {}).get('custom_strategy_id') == strategy_id:
-                return True
-    return False
+    conn = db.get_connection()
+    try:
+        cursor = db._get_cursor(conn)
+        cursor.execute("""
+            SELECT 1 FROM BACKGROUND_JOBS
+            WHERE job_type = 'strategy_evaluation'
+              AND status IN ('PENDING', 'PROCESSING')
+              AND payload->>'custom_strategy_id' = %s
+            LIMIT 1
+        """, (str(strategy_id),))
+        return cursor.fetchone() is not None
+    except Exception:
+        logging.exception("evaluation job poll failed")
+        return False
+    finally:
+        db.release_connection(conn)
 
 
 @router.get("/strategies/{strategy_id}/evaluation")
@@ -269,11 +282,7 @@ def strategy_evaluation(strategy_id: int,
         strategy.get('git_commit_sha'),
         lookup_fallback_sha=strategy.get('clone_source_commit_sha'))
     if not evaluation and _builtin_key(strategy):
-        # Built-in evaluations predate the SHA sync — they live on the
-        # leaderboard under the same name (old Info tab did the same).
-        evaluation = next(
-            (dict(e) for e in (db.get_leaderboard(limit=100) or [])
-             if e.get('strategy_name') == strategy['strategy_name']), None)
+        evaluation = _builtin_leaderboard_evaluations().get(strategy['strategy_name'])
     in_progress = _evaluation_in_progress(strategy_id)
     if not evaluation:
         return {'evaluation': None, 'in_progress': in_progress}
@@ -338,7 +347,7 @@ def publish_strategy(strategy_id: int,
     evaluation = db.get_strategy_evaluation(
         strategy.get('git_commit_sha'),
         lookup_fallback_sha=strategy.get('clone_source_commit_sha'))
-    if not evaluation or not evaluation.get('excellence_score'):
+    if not evaluation or evaluation.get('excellence_score') is None:
         raise HTTPException(
             status_code=409,
             detail="Strategy must be evaluated before publishing to the leaderboard")

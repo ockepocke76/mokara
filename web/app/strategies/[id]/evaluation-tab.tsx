@@ -3,9 +3,11 @@
 /** Evaluation tab: radar + component scores + per-scenario table for the
  *  strategy's full evaluation (old Info tab's right column). Three states:
  *  not evaluated (CTA), in progress (auto-refresh), done. */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Data, Layout } from "plotly.js";
 import { toast } from "sonner";
+
+import { categoryLabel } from "../../leaderboard/entry-card";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -35,44 +37,49 @@ type EvaluationPayload = {
 
 const POLL_MS = 10_000;
 
-export function categoryLabel(category: unknown): string {
-  if (!category || typeof category !== "string") return "—";
-  return category
-    .split("_")
-    .map((w) => w[0] + w.slice(1).toLowerCase())
-    .join(" ");
-}
-
 export function EvaluationTab({
   strategyId,
   isOwner,
   hasCode,
+  autoStart = false,
 }: {
   strategyId: number;
   isOwner: boolean;
   hasCode: boolean;
+  /** The designer's "Save & evaluate" CTA (?evaluate=1): queue on mount. */
+  autoStart?: boolean;
 }) {
   const [payload, setPayload] = useState<EvaluationPayload | null>(null);
   const [queueing, setQueueing] = useState(false);
-  // Bumping `tick` refetches; while a job is in progress the effect
-  // schedules its own next bump, giving a poll loop with clean teardown.
+  // Bumping `tick` refetches; while a job is in progress (or nothing has
+  // loaded yet) the effect schedules its own next bump, giving a poll loop
+  // with clean teardown that also survives individual failed polls.
   const [tick, setTick] = useState(0);
+  const payloadRef = useRef<EvaluationPayload | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleNext = () => {
+      if (!cancelled && (!payloadRef.current || payloadRef.current.in_progress)) {
+        timer = setTimeout(() => setTick((t) => t + 1), POLL_MS);
+      }
+    };
     (async () => {
       try {
         const res = await fetch(`/api/bff/strategies/${strategyId}/evaluation`);
-        if (!res.ok || cancelled) return;
+        if (cancelled) return;
+        if (!res.ok) {
+          scheduleNext();
+          return;
+        }
         const body = (await res.json()) as EvaluationPayload;
         if (cancelled) return;
+        payloadRef.current = body;
         setPayload(body);
-        if (body.in_progress) {
-          timer = setTimeout(() => setTick((t) => t + 1), POLL_MS);
-        }
+        scheduleNext();
       } catch {
-        // Transient fetch failure — the next poll or reload recovers.
+        scheduleNext();
       }
     })();
     return () => {
@@ -89,15 +96,33 @@ export function EvaluationTab({
       });
       if (res.ok) {
         toast.success("Full evaluation queued — results appear here when done.");
-        setPayload((p) => ({ ...(p ?? { evaluation: null }), in_progress: true }));
+        const next: EvaluationPayload = {
+          ...(payloadRef.current ?? { evaluation: null }),
+          in_progress: true,
+        };
+        payloadRef.current = next;
+        setPayload(next);
         setTick((t) => t + 1);
       } else {
         toast.error("Could not queue the evaluation.");
       }
+    } catch {
+      toast.error("Could not queue the evaluation.");
     } finally {
       setQueueing(false);
     }
   }
+
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!autoStart || autoStarted.current) return;
+    autoStarted.current = true;
+    void queueEvaluation().finally(() => {
+      // Strip the query even on failure — a reload must not double-queue.
+      window.history.replaceState(null, "", `/strategies/${strategyId}`);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart]);
 
   if (!payload) {
     return <Skeleton className="h-64 w-full" />;
@@ -165,7 +190,7 @@ export function EvaluationTab({
             </span>
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Category: {categoryLabel(evaluation.strategy_category)}
+            Category: {categoryLabel((evaluation.strategy_category as string | null) ?? null)}
             {evaluatedAt && ` · evaluated ${evaluatedAt}`}
           </p>
         </div>

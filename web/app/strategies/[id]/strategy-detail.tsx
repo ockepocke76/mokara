@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -48,29 +48,6 @@ export function StrategyDetail({
 }) {
   const router = useRouter();
   const [tab, setTab] = useState(autoEvaluate ? "evaluation" : "overview");
-  // ?evaluate=1 (the designer's "Save & evaluate" CTA): queue the evaluation
-  // BEFORE the Evaluation tab first fetches, so it sees the running job.
-  const [autoQueued, setAutoQueued] = useState(!autoEvaluate);
-  const autoEvaluated = useRef(false);
-
-  useEffect(() => {
-    if (!autoEvaluate || autoEvaluated.current) return;
-    autoEvaluated.current = true;
-    void (async () => {
-      const res = await fetch(`/api/bff/strategies/${strategy.id}/evaluate`, {
-        method: "POST",
-      });
-      if (res.ok) {
-        toast.success("Full evaluation queued — results appear below when done.");
-      } else {
-        toast.error("Could not queue the evaluation.");
-      }
-      setAutoQueued(true);
-      // Strip the query so a reload doesn't queue a second evaluation.
-      window.history.replaceState(null, "", `/strategies/${strategy.id}`);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoEvaluate]);
 
   async function remove() {
     const res = await fetch(`/api/bff/strategies/${strategy.id}`, {
@@ -163,17 +140,12 @@ export function StrategyDetail({
         </TabsContent>
 
         <TabsContent value="evaluation" className="mt-4">
-          {autoQueued ? (
-            <EvaluationTab
-              strategyId={strategy.id}
-              isOwner={Boolean(strategy.is_owner)}
-              hasCode={Boolean(strategy.code)}
-            />
-          ) : (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              Queueing the evaluation…
-            </p>
-          )}
+          <EvaluationTab
+            strategyId={strategy.id}
+            isOwner={Boolean(strategy.is_owner)}
+            hasCode={Boolean(strategy.code)}
+            autoStart={autoEvaluate}
+          />
         </TabsContent>
 
         <TabsContent value="test" className="mt-4">
@@ -212,7 +184,11 @@ function CloneButton({ strategy }: { strategy: Strategy }) {
     const body = await res.json();
     if (res.ok) {
       setState("done");
-      toast.success(`Cloned to your library.`);
+      if (body.cloned) {
+        toast.success("Cloned to your library.");
+      } else {
+        toast.info("Already in your library.");
+      }
       if (body.strategy_id) {
         router.push(`/strategies/${body.strategy_id}`);
       } else {

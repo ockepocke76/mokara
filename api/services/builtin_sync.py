@@ -106,23 +106,28 @@ def sync_builtin_strategy(
         # 1. Extract code
         code = extract_strategy_code(strategy_class)
         logging.info(f"Extracted {len(code)} chars from {strategy_name}")
-        
+
+        # Store the full user-facing write-up, not the sync's one-liner —
+        # every consumer (library cards, detail page) reads these columns.
+        from utils.strategy_utils import get_strategy_description
+        description = get_strategy_description(strategy_key) or strategy_info['description']
+
         # 2. Check if strategy exists in database
         conn = db.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, code, git_commit_sha FROM CUSTOM_STRATEGIES WHERE user_id = 0 AND strategy_name = %s",
+                "SELECT id, code, git_commit_sha, description FROM CUSTOM_STRATEGIES WHERE user_id = 0 AND strategy_name = %s",
                 (strategy_name,)
             )
             existing = cursor.fetchone()
         finally:
             db.release_connection(conn)
-        
-        # 3. Skip if code unchanged (unless force_update)
+
+        # 3. Skip if nothing changed (unless force_update)
         if existing and not force_update:
-            existing_id, existing_code, existing_sha = existing
-            if existing_code == code:
+            existing_id, existing_code, existing_sha, existing_description = existing
+            if existing_code == code and existing_description == description:
                 return ('skipped', strategy_name, f'Code unchanged (SHA: {existing_sha[:7] if existing_sha else "N/A"})')
         
         # 4-7. Git branch + commits — or a local content-hash SHA when no
@@ -173,16 +178,16 @@ def sync_builtin_strategy(
             if existing:
                 # Update existing
                 cursor.execute("""
-                    UPDATE CUSTOM_STRATEGIES 
+                    UPDATE CUSTOM_STRATEGIES
                     SET code = %s,
-                        git_branch_name = %s,
+                        git_branch_name = COALESCE(%s, git_branch_name),
                         git_commit_sha = %s,
                         description = %s,
                         ai_description = %s,
                         validation_status = 'validated',
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
-                """, (code, branch_name, commit_sha, strategy_info['description'], strategy_info['description'], existing[0]))
+                """, (code, branch_name, commit_sha, description, description, existing[0]))
                 status = 'updated'
                 message = f'Updated (SHA: {commit_sha[:7]})'
             else:
@@ -192,7 +197,7 @@ def sync_builtin_strategy(
                     (user_id, strategy_name, class_name, description, ai_description, code, git_branch_name, git_commit_sha, 
                      is_public, validation_status, created_at, updated_at)
                     VALUES (0, %s, %s, %s, %s, %s, %s, %s, TRUE, 'validated', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (strategy_name, strategy_class.__name__, strategy_info['description'], strategy_info['description'], code, branch_name, commit_sha))
+                """, (strategy_name, strategy_class.__name__, description, description, code, branch_name, commit_sha))
                 status = 'success'
                 message = f'Created (SHA: {commit_sha[:7]})'
             

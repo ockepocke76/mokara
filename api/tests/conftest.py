@@ -7,11 +7,22 @@ generation test starts failing with "Beta access is full" — so drop the
 suite's own users before and after each session.
 """
 import logging
+import os
 
 import pytest
 
 
 def _purge_test_users() -> None:
+    # Only ever touch the local dev/CI database (or an explicit *_test DB) —
+    # never whatever a stray .env might point at.
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    db_name = os.environ.get('POSTGRES_DB', '')
+    if db_name != 'btc_simulator_local' and not db_name.endswith('_test'):
+        logging.warning(
+            "conftest: skipping test-user purge on non-local database %r", db_name)
+        return
     try:
         from db.database import db
 
