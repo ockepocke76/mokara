@@ -30,6 +30,37 @@ app = FastAPI(
 
 
 @app.on_event("startup")
+def _sync_builtin_strategies() -> None:
+    # Idempotent: skips strategies whose code is unchanged. The old app ran
+    # this from an admin button; without it the built-ins never exist as
+    # CUSTOM_STRATEGIES rows, so they can't be listed, viewed, or cloned.
+    # Always DB-only (git_service=None): startup must never block on GitHub
+    # or push commits just because a GITHUB_TOKEN happens to be in the env.
+    # The advisory lock serializes concurrent workers/containers — the sync
+    # is SELECT-then-INSERT and CUSTOM_STRATEGIES has no unique constraint,
+    # so an unserialized race would create duplicate built-in rows.
+    try:
+        from db.database import db
+        from services.builtin_sync import sync_all_builtins
+
+        conn = db.get_connection()
+        try:
+            cursor = db._get_cursor(conn)
+            cursor.execute("SELECT pg_advisory_lock(hashtext('mokara_builtin_sync'))")
+            try:
+                results = sync_all_builtins(None, db)
+            finally:
+                cursor.execute("SELECT pg_advisory_unlock(hashtext('mokara_builtin_sync'))")
+        finally:
+            db.release_connection(conn)
+        changed = [r for r in results if r[0] not in ('skipped',)]
+        if changed:
+            logging.info("Builtin strategy sync: %s", changed)
+    except Exception:
+        logging.exception("Builtin strategy sync failed; continuing")
+
+
+@app.on_event("startup")
 def _reconcile_orphaned_generation_runs() -> None:
     # Runs still marked 'running' at startup belong to a dead process (the
     # runner is a daemon thread) — fail them so their SSE streams terminate

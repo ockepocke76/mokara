@@ -5,6 +5,7 @@ const DOCS_NAV = [
   { href: "/docs/methodology", label: "Methodology" },
   { href: "/docs/assets", label: "Assets" },
   { href: "/docs/glossary", label: "Glossary" },
+  { href: "/docs/strategy-api", label: "Strategy API" },
   { href: "/docs/disclaimer", label: "Disclaimer" },
 ];
 

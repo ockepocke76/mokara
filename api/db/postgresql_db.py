@@ -1424,10 +1424,37 @@ class PostgreSQLDatabase(DatabaseInterface):
                         code = CASE WHEN %s = TRUE THEN NULL ELSE code END,
                         git_commit_sha = CASE WHEN %s = TRUE THEN NULL ELSE git_commit_sha END
                     WHERE id = %s
-                """, (class_name, description, ai_description, parameters_json, 
-                      validation_status, validation_error, last_validation_timestamp, 
+                """, (class_name, description, ai_description, parameters_json,
+                      validation_status, validation_error, last_validation_timestamp,
                       parent_strategy_id, clone_source_commit_sha, is_clone_unedited,
                       is_clone_unedited, is_clone_unedited, strategy_id))
+
+                if evolution_request:
+                    # DB-native evolution history (V37). The git metadata above
+                    # is best-effort only — mokara runs without the GitHub repo,
+                    # so this column is the authoritative timeline. Aliased
+                    # import: a bare `timezone` here would shadow the module
+                    # import for the WHOLE function, breaking the git block
+                    # above (Python scoping). Savepoint: recording the timeline
+                    # must never fail the save itself (e.g. V37 not applied).
+                    from datetime import datetime as _dt, timezone as _tz
+                    entry = {
+                        'timestamp': _dt.now(_tz.utc).isoformat(),
+                        'request': evolution_request,
+                        'user_id': user_id,
+                        'commit_sha': git_commit_sha,
+                    }
+                    cursor.execute("SAVEPOINT evolution_append")
+                    try:
+                        cursor.execute("""
+                            UPDATE CUSTOM_STRATEGIES
+                            SET evolution_history = COALESCE(evolution_history, '[]'::jsonb) || %s::jsonb
+                            WHERE id = %s
+                        """, (json.dumps([entry]), strategy_id))
+                        cursor.execute("RELEASE SAVEPOINT evolution_append")
+                    except Exception:
+                        logging.exception("Evolution-history append failed; saving without it")
+                        cursor.execute("ROLLBACK TO SAVEPOINT evolution_append")
 
             else:
                 # === INSERT NEW STRATEGY ===
@@ -1604,6 +1631,7 @@ class PostgreSQLDatabase(DatabaseInterface):
                     c.git_branch_name, c.git_commit_sha, c.git_repo_url,
                     c.parent_strategy_id, c.clone_source_commit_sha, c.cloned_at,
                     c.is_public, c.is_published_to_leaderboard, c.fork_count,
+                    c.deleted_at,
                     (c.code IS NULL AND c.parent_strategy_id IS NOT NULL) as is_pure_clone
                 FROM CUSTOM_STRATEGIES c
                 LEFT JOIN CUSTOM_STRATEGIES p ON c.parent_strategy_id = p.id
@@ -1760,32 +1788,43 @@ class PostgreSQLDatabase(DatabaseInterface):
         try:
             cursor = self._get_cursor(conn)
             cursor.execute("""
-                SELECT git_branch_name, git_commit_sha 
-                FROM CUSTOM_STRATEGIES 
+                SELECT git_branch_name, git_commit_sha, evolution_history
+                FROM CUSTOM_STRATEGIES
                 WHERE id = %s
             """, (strategy_id,))
-            
+
             row = cursor.fetchone()
-            if not row or not row[0]:
-                logging.debug(f"No Git branch found for strategy {strategy_id}")
+            if not row:
                 return []
-            
-            branch_name, commit_sha = row
-            
-            # Fetch from Git
-            try:
-                from services.git_service import get_git_service
-                git_service = get_git_service()
-                metadata = git_service.get_metadata(branch_name, commit_sha)
-                
-                if metadata and 'evolution_history' in metadata:
-                    return metadata['evolution_history']
-                
-                logging.debug(f"No evolution history in metadata for strategy {strategy_id}")
-                return []
-            except Exception as e:
-                logging.error(f"Failed to fetch evolution history from Git: {e}")
-                return []
+
+            branch_name, commit_sha, db_history = row
+
+            if isinstance(db_history, str):
+                db_history = json.loads(db_history)
+            db_history = db_history or []
+
+            # Git metadata covers entries from the old GitHub-backed app;
+            # the DB column (V37) covers everything since. A save with git
+            # configured writes to both, so merge with dedup rather than
+            # letting either source hide the other.
+            git_history = []
+            if branch_name:
+                try:
+                    from services.git_service import get_git_service
+                    git_service = get_git_service()
+                    metadata = git_service.get_metadata(branch_name, commit_sha)
+                    if metadata and 'evolution_history' in metadata:
+                        git_history = metadata['evolution_history'] or []
+                except Exception as e:
+                    logging.error(f"Failed to fetch evolution history from Git: {e}")
+
+            # A git-configured save writes the same event to both stores with
+            # slightly different timestamp suffixes — key on seconds + request.
+            def _key(e):
+                return ((e.get('timestamp') or '')[:19], e.get('request'))
+
+            seen = {_key(e) for e in git_history}
+            return git_history + [e for e in db_history if _key(e) not in seen]
         except Exception as e:
             logging.error(f"Failed to get evolution history: {e}", exc_info=True)
             return []

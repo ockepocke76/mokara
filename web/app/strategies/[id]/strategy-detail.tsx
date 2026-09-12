@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -25,9 +25,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MermaidChart } from "@/components/mermaid-chart";
+import { Markdown } from "@/components/markdown";
 
 import { TestFlightCard } from "../new/cards";
 import { TestArtifact } from "../model";
+import { EvaluationTab } from "./evaluation-tab";
+import { HistoryTab } from "./history-tab";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Strategy = Record<string, any>;
@@ -35,63 +40,14 @@ type Strategy = Record<string, any>;
 export function StrategyDetail({
   strategy,
   autoEvaluate = false,
+  viewerName,
 }: {
   strategy: Strategy;
   autoEvaluate?: boolean;
+  viewerName?: string | null;
 }) {
   const router = useRouter();
-  const [showCode, setShowCode] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [test, setTest] = useState<TestArtifact | null>(null);
-  const [testError, setTestError] = useState<string | null>(null);
-
-  const params: Record<string, { default?: number; description?: string }> =
-    strategy.parameters_json ?? {};
-  const description = strategy.ai_description || strategy.description || "";
-
-  async function runTest() {
-    setTesting(true);
-    setTestError(null);
-    try {
-      const res = await fetch(`/api/bff/strategies/${strategy.id}/test`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      });
-      const body = await res.json();
-      if (!res.ok || !body.success) {
-        setTestError(body.error || body.detail || "Test failed");
-        return;
-      }
-      setTest(body as TestArtifact);
-    } finally {
-      setTesting(false);
-    }
-  }
-
-  async function evaluate() {
-    const res = await fetch(`/api/bff/strategies/${strategy.id}/evaluate`, {
-      method: "POST",
-    });
-    if (res.ok) {
-      toast.success(
-        "Full evaluation queued — results appear on the leaderboard when done.",
-      );
-    } else {
-      toast.error("Could not queue the evaluation.");
-    }
-  }
-
-  // The designer's "Save & evaluate" CTA lands here with ?evaluate=1.
-  const autoEvaluated = useRef(false);
-  useEffect(() => {
-    if (!autoEvaluate || autoEvaluated.current) return;
-    autoEvaluated.current = true;
-    void evaluate();
-    // Strip the query so a reload doesn't queue a second evaluation.
-    window.history.replaceState(null, "", `/strategies/${strategy.id}`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoEvaluate]);
+  const [tab, setTab] = useState(autoEvaluate ? "evaluation" : "overview");
 
   async function remove() {
     const res = await fetch(`/api/bff/strategies/${strategy.id}`, {
@@ -105,54 +61,57 @@ export function StrategyDetail({
     }
   }
 
+  const description = strategy.ai_description || strategy.description || "";
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="flex flex-wrap items-center gap-2 text-3xl font-semibold tracking-tight">
             {strategy.strategy_name}
+            {strategy.is_builtin && <Badge>built-in</Badge>}
             {strategy.validation_status === "validated" && (
               <Badge variant="secondary">validated</Badge>
             )}
             {strategy.validation_status === "failed" && (
               <Badge variant="destructive">draft — failed checks</Badge>
             )}
+            {strategy.is_published_to_leaderboard && (
+              <Badge variant="outline">on the leaderboard</Badge>
+            )}
           </h1>
-          {description && (
-            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-              {description}
-            </p>
+          <UsageBadges strategy={strategy} />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {strategy.is_owner ? (
+            <>
+              <Button variant="outline" asChild>
+                <Link href={`/strategies/new?seed=${strategy.id}`}>Evolve</Link>
+              </Button>
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button variant="ghost">Delete</Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Delete {strategy.strategy_name}?</DialogTitle>
+                    <DialogDescription>
+                      The strategy is removed from your list. Simulations that
+                      used it keep their results.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button variant="destructive" onClick={remove}>
+                      Delete
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </>
+          ) : (
+            <CloneButton strategy={strategy} />
           )}
         </div>
-        {strategy.is_owner && (
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" asChild>
-              <Link href={`/strategies/new?seed=${strategy.id}`}>Evolve</Link>
-            </Button>
-            <Button variant="outline" onClick={evaluate}>
-              Run full evaluation
-            </Button>
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button variant="ghost">Delete</Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Delete {strategy.strategy_name}?</DialogTitle>
-                  <DialogDescription>
-                    The strategy is removed from your list. Simulations that
-                    used it keep their results.
-                  </DialogDescription>
-                </DialogHeader>
-                <DialogFooter>
-                  <Button variant="destructive" onClick={remove}>
-                    Delete
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </div>
-        )}
       </div>
 
       {strategy.validation_status === "failed" && strategy.validation_error && (
@@ -166,6 +125,137 @@ export function StrategyDetail({
             </pre>
           </CardContent>
         </Card>
+      )}
+
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="evaluation">Evaluation</TabsTrigger>
+          <TabsTrigger value="test">Test</TabsTrigger>
+          <TabsTrigger value="history">History</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="mt-4">
+          <OverviewTab strategy={strategy} description={description} viewerName={viewerName} />
+        </TabsContent>
+
+        <TabsContent value="evaluation" className="mt-4">
+          <EvaluationTab
+            strategyId={strategy.id}
+            isOwner={Boolean(strategy.is_owner)}
+            hasCode={Boolean(strategy.code)}
+            autoStart={autoEvaluate}
+          />
+        </TabsContent>
+
+        <TabsContent value="test" className="mt-4">
+          <TestTab strategy={strategy} />
+        </TabsContent>
+
+        <TabsContent value="history" className="mt-4">
+          <HistoryTab strategyId={strategy.id} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function UsageBadges({ strategy }: { strategy: Strategy }) {
+  const parts: string[] = [];
+  if (strategy.usage_clone_count > 0)
+    parts.push(`🔗 ${strategy.usage_clone_count} clone${strategy.usage_clone_count === 1 ? "" : "s"}`);
+  if (strategy.usage_fork_count > 0)
+    parts.push(`🔱 ${strategy.usage_fork_count} fork${strategy.usage_fork_count === 1 ? "" : "s"}`);
+  if (parts.length === 0) return null;
+  return (
+    <p className="mt-1 text-sm text-muted-foreground">{parts.join(" · ")}</p>
+  );
+}
+
+function CloneButton({ strategy }: { strategy: Strategy }) {
+  const router = useRouter();
+  const [state, setState] = useState<"idle" | "busy" | "done">("idle");
+
+  async function clone() {
+    setState("busy");
+    const res = await fetch(`/api/bff/strategies/${strategy.id}/clone`, {
+      method: "POST",
+    });
+    const body = await res.json();
+    if (res.ok) {
+      setState("done");
+      if (body.cloned) {
+        toast.success("Cloned to your library.");
+      } else {
+        toast.info("Already in your library.");
+      }
+      if (body.strategy_id) {
+        router.push(`/strategies/${body.strategy_id}`);
+      } else {
+        router.refresh();
+      }
+    } else {
+      setState("idle");
+      toast.error(body.detail || "Could not clone the strategy.");
+    }
+  }
+
+  return (
+    <Button onClick={() => void clone()} disabled={state !== "idle"}>
+      {state === "busy"
+        ? "Cloning…"
+        : state === "done"
+          ? "Cloned ✓"
+          : "Clone to my library"}
+    </Button>
+  );
+}
+
+function OverviewTab({
+  strategy,
+  description,
+  viewerName,
+}: {
+  strategy: Strategy;
+  description: string;
+  viewerName?: string | null;
+}) {
+  const [showCode, setShowCode] = useState(false);
+  const [mermaid, setMermaid] = useState<string | null>(null);
+
+  const params: Record<string, { default?: number; description?: string }> =
+    strategy.parameters_json ?? {};
+
+  useEffect(() => {
+    if (!strategy.is_builtin) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/bff/strategies/${strategy.id}/flowchart?theme=light`,
+        );
+        if (!res.ok) return;
+        const body = await res.json();
+        if (!cancelled && body.mermaid) setMermaid(body.mermaid);
+      } catch {
+        // No flowchart — the section just doesn't render.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [strategy.id, strategy.is_builtin]);
+
+  return (
+    <div className="space-y-6">
+      {description && (
+        <div className="max-w-2xl text-sm text-muted-foreground">
+          <Markdown>{description}</Markdown>
+        </div>
+      )}
+
+      {strategy.is_owner && !strategy.is_builtin && (
+        <PublishCard strategy={strategy} viewerName={viewerName} />
       )}
 
       {Object.keys(params).length > 0 && (
@@ -217,13 +307,160 @@ export function StrategyDetail({
         </div>
       )}
 
-      <div className="space-y-3">
-        <Button onClick={runTest} disabled={testing || !strategy.code}>
-          {testing ? "Running test flight…" : "Run a test flight"}
-        </Button>
-        {testError && <p className="text-sm text-red-600">{testError}</p>}
-        {test && <TestFlightCard test={test} />}
-      </div>
+      {mermaid && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Decision flowchart</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-3 text-sm text-muted-foreground">
+              How the strategy makes its annual decisions:
+            </p>
+            <MermaidChart code={mermaid} />
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function PublishCard({
+  strategy,
+  viewerName,
+}: {
+  strategy: Strategy;
+  viewerName?: string | null;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const published = Boolean(strategy.is_published_to_leaderboard);
+
+  async function setPublished(next: boolean) {
+    setBusy(true);
+    try {
+      const res = await fetch(
+        `/api/bff/strategies/${strategy.id}/${next ? "publish" : "unpublish"}`,
+        { method: "POST" },
+      );
+      const body = await res.json();
+      if (res.ok) {
+        toast.success(
+          next ? "Published to the leaderboard! 🏆" : "Removed from the leaderboard.",
+        );
+        setConfirmOpen(false);
+        router.refresh();
+      } else {
+        toast.error(body.detail || "Could not change the publish status.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
+        <div className="text-sm">
+          <p className="font-medium">
+            {published ? "On the public leaderboard" : "Private"}
+          </p>
+          <p className="text-muted-foreground">
+            {published
+              ? "Anyone can see this strategy's name, score, and author on the leaderboard."
+              : "Publish to compete on the public leaderboard — requires a full evaluation."}
+          </p>
+        </div>
+        {published ? (
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => void setPublished(false)}
+          >
+            {busy ? "Working…" : "Unpublish"}
+          </Button>
+        ) : (
+          <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+            <DialogTrigger asChild>
+              <Button variant="secondary">Publish…</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Publish to the leaderboard?</DialogTitle>
+                <DialogDescription>
+                  “{strategy.strategy_name}” will appear on the public
+                  leaderboard with its excellence score
+                  {viewerName ? (
+                    <>
+                      {" "}
+                      under your username <b>{viewerName}</b> (changeable in
+                      Settings)
+                    </>
+                  ) : (
+                    " under your username (set one in Settings first)"
+                  )}
+                  .
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button disabled={busy} onClick={() => void setPublished(true)}>
+                  {busy ? "Publishing…" : "Yes, publish"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TestTab({ strategy }: { strategy: Strategy }) {
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState<TestArtifact | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+
+  if (!strategy.is_owner) {
+    return (
+      <p className="py-8 text-center text-sm text-muted-foreground">
+        Test flights execute the strategy&apos;s code, so only the owner can run
+        one — clone it to your library first.
+      </p>
+    );
+  }
+
+  async function runTest() {
+    setTesting(true);
+    setTestError(null);
+    try {
+      const res = await fetch(`/api/bff/strategies/${strategy.id}/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const body = await res.json();
+      if (!res.ok || !body.success) {
+        setTestError(body.error || body.detail || "Test failed");
+        return;
+      }
+      setTest(body as TestArtifact);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        A quick smoke test — a handful of simulated paths plus the historical
+        backtest. Results are not saved and don&apos;t affect the leaderboard;
+        for reliable numbers, run a full evaluation.
+      </p>
+      <Button onClick={runTest} disabled={testing || !strategy.code}>
+        {testing ? "Running test flight…" : "Run a test flight"}
+      </Button>
+      {testError && <p className="text-sm text-red-600">{testError}</p>}
+      {test && <TestFlightCard test={test} />}
     </div>
   );
 }
