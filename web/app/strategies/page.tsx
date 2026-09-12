@@ -51,6 +51,7 @@ export default async function StrategiesPage() {
   }
   const body = await res.json();
   const strategies: StrategyRow[] = body.strategies ?? [];
+  const builtins: StrategyRow[] = body.builtins ?? [];
   const activeRuns: ActiveRun[] = body.active_runs ?? [];
   const mine = strategies.filter((s) => s.user_id === viewer.id);
   const community = strategies.filter((s) => s.user_id !== viewer.id);
@@ -113,6 +114,23 @@ export default async function StrategiesPage() {
             <StrategyCard key={s.id} strategy={s} />
           ))}
         </div>
+      )}
+
+      {builtins.length > 0 && (
+        <>
+          <h2 className="mb-1 mt-10 text-xl font-semibold tracking-tight">
+            Built-in strategies
+          </h2>
+          <p className="mb-4 text-sm text-muted-foreground">
+            The reference strategies every account starts from — open one to
+            see how it decides, or clone it as a starting point.
+          </p>
+          <div className="flex flex-col gap-4">
+            {builtins.map((s) => (
+              <StrategyCard key={s.id} strategy={s} />
+            ))}
+          </div>
+        </>
       )}
 
       {community.length > 0 && (

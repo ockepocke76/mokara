@@ -43,6 +43,7 @@ export default async function StrategyPage({
       <StrategyDetail
         strategy={strategy}
         autoEvaluate={evaluate === "1" && Boolean(strategy.is_owner)}
+        viewerName={viewer.username || viewer.name || null}
       />
     </main>
   );
