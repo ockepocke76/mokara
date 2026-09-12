@@ -94,6 +94,7 @@ def test_private_sim_is_invisible_to_other_users():
     # Reads: 404 for another user and for anonymous
     for headers in (other_h, SECRET):
         assert client.get(f"/simulations/{sim_hash}/pdf/status", headers=headers).status_code == 404
+        assert client.get(f"/simulations/{sim_hash}/preview", headers=headers).status_code == 404
         r = client.get(f"/simulations/{sim_hash}/results", headers=headers)
         assert r.status_code == 404
         assert r.json()["detail"] == "Simulation not found"  # gated before lookup

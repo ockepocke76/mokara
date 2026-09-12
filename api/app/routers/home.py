@@ -145,6 +145,10 @@ def simulation_preview(
 ):
     from fastapi.responses import Response
 
+    from app.access import require_simulation_view
+
+    require_simulation_view(simulation_hash, user)
+
     currency = None
     if user:
         try:
