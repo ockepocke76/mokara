@@ -92,12 +92,27 @@ class _SandboxModule:
         return f'<sandboxed module {module.__name__!r}>'
 
 
+# One proxy per module, cached: attribute access runs in the simulation's
+# innermost loop (num_sims × num_years calls), so e.g. np.random must not
+# allocate a fresh wrapper on every read.
+_MODULE_PROXIES = {}
+
+
+def _proxy_for_module(module):
+    name = module.__name__
+    proxy = _MODULE_PROXIES.get(name)
+    if proxy is None:
+        proxy = _SandboxModule(module)
+        _MODULE_PROXIES[name] = proxy
+    return proxy
+
+
 # Optionally, add other safe utilities if needed.
 # For example, allowing the 'math' library is generally safe.
 import math
-_safe_globals['math'] = _SandboxModule(math)
-_safe_globals['np'] = _SandboxModule(np)
-_safe_globals['pd'] = _SandboxModule(pd)
+_safe_globals['math'] = _proxy_for_module(math)
+_safe_globals['np'] = _proxy_for_module(np)
+_safe_globals['pd'] = _proxy_for_module(pd)
 
 # Modules strategy code may import. The import machinery resolves __import__
 # through __builtins__, so this is enforced by _sandbox_builtins below.
@@ -114,7 +129,7 @@ def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
     # Wrap in the policy proxy: `from numpy import load` extracts attributes
     # with a direct getattr on the returned module (no _getattr_ involved),
     # so the module object itself must enforce the deny-list.
-    return _SandboxModule(module)
+    return _proxy_for_module(module)
 
 
 # CRITICAL: exec() injects the REAL builtins module into any globals dict that
@@ -161,7 +176,7 @@ def _sandboxed_getattr(obj, name):
     value = getattr(obj, name)
     if isinstance(value, types.ModuleType):
         if value.__name__ in _ALLOWED_MODULE_NAMES:
-            return _SandboxModule(value)
+            return _proxy_for_module(value)
         raise AttributeError(
             f'module "{value.__name__}" is not accessible in the sandbox.')
     return value
@@ -227,14 +242,27 @@ class StrategyPolicy(RestrictingNodeTransformer):
         """
         Override the default name check to allow single-underscore names.
         This allows the LLM to generate "private" helper methods (e.g., `_my_helper`).
-        It continues to block double-underscore names to prevent access to mangled attributes.
+        It continues to block double-underscore names to prevent access to mangled attributes,
+        and reserves guard-style names (underscore-wrapped, like `_getattr_`,
+        `_getitem_`, `_write_`) so sandboxed code can never shadow or rebind
+        the RestrictedPython guards its own transformed code calls.
         """
         if name is None:
             return node
-        
-        if name.startswith('__') and not allow_magic_methods:
-            logging.error(f"DEBUG SANDBOX: Blocking name '{name}' at line {getattr(node, 'lineno', '?')}")
-            self.error(node, f'"{name}" is an invalid variable name because it starts with "__".')
+
+        if name.startswith('__'):
+            if not allow_magic_methods:
+                logging.error(f"DEBUG SANDBOX: Blocking name '{name}' at line {getattr(node, 'lineno', '?')}")
+                self.error(node, f'"{name}" is an invalid variable name because it starts with "__".')
+        elif name.startswith('_') and name.endswith('_'):
+            self.error(node, f'"{name}" is a reserved sandbox guard name pattern (underscore-wrapped).')
+        return node
+
+    def visit_Global(self, node):
+        """Forbid `global`: the exec globals hold the sandbox guards, and a
+        `global _getattr_ = ...` rebinding would neuter them for the rest of
+        the execution. Strategies have no legitimate use for it."""
+        self.error(node, 'global statements are not allowed in the sandbox.')
         return node
 
     def visit_Attribute(self, node):
@@ -520,8 +548,11 @@ def _validation_worker(code_string, strategy_class_name, strict_category, queue)
                 resource.setrlimit(resource.RLIMIT_CPU, (cpu_budget, cpu_budget))
             except (ValueError, OSError):
                 pass
-            memory_bytes = int(
-                os.getenv('SANDBOX_VALIDATION_MEMORY_MB', '1024')) * 1024 * 1024
+            try:
+                memory_mb = int(os.getenv('SANDBOX_VALIDATION_MEMORY_MB', '1024'))
+            except ValueError:
+                memory_mb = 1024  # a bad env var must not fail every validation
+            memory_bytes = memory_mb * 1024 * 1024
             try:
                 resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
             except (ValueError, OSError):
@@ -531,9 +562,14 @@ def _validation_worker(code_string, strategy_class_name, strict_category, queue)
         execute_strategy_code(
             code_string, strategy_class_name,
             strict_category=strict_category, isolate=False)
-        queue.put(('ok', None))
+        queue.put(('ok', None, None))
     except BaseException as e:  # noqa: BLE001 — report MemoryError etc. too
-        queue.put(('error', f'{type(e).__name__}: {e}'))
+        import traceback
+
+        # The child has no configured logging; ship the traceback back so the
+        # parent can log why the dry run failed.
+        queue.put(('error', f'{type(e).__name__}: {e}',
+                   traceback.format_exc(limit=20)[-4000:]))
 
 
 def _validate_in_subprocess(code_string, strategy_class_name, strict_category):
@@ -562,12 +598,15 @@ def _validate_in_subprocess(code_string, strategy_class_name, strict_category):
                 "Strategy validation timed out — the code appears to run "
                 "indefinitely (e.g. an infinite loop) and was rejected.")
         try:
-            status, detail = queue.get(timeout=5)
+            status, detail, child_traceback = queue.get(timeout=5)
         except Exception:
             raise ValueError(
                 "Strategy validation crashed (likely exceeded the sandbox "
                 "memory limit) and was rejected.")
         if status != 'ok':
+            if child_traceback:
+                logging.error(
+                    "Sandbox validation failed in subprocess:\n%s", child_traceback)
             raise ValueError(f"Strategy validation failed: {detail}")
     finally:
         queue.close()
@@ -613,11 +652,15 @@ def execute_strategy_code(code_string: str, strategy_class_name: str = "CustomSt
             logging.error(f"--- FAILED CODE ---\n{numbered_code}\n-------------------")
             raise
 
-        # 2. Prepare a local namespace for the execution.
+        # 2. Prepare a per-call namespace. The globals are a fresh shallow
+        # copy: exec writes (and any runtime rebinding trick that slips past
+        # the compile-time bans on `global` and guard-style names) must never
+        # mutate the shared template that later strategies will use.
         local_namespace = {}
+        exec_globals = dict(_safe_globals)
 
         # 3. Execute the compiled code. The result will populate local_namespace.
-        exec(byte_code, _safe_globals, local_namespace)
+        exec(byte_code, exec_globals, local_namespace)
 
         # 4. Extract the newly defined class from the namespace.
         strategy_class = local_namespace.get(strategy_class_name)
@@ -652,9 +695,13 @@ def execute_strategy_code(code_string: str, strategy_class_name: str = "CustomSt
             logging.error(f"Sandbox validation failed: {error_msg}")
             raise ValueError(error_msg)
 
-        # 5. Perform a dry run validation to catch runtime errors like KeyErrors.
-        # This is re-raised as an exception to be handled by the UI.
-        _validate_strategy_class(strategy_class, strict_category=strict_category)
+        # 5. Dry-run validation to catch runtime errors like KeyErrors.
+        # When isolate=True the resource-limited subprocess already ran this
+        # exact dry run — repeating it here would execute the untrusted
+        # methods a second time with NO limits (and double the cost), so it
+        # only runs for isolate=False (i.e. inside the guarded child).
+        if not isolate:
+            _validate_strategy_class(strategy_class, strict_category=strict_category)
 
         logging.info(f"Successfully executed and validated sandboxed strategy class: {strategy_class_name}")
         # Return the user's strategy class. The calling code is responsible for wrapping it.

@@ -120,6 +120,54 @@ def test_module_proxy_policy_direct():
     assert sandbox._guarded_import('math').sqrt(4) == 2.0
 
 
+# ---------------------------------------------------------------------------
+# Guard integrity: sandboxed code must not be able to rebind or shadow the
+# RestrictedPython guards (_getattr_ etc.) that all its transformed code
+# calls — a rebinding would neuter the deny-list for later strategies.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "payload_body",
+    [
+        # rebinding the shared guard through a global statement
+        "        global _getattr_\n        _getattr_ = None",
+        # shadowing a guard name locally
+        "        _getattr_ = None",
+        # defining a guard-style name at module scope
+        "_getitem_ = None",
+    ],
+)
+def test_guard_rebinding_is_rejected_at_compile(payload_body):
+    if payload_body.startswith("        "):
+        code = (
+            "from core.strategy import BaseStrategy\n"
+            "class CustomStrategy(BaseStrategy):\n"
+            "    def helper(self):\n"
+            f"{payload_body}\n"
+            f"{VALID_BODY}"
+        )
+    else:
+        code = (
+            "from core.strategy import BaseStrategy\n"
+            f"{payload_body}\n"
+            "class CustomStrategy(BaseStrategy):\n"
+            f"{VALID_BODY}"
+        )
+    with pytest.raises(Exception):
+        execute_strategy_code(code, "CustomStrategy")
+
+
+def test_shared_globals_survive_strategy_execution():
+    """exec uses a per-call copy: running a strategy never mutates the
+    shared template or the live guard function."""
+    guard_before = sandbox._safe_globals['_getattr_']
+    keys_before = set(sandbox._safe_globals)
+    code = WORKING_STRATEGY.replace("{LOOP}", "pass")
+    assert execute_strategy_code(code, "CustomStrategy") is not None
+    assert sandbox._safe_globals['_getattr_'] is guard_before
+    assert set(sandbox._safe_globals) == keys_before
+
+
 def test_globals_hold_proxies_not_raw_modules():
     import types
 
