@@ -109,10 +109,10 @@ class JobWorker:
     def _process_pdf_generation(self, job_id: str, payload: Dict) -> Dict:
         """Generate PDF from simulation results."""
         from db.database import db
+        from db.pdf_storage import get_pdf_storage
         from background_tasks import _generate_pdf_for_simulation
         import time
-        import os
-        
+
         start_time = time.time()
         history_id = payload['history_id']
         logging.info(f"📄 Generating PDF for history_id={history_id}")
@@ -137,18 +137,9 @@ class JobWorker:
         if not pdf_buffer:
             raise RuntimeError("PDF generation returned None")
         
-        # 3. Save PDF to filesystem
-        # Create directory structure: pdf_cache/xx/xx/
-        pdf_dir = os.path.join('pdf_cache', simulation_hash[:2], simulation_hash[2:4])
-        os.makedirs(pdf_dir, exist_ok=True)
-        
-        # Save PDF file
-        pdf_filename = f"{simulation_hash}.pdf"
-        pdf_path = os.path.join(pdf_dir, pdf_filename)
-        
-        with open(pdf_path, 'wb') as f:
-            f.write(pdf_buffer.getvalue())
-        
+        # 3. Save PDF via the storage backend (local pdf_cache/ in dev, GCS in prod)
+        pdf_path = get_pdf_storage().save_pdf(simulation_hash, pdf_buffer)
+
         logging.info(f"💾 Saved PDF to {pdf_path}")
         
         # 4. Calculate generation time
