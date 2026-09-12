@@ -1,12 +1,31 @@
 "use client";
 
-/** History tab: the strategy's evolution timeline (old History tab) —
- *  one entry per evolve/refine request, newest first, genesis at the end. */
+/** History tab: the strategy's human-input timeline. For the owner this is
+ *  built from the generation runs — the verbatim original request, evolve
+ *  requests, clarify answers, and refine feedback. Strategies without
+ *  recorded runs (non-owners, migrated rows) fall back to the legacy
+ *  evolution entries + genesis. */
 import { useEffect, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
+type RunInput = {
+  kind?: string;
+  action?: string;
+  feedback?: string;
+  answers?: Record<string, string>;
+  timestamp?: string;
+};
+type RunEntry = {
+  run_id: string;
+  kind: "create" | "evolve";
+  status: string;
+  request?: string | null;
+  created_at?: string;
+  inputs: RunInput[];
+};
 type HistoryEntry = {
   timestamp?: string;
   request?: string;
@@ -14,6 +33,7 @@ type HistoryEntry = {
 };
 type HistoryPayload = {
   history: HistoryEntry[];
+  runs?: RunEntry[];
   genesis?: string | null;
   created_at?: string | null;
 };
@@ -47,15 +67,94 @@ export function HistoryTab({ strategyId }: { strategyId: number }) {
     return <Skeleton className="h-40 w-full" />;
   }
 
+  const runs = payload.runs ?? [];
+  if (runs.length > 0) {
+    return <RunTimeline runs={runs} />;
+  }
+  return <LegacyTimeline payload={payload} />;
+}
+
+function RunTimeline({ runs }: { runs: RunEntry[] }) {
+  const newestFirst = [...runs].reverse();
+  return (
+    <div className="space-y-5">
+      <p className="text-sm text-muted-foreground">
+        Everything you told the designer about this strategy, verbatim —
+        newest first.
+      </p>
+      {newestFirst.map((run, i) => (
+        <div key={run.run_id} className="border-l-2 pl-4">
+          <p className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+            {run.kind === "create"
+              ? "🌱 Original request"
+              : `Evolve request #${runs.filter((r) => r.kind === "evolve").indexOf(run) + 1}`}
+            <span className="font-normal text-muted-foreground">
+              {formatTime(run.created_at)}
+            </span>
+            {run.status === "failed" && (
+              <Badge variant="destructive">run failed — draft saved</Badge>
+            )}
+            {i === 0 && run.status === "running" && (
+              <Badge variant="outline">running</Badge>
+            )}
+          </p>
+          {run.request && (
+            <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">
+              {run.request}
+            </p>
+          )}
+          {run.inputs.map((input, j) => (
+            <RunInputBlock key={j} input={input} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RunInputBlock({ input }: { input: RunInput }) {
+  const time = formatTime(input.timestamp);
+  if (input.answers && Object.keys(input.answers).length > 0) {
+    return (
+      <div className="mt-2 border-l pl-3">
+        <p className="text-xs font-medium">
+          Clarification answers
+          {time && <span className="ml-2 font-normal text-muted-foreground">{time}</span>}
+        </p>
+        <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
+          {Object.entries(input.answers).map(([q, a]) => (
+            <li key={q} className="whitespace-pre-wrap">{String(a)}</li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+  if (input.feedback) {
+    return (
+      <div className="mt-2 border-l pl-3">
+        <p className="text-xs font-medium">
+          Asked for changes
+          {time && <span className="ml-2 font-normal text-muted-foreground">{time}</span>}
+        </p>
+        <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">
+          {input.feedback}
+        </p>
+      </div>
+    );
+  }
+  // Bare actions (save/discard clicks) add no information — skip them.
+  return null;
+}
+
+function LegacyTimeline({ payload }: { payload: HistoryPayload }) {
   const entries = [...(payload.history ?? [])].reverse(); // newest first
 
   return (
     <div className="space-y-4">
-      {entries.length === 0 && (
+      {entries.length === 0 && !payload.genesis && (
         <Card>
           <CardContent className="py-6 text-sm text-muted-foreground">
-            No evolutions yet — every time you evolve this strategy, the
-            request lands here as a timeline entry.
+            No history recorded for this strategy.
           </CardContent>
         </Card>
       )}
@@ -73,7 +172,7 @@ export function HistoryTab({ strategyId }: { strategyId: number }) {
               </span>
             )}
           </p>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">
             {entry.request || "No description"}
           </p>
         </div>
@@ -89,7 +188,7 @@ export function HistoryTab({ strategyId }: { strategyId: number }) {
               </span>
             )}
           </p>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">
             {payload.genesis}
           </p>
         </div>

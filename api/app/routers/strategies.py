@@ -321,15 +321,54 @@ def strategy_evaluation(strategy_id: int,
 @router.get("/strategies/{strategy_id}/history")
 def strategy_history(strategy_id: int,
                      user: Optional[dict] = Depends(get_current_user)) -> dict:
-    """Evolution timeline from Git metadata + the genesis request."""
+    """The strategy's human-input timeline.
+
+    `runs` (owner only — clarify answers and refine feedback are raw user
+    input) carries every generation run that produced or evolved this
+    strategy, each with the verbatim request and the inputs typed during it.
+    `genesis` is the ORIGINAL user request from the create run — not the
+    AI-written description. `history` keeps the legacy evolution entries as
+    a fallback for strategies with no recorded runs.
+    """
+    from db import strategy_generation as sg
     from db.database import db
 
     user = _require_user(user)
     strategy = _owned_strategy(strategy_id, user)
+
+    runs = []
+    genesis = None
+    if strategy['user_id'] == user['id']:
+        for run in sg.list_runs_for_strategy(strategy_id):
+            inputs = []
+            try:
+                for event in sg.list_events(run['id']):
+                    if event['type'] != 'input_received':
+                        continue
+                    payload = event['payload'] or {}
+                    entry = {k: payload[k]
+                             for k in ('kind', 'action', 'feedback', 'answers')
+                             if payload.get(k)}
+                    if entry:
+                        entry['timestamp'] = str(event['created_at'])
+                        inputs.append(entry)
+            except Exception:
+                logging.exception("history: event read failed for run %s", run['id'])
+            runs.append({
+                'run_id': run['id'],
+                'kind': 'evolve' if run['seed_strategy_id'] else 'create',
+                'status': run['status'],
+                'request': run['user_request'],
+                'created_at': str(run['created_at']),
+                'inputs': inputs,
+            })
+        genesis = next((r['request'] for r in runs if r['kind'] == 'create'), None)
+
     history = db.get_strategy_evolution_history(strategy_id) or []
     return {
         'history': [_stringify_dates(dict(h)) for h in history],
-        'genesis': strategy.get('description'),
+        'runs': runs,
+        'genesis': genesis or strategy.get('description'),
         'created_at': str(strategy.get('created_at') or '') or None,
     }
 

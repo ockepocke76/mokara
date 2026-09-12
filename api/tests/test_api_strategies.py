@@ -240,19 +240,48 @@ def test_history_records_evolution():
     assert r.status_code == 200
     body = r.json()
     assert body["history"] == []
-    assert "withdraw" in (body["genesis"] or "").lower()
+    # Genesis is the VERBATIM original request, not the AI description
+    assert body["genesis"] == "withdraw 4% yearly, inflation adjusted"
+    runs = body["runs"]
+    assert len(runs) == 1 and runs[0]["kind"] == "create"
+    assert runs[0]["request"] == "withdraw 4% yearly, inflation adjusted"
 
-    # Evolve -> the request lands in the DB-native timeline
+    # Evolve with a refine round -> request AND feedback land in the timeline
     r = client.post("/strategies/generate", headers=headers,
                     json={"request": "make the withdrawal rate 5%",
                           "seed_strategy_id": strategy_id})
     run_id = r.json()["run_id"]
     r = client.post(f"/strategies/generate/{run_id}/resume", headers=headers,
+                    json={"kind": "review", "action": "refine",
+                          "feedback": "round the withdrawal to whole dollars"})
+    assert r.status_code == 200
+    r = client.post(f"/strategies/generate/{run_id}/resume", headers=headers,
                     json={"kind": "review", "action": "save"})
     assert r.status_code == 200
 
     r = client.get(f"/strategies/{strategy_id}/history", headers=headers)
-    history = r.json()["history"]
-    assert len(history) == 1
-    assert history[0]["request"] == "make the withdrawal rate 5%"
-    assert history[0]["timestamp"]
+    body = r.json()
+    assert len(body["history"]) == 1
+    assert body["history"][0]["request"] == "make the withdrawal rate 5%"
+    assert body["history"][0]["timestamp"]
+    runs = body["runs"]
+    assert [x["kind"] for x in runs] == ["create", "evolve"]
+    evolve = runs[1]
+    assert evolve["request"] == "make the withdrawal rate 5%"
+    feedbacks = [i.get("feedback") for i in evolve["inputs"] if i.get("feedback")]
+    assert feedbacks == ["round the withdrawal to whole dollars"]
+
+    # Another user viewing a public strategy gets no raw run inputs
+    from db.database import db
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE CUSTOM_STRATEGIES SET is_public = TRUE WHERE id = %s",
+                       (strategy_id,))
+        conn.commit()
+    finally:
+        db.release_connection(conn)
+    other = _auth()
+    r = client.get(f"/strategies/{strategy_id}/history", headers=other)
+    assert r.status_code == 200
+    assert r.json()["runs"] == []
