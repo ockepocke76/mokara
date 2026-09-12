@@ -18,6 +18,33 @@ import threading
 SIM_RNG_LOCK = threading.RLock()
 
 
+CAPITAL_PARAM_KEYS = ('initial_investment', 'annual_contribution', 'target_net_worth')
+
+
+def capital_params_for_category(category: str) -> Dict[str, Any]:
+    """The capital-shape parameters (starting capital, contributions, target)
+    the full evaluation standardizes per category — the smoke test uses the
+    same scheme so a strategy is tested under conditions its category can
+    actually exhibit behavior in."""
+    from core.strategy_evaluation import STANDARD_EVAL_PARAMS
+
+    base = STANDARD_EVAL_PARAMS.get(category) or {}
+    return {k: base[k] for k in CAPITAL_PARAM_KEYS if k in base}
+
+
+def category_capital_params(strategy_class) -> Dict[str, Any]:
+    """capital_params_for_category keyed off the strategy's own declared
+    category; unknown/broken categories fall back to no overrides (the
+    withdrawal-style $1M default)."""
+    try:
+        category = strategy_class({}).evaluation_category()
+    except Exception:
+        logging.warning("category probe failed; using default capital params",
+                        exc_info=True)
+        return {}
+    return capital_params_for_category(category)
+
+
 def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str, Any],
                      seed: Optional[int] = None) -> Dict[str, Any]:
     """
@@ -54,13 +81,22 @@ def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str,
     try:
         # Validate and get strategy class first (fast fail)
         strategy_class = execute_strategy_code(strategy_code, class_name)
-        
+
         # Build simulation parameters using the centralized assemble_params
         # This ensures asset details (file_path, etc.) from CONFIG are merged in.
         sim_params = assemble_params(test_params)
-        
+
         # Ensure critical parameter names match what load_and_prepare_data expects
-        # and set sensible defaults for the sandbox environment if missing
+        # and set sensible defaults for the sandbox environment if missing.
+        # Capital shape follows the strategy's category, mirroring the full
+        # evaluation's STANDARD_EVAL_PARAMS — a $1M start is right for a
+        # withdrawal strategy but instantly retires an accumulation one.
+        # Applied against the CALLER's params, not sim_params: assemble_params
+        # has already filled config defaults (initial_investment $1M) that the
+        # category values must beat; an explicit caller value still wins.
+        for key, value in category_capital_params(strategy_class).items():
+            if key not in test_params:
+                sim_params[key] = value
         sim_params.setdefault('initial_investment', 1000000)
         sim_params.setdefault('num_years', 30)
         sim_params.setdefault('num_simulations', test_params.get('num_random_paths', 10))
@@ -94,11 +130,16 @@ def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str,
         sim_inputs = prepare_simulation_inputs(data, sim_params['asset_model'])
         
         # --- STEP 3: Instantiate and Wrap Strategy ---
-        # 1. Instantiate user strategy with the full params
+        # 1. Instantiate user strategy with the full params (used for category
+        #    detection in the summary stats)
         user_strategy_instance = strategy_class(sim_params)
-        # 2. Wrap it for safety and metric tracking
-        instantiated_strategy = SandboxedStrategyWrapper(user_strategy_instance)
-        
+        # 2. Fresh wrapped instance PER PATH (strategy_factory below), same as
+        #    the full evaluation: instance state (retirement flags, high-water
+        #    marks) must never leak from one simulated path into the next, and
+        #    a factory is immune even to a buggy generated reset().
+        def _fresh_strategy():
+            return SandboxedStrategyWrapper(strategy_class(sim_params))
+
         # --- STEP 4: Run the REAL simulation engine ---
         # We pass the real inputs (returns_sources, mu, sigma) just like the main process.
         # SIM_RNG_LOCK serializes every RNG-dependent sandbox sim in this
@@ -115,7 +156,7 @@ def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str,
                     returns_sources=sim_inputs['returns_sources'],
                     mu=sim_inputs['mu'],
                     sigma=sim_inputs['sigma'],
-                    strategy_map={'custom': instantiated_strategy}
+                    strategy_factory=_fresh_strategy
                 )
             finally:
                 if _saved_rng_state is not None:

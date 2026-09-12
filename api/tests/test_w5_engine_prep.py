@@ -98,3 +98,110 @@ def test_strategy_api_docs_derived_from_source():
         assert key in docs
     # Docstring content actually flows through from the class
     assert 'USE_CASH' in docs
+
+
+# --- Category-aware smoke-test capital (mirror of STANDARD_EVAL_PARAMS) ----
+
+CONTRIB_STRATEGY = '''
+class ContribTestStrategy(BaseStrategy):
+    @property
+    def parameters(self):
+        return {}
+
+    @property
+    def shortfall_funding_policy(self):
+        return ['USE_CASH', 'SELL_ASSETS']
+
+    def initialize_portfolio(self, initial_portfolio_state, market_data_at_start):
+        return {'action': 'BUY_ASSET', 'cash_amount': initial_portfolio_state.get('cash', 0)}
+
+    def execute_strategy_for_year(self, year, portfolio_state, portfolio_history, desired_drawdown, mandatory_costs):
+        return {'amount_sold': mandatory_costs, 'amount_bought': 0.0,
+                'debt_increase': 0.0, 'debt_repayment': 0.0, 'amount_contributed': 50000.0}
+
+    def evaluation_category(self):
+        return 'CONTRIBUTION_ONLY'
+'''
+
+
+def test_capital_params_follow_category():
+    from core.sandbox_tester import capital_params_for_category
+    from core.strategy_evaluation import STANDARD_EVAL_PARAMS
+
+    assert capital_params_for_category('WITHDRAWAL_ONLY') == {
+        'initial_investment': STANDARD_EVAL_PARAMS['WITHDRAWAL_ONLY']['initial_investment']}
+    contrib = capital_params_for_category('CONTRIBUTION_ONLY')
+    assert contrib['initial_investment'] == 100_000
+    assert contrib['annual_contribution'] == 50_000
+    assert capital_params_for_category('NO_SUCH_CATEGORY') == {}
+
+
+def test_smoke_test_uses_category_capital():
+    # A contribution strategy is smoke-tested from the accumulation-scale
+    # start ($100k), not the withdrawal-scale $1M that would swamp it.
+    result = run_sandbox_test(CONTRIB_STRATEGY, 'ContribTestStrategy',
+                              {'num_years': 3, 'num_random_paths': 2}, seed=7)
+    assert result['success'], result.get('error')
+    first_year_nw = result['random_paths'][0]['yearly_results'][0]['Net Worth']
+    assert first_year_nw < 500_000  # started near 100k, not 1M
+
+    # An explicit caller override still wins.
+    result = run_sandbox_test(CONTRIB_STRATEGY, 'ContribTestStrategy',
+                              {'num_years': 3, 'num_random_paths': 2,
+                               'initial_investment': 1_000_000}, seed=7)
+    assert result['success'], result.get('error')
+    first_year_nw = result['random_paths'][0]['yearly_results'][0]['Net Worth']
+    assert first_year_nw > 500_000
+
+
+STATEFUL_STRATEGY = '''
+class StatefulTestStrategy(BaseStrategy):
+    def __init__(self, params):
+        super().__init__(params)
+        self.triggered = False
+
+    def reset(self):
+        self.triggered = False
+
+    @property
+    def parameters(self):
+        return {}
+
+    @property
+    def shortfall_funding_policy(self):
+        return ['USE_CASH', 'SELL_ASSETS']
+
+    def initialize_portfolio(self, initial_portfolio_state, market_data_at_start):
+        return {'action': 'BUY_ASSET', 'cash_amount': initial_portfolio_state.get('cash', 0)}
+
+    def get_annual_drawdown(self, year, portfolio_state, portfolio_history):
+        if self.triggered:
+            return 99999.0
+        if year >= 3:
+            self.triggered = True
+        return 0.0
+
+    def execute_strategy_for_year(self, year, portfolio_state, portfolio_history, desired_drawdown, mandatory_costs):
+        need = desired_drawdown + mandatory_costs
+        return {'amount_sold': need, 'amount_bought': 0.0,
+                'debt_increase': 0.0, 'debt_repayment': 0.0, 'amount_contributed': 0.0}
+
+    def evaluation_category(self):
+        return 'WITHDRAWAL_ONLY'
+'''
+
+
+def test_strategy_state_never_leaks_between_paths():
+    # The backtest scenario runs FIRST and flips `triggered` at year 3; a
+    # shared instance then made every Monte Carlo path start pre-triggered
+    # (the year-1 "instant retirement" bug from the first real user run).
+    result = run_sandbox_test(STATEFUL_STRATEGY, 'StatefulTestStrategy',
+                              {'num_years': 6, 'num_random_paths': 4,
+                               'initial_investment': 1_000_000}, seed=11)
+    assert result['success'], result.get('error')
+    for path in result['random_paths']:
+        yearly = path['yearly_results']
+        # Years 1-2 precede the trigger in EVERY fresh path.
+        for row in yearly[1:3]:
+            assert row['Consumption Delivered'] == 0.0, (
+                f"state leaked into {path['path_label']} year {row['Year']}")

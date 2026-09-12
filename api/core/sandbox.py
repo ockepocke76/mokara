@@ -248,6 +248,14 @@ class SandboxedStrategyWrapper(BaseStrategy):
         robust_history = [{_normalize_key(k): v for k, v in item.items()} for item in portfolio_history]
         return self.sandboxed_strategy.execute_strategy_for_year(year, portfolio_state, robust_history, desired_drawdown, mandatory_costs)
 
+    def reset(self):
+        # Forward to the wrapped strategy — without this, the engine's
+        # between-paths reset() hit only the wrapper, and instance state
+        # (retirement flags, high-water marks) leaked from one simulated
+        # path into the next: the first path that triggered a state change
+        # poisoned every path after it.
+        self.sandboxed_strategy.reset()
+
 def _slugify_to_classname(text: str) -> str:
     """Converts a string into a valid Python class name."""
     # Remove invalid characters, then capitalize each word and join them.

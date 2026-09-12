@@ -133,10 +133,17 @@ with the strategy mostly through these.
 Spec:
 {json.dumps(spec, indent=2)}
 {ENGINE_MECHANICS}{examples_block}
+Also choose test_initial_investment: the starting capital the 30-year smoke
+test should run with so EVERY phase of the strategy can actually be observed.
+An accumulation-from-income spec needs a small start (e.g. 10000 — a big
+head start would trigger any retirement/target rule immediately); a
+withdrawal spec needs a funded portfolio (e.g. 1000000).
+
 Respond with JSON:
 {{
   "rules": ["rule 1", "rule 2", ...],
   "parameters": [{{"name": "...", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "description": "..."}}],
+  "test_initial_investment": 1000000,
   "self_check": "one sentence confirming every spec mechanic maps to a rule, or naming what is missing"
 }}"""
 
@@ -203,26 +210,36 @@ Respond with JSON:
 
 def analyze_prompt(spec: dict, plan: dict, summary_stats: dict,
                    baseline_stats: dict | None, baseline_name: str | None,
-                   worst_path_trace: list[dict]) -> str:
+                   worst_path_trace: list[dict],
+                   test_capital: float | None = None) -> str:
     baseline_block = "No baseline comparison was run."
     if baseline_stats:
         baseline_block = (f"Baseline ('{baseline_name}', same market paths): "
                           f"{json.dumps(baseline_stats)}")
+    capital_block = ""
+    if test_capital is not None:
+        capital_block = (f"\nTest conditions: every path starts with "
+                         f"${test_capital:,.0f} already invested. Judge trigger "
+                         f"timing against THAT capital plus market growth — a "
+                         f"threshold rule that fires because the starting "
+                         f"portfolio already satisfies it is behaving "
+                         f"correctly, not prematurely.\n")
     return f"""TASK: analyze
 A quick smoke test (10 simulated markets) ran for a newly generated strategy.
+{capital_block}
 Judge ONE thing: does the observed behavior match the spec and blueprint?
 Performance is NOT your verdict — a faithful strategy with poor numbers still
 conforms; report the numbers neutrally and let the user decide. Never use
 advisory language ("you should", "best") — describe only.
 
-The smoke test always runs with the platform's default starting capital and a
-fixed horizon; the strategy does not control that, and the user can set any
-starting capital in real runs. If a spec phase (e.g. an accumulation phase
-before a retirement trigger) simply cannot be observed under these test
-conditions, that is NOT a mismatch: set conforms_to_spec=true and describe
-the untested phase in notes so the user knows. Interest, fees, and taxes are
-charged by the engine automatically — never call their absence from the
-strategy's own arithmetic a mismatch.
+The smoke test runs with the platform's standardized starting capital for the
+strategy's category and a fixed horizon; the strategy does not control that,
+and the user can set any starting capital in real runs. If a spec behavior
+(a rare trigger, a phase the horizon never reaches) simply cannot be observed
+under these test conditions, that is NOT a mismatch: set
+conforms_to_spec=true and describe the untested behavior in notes so the user
+knows. Interest, fees, and taxes are charged by the engine automatically —
+never call their absence from the strategy's own arithmetic a mismatch.
 
 Spec:
 {json.dumps(spec, indent=2)}
