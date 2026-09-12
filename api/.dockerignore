@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+tests/
+pdf_cache/
+*.log
+Dockerfile
+.dockerignore
+.gcloudignore
+# 25MB CSV referenced by nothing (assets.yml lists per-index bootstrap files)
+assets/all_indices_data.csv

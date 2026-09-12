@@ -1,0 +1,6 @@
+# Governs what `gcloud builds submit web` uploads (see api/.gcloudignore).
+node_modules/
+.next/
+.env
+.env.*
+!.env.example
