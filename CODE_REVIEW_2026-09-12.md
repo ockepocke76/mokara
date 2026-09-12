@@ -28,6 +28,14 @@ main before this doc landed — R3 below is annotated with what they resolved.
 
 ## R1 — Security (do first)
 
+> **Status 2026-09-12:** R1.1-R1.6 implemented across three reviewed
+> branches awaiting merge: `feature/r1-sandbox-hardening` (R1.1+R1.2, plus
+> review fixes: `global`-statement/guard-name bans, per-call exec globals,
+> single guarded dry-run, worker return-check, signal-handler move),
+> `fix/r1-web-security` (R1.3+R1.4), `fix/r1-api-access` (R1.5+R1.6
+> compare_digest, plus the preview endpoint gate found in review).
+> Residuals now tracked at the end of this section.
+
 ### R1.1 🔴 Strategy sandbox: full `pandas`/`numpy` exposure → file read / RCE
 - [ ] Wrap `pd`/`np` in whitelist proxies (or explicitly block the
       reader/eval/serialization families) instead of injecting the real
@@ -86,6 +94,21 @@ main before this doc landed — R3 below is annotated with what they resolved.
 - [ ] Rotate the old prod DB password before reusing the dump/instance —
       it sits in plaintext in the old repo's `deploy-to-cloud.sh`
       (`DB_PASSWORD=...`), whose history is already considered burned.
+
+### R1 residuals (from the branch reviews, accepted for now)
+- [ ] Sandbox deny-list is fail-open: a future/missed numpy/pandas IO or
+      eval API stays reachable until listed. Follow-up: per-module
+      attribute *allowlist* (fail-closed), same shape as the module
+      allowlist. (`core/sandbox.py`, `_DENIED_ATTRIBUTES`)
+- [ ] Runaway strategy code whose hang only triggers under simulation-time
+      conditions (or probabilistically) passes the validation gate; the
+      class-body exec in the parent is also unguarded. Backstop = job-level
+      timeouts (R2.1) for the worker; the API-side generation runs still
+      need the R3.3 queue migration (which also removes the spawn-per-
+      validate cost in the designer rework loop).
+- [ ] `simulation-card.tsx` delete gives no UI feedback on 404/409
+      (unreachable today — users can't own public sims); fold into R5.7's
+      error-handling pass.
 
 ---
 
