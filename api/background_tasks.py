@@ -107,10 +107,9 @@ def run_and_save_simulation(ui_params, full_sim_params, simulation_hash, progres
     )
     from version import get_component_hashes
 
-    # --- CRITICAL FIX: Ensure database schema is ready in the background process ---
-    # This call is idempotent. It guarantees that the background process does not
-    # start working before the main process has finished creating the database tables.
-    db.run_migrations()
+    # Schema readiness is the worker's (or deploy's) responsibility now —
+    # run_worker() migrates once at startup under an advisory lock. Running
+    # migrations per simulation job added a racy no-op to every run.
 
     def send_progress(p, status_text=None):
         scaled_progress = progress_range[0] + p * (progress_range[1] - progress_range[0])
