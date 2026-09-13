@@ -34,8 +34,6 @@ def _sync_builtin_strategies() -> None:
     # Idempotent: skips strategies whose code is unchanged. The old app ran
     # this from an admin button; without it the built-ins never exist as
     # CUSTOM_STRATEGIES rows, so they can't be listed, viewed, or cloned.
-    # Always DB-only (git_service=None): startup must never block on GitHub
-    # or push commits just because a GITHUB_TOKEN happens to be in the env.
     # The advisory lock serializes concurrent workers/containers — the sync
     # is SELECT-then-INSERT and CUSTOM_STRATEGIES has no unique constraint,
     # so an unserialized race would create duplicate built-in rows.
@@ -48,7 +46,7 @@ def _sync_builtin_strategies() -> None:
             cursor = db._get_cursor(conn)
             cursor.execute("SELECT pg_advisory_lock(hashtext('mokara_builtin_sync'))")
             try:
-                results = sync_all_builtins(None, db)
+                results = sync_all_builtins(db)
             finally:
                 cursor.execute("SELECT pg_advisory_unlock(hashtext('mokara_builtin_sync'))")
         finally:

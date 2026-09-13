@@ -1303,126 +1303,21 @@ class PostgreSQLDatabase(DatabaseInterface):
                 validation_error = json.dumps(validation_error)
                 
             cursor = self._get_cursor(conn)
-            
-            # --- Git Service Initialization ---
-            try:
-                from services.git_service import get_git_service
-                git_service = get_git_service()
-            except Exception as e:
-                logging.warning(f"Git service unavailable: {e}")
-                git_service = None
-                
-            # Use passed-in values if available, otherwise they will be determined by Git logic below
-            git_repo_url = None
-            
-            # If values were passed from UI, they are the source of truth
-            # We only run the internal Git logic if they are missing or if we want to force a refresh
-            # For now, let's allow them to be passed in.
-            
+
             # Check for existence
             if strategy_id:
-                cursor.execute("SELECT id, git_branch_name, code FROM CUSTOM_STRATEGIES WHERE id = %s", (strategy_id,))
+                cursor.execute("SELECT id FROM CUSTOM_STRATEGIES WHERE id = %s", (strategy_id,))
             else:
-                cursor.execute("SELECT id, git_branch_name, code FROM CUSTOM_STRATEGIES WHERE user_id = %s AND strategy_name = %s", (user_id, strategy_name))
+                cursor.execute("SELECT id FROM CUSTOM_STRATEGIES WHERE user_id = %s AND strategy_name = %s", (user_id, strategy_name))
             row = cursor.fetchone()
-            
+
             if row:
                 # === UPDATE EXISTING STRATEGY ===
-                strategy_id, existing_branch, existing_code = row
-                
-                # Check for Materialization Event (Pure Reference -> Independent Strategy)
-                # If we are saving code to a record that currently has NULL code, this is the first edit.
-                is_materialization = (existing_code is None) and (code is not None)
-                
-                # 1. Handle Git Commit
-                if git_service and code: # Only touch Git if we have code to save
-                    try:
-                        # Determine branch name
-                        branch_name = existing_branch or f"strategies/user-{user_id}/strat-{strategy_id}"
-                        
-                        # Lazy Forking: If materializing (or branch missing), ensure branch exists
-                        if is_materialization or not existing_branch:
-                            try:
-                                # Create branch from source SHA if available (linked to parent) or empty-template
-                                if clone_source_commit_sha:
-                                     logging.info(f"Materializing clone {strategy_id}: Forking from {clone_source_commit_sha}")
-                                     git_service.create_branch(branch_name, from_commit_sha=clone_source_commit_sha, from_branch='empty-template')
-                                else:
-                                     git_service.create_branch(branch_name, from_branch='empty-template')
-                            except Exception:
-                                try:
-                                    # Fallback to main
-                                    git_service.create_branch(branch_name, from_branch='main')
-                                except Exception as e:
-                                    # If branch already exists, we are fine
-                                    logging.warning(f"Git branch creation warning (might exist): {e}")
+                strategy_id = row[0]
 
-                        # Build metadata
-                        from datetime import datetime
-                        metadata = {
-                            "version": "1.0",
-                            "strategy_name": strategy_name,
-                            "user_description": description,
-                            "ai_description": ai_description,
-                            "parameters": json.loads(parameters_json) if parameters_json else {},
-                            "validation_status": validation_status,
-                            "created_at": datetime.now(timezone.utc).isoformat() + "Z",
-                            "updated_at": datetime.now(timezone.utc).isoformat() + "Z",
-                            "evolution_history": []
-                        }
-                        
-                        # Fetch existing metadata (if any) to preserve history
-                        if not is_materialization:
-                             try:
-                                 existing_metadata = git_service.get_metadata(branch_name)
-                                 if existing_metadata:
-                                     if 'evolution_history' in existing_metadata:
-                                         metadata['evolution_history'] = existing_metadata['evolution_history']
-                                     if 'created_at' in existing_metadata:
-                                         metadata['created_at'] = existing_metadata['created_at']
-                             except Exception as e:
-                                 logging.debug(f"Metadata load skipped: {e}")
-                        
-                        # Append evolution entry
-                        if evolution_request:
-                             metadata['evolution_history'].append({
-                                'timestamp': datetime.now(timezone.utc).isoformat() + "Z",
-                                'request': evolution_request,
-                                'user_id': user_id
-                             })
-
-                        commit_msg = f"Update strategy: {strategy_name}"
-                        if evolution_request:
-                            commit_msg += f"\n\nEvolution request: {evolution_request[:200]}"
-                        elif is_materialization:
-                            commit_msg = f"Fork/Materialize strategy: {strategy_name}"
-
-                        # Commit
-                        files_to_commit = {
-                            'strategy.py': code,
-                            'metadata.json': json.dumps(metadata, indent=2)
-                        }
-                        
-                        git_commit_sha = git_service.commit_multiple_files(
-                            branch_name=branch_name,
-                            files=files_to_commit,
-                            message=commit_msg
-                        )
-                        
-                        # Backfill SHA in metadata
-                        if evolution_request and metadata['evolution_history']:
-                            metadata['evolution_history'][-1]['commit_sha'] = git_commit_sha
-                            git_service.commit_multiple_files(branch_name=branch_name, files={'metadata.json': json.dumps(metadata, indent=2)}, message="Update metadata SHA")
-                        
-                        git_branch_name = branch_name
-                        git_repo_url = f"https://github.com/{git_service.repo_owner}/{git_service.repo_name}"
-                        short_sha = git_commit_sha[:7] if git_commit_sha else "None"
-                        logging.info(f"Git commit successful: {short_sha} on {branch_name}")
-
-                    except Exception as e:
-                        logging.error(f"Git update failed for {strategy_name}: {e}")
-
-                # 2. Database Update
+                # Strategy identity: git_commit_sha is a content hash of the
+                # code + parameters (the column name is a legacy of the old
+                # GitHub-backed app; the DB is the authoritative store).
                 if code and not git_commit_sha:
                      git_commit_sha = calculate_strategy_hash(code, json.loads(parameters_json))
 
@@ -1436,7 +1331,7 @@ class PostgreSQLDatabase(DatabaseInterface):
                     SET class_name = %s, description = %s, ai_description = %s, 
                         parameters_json = %s, validation_status = %s, validation_error = %s, 
                         last_validation_timestamp = %s, updated_at = CURRENT_TIMESTAMP,
-                        git_branch_name = %s, git_repo_url = %s,
+                        git_branch_name = %s, git_repo_url = NULL,
                         last_synced_at = CURRENT_TIMESTAMP,
                         deleted_at = NULL, -- Undelete if it was recycled
                         parent_strategy_id = COALESCE(parent_strategy_id, %s),
@@ -1447,9 +1342,9 @@ class PostgreSQLDatabase(DatabaseInterface):
                         code = CASE WHEN %s = TRUE THEN NULL ELSE %s END,
                         git_commit_sha = CASE WHEN %s = TRUE THEN NULL ELSE %s END
                     WHERE id = %s
-                """, (class_name, description, ai_description, parameters_json, 
+                """, (class_name, description, ai_description, parameters_json,
                       validation_status, validation_error, last_validation_timestamp,
-                      git_branch_name, git_repo_url, 
+                      git_branch_name,
                       parent_strategy_id, clone_source_commit_sha, is_clone_unedited,
                       is_clone_unedited, code, is_clone_unedited, git_commit_sha, strategy_id))
                 else:
@@ -1475,16 +1370,11 @@ class PostgreSQLDatabase(DatabaseInterface):
                       is_clone_unedited, is_clone_unedited, strategy_id))
 
                 if evolution_request:
-                    # DB-native evolution history (V37). The git metadata above
-                    # is best-effort only — mokara runs without the GitHub repo,
-                    # so this column is the authoritative timeline. Aliased
-                    # import: a bare `timezone` here would shadow the module
-                    # import for the WHOLE function, breaking the git block
-                    # above (Python scoping). Savepoint: recording the timeline
+                    # DB-native evolution history (V37) — this column is the
+                    # authoritative timeline. Savepoint: recording the timeline
                     # must never fail the save itself (e.g. V37 not applied).
-                    from datetime import datetime as _dt, timezone as _tz
                     entry = {
-                        'timestamp': _dt.now(_tz.utc).isoformat(),
+                        'timestamp': datetime.now(timezone.utc).isoformat(),
                         'request': evolution_request,
                         'user_id': user_id,
                         'commit_sha': git_commit_sha,
@@ -1503,9 +1393,9 @@ class PostgreSQLDatabase(DatabaseInterface):
 
             else:
                 # === INSERT NEW STRATEGY ===
-                
+
                 # Logic: If parent_strategy_id is set, and code is None -> Pure Clone (Pointer)
-                # Logic: If code is provided -> Independent Strategy (requires Git)
+                # Logic: If code is provided -> Independent Strategy
 
                 if parent_strategy_id and (code is None):
                      # === PURE REFERENCE CLONE ===
@@ -1522,17 +1412,6 @@ class PostgreSQLDatabase(DatabaseInterface):
                 
                 else:
                     # === STANDARD STRATEGY CREATION ===
-                    # Trigger Git now
-                    if git_service:
-                        try:
-                             # ... (Existing Git creation logic for new strats) ...
-                             # We can mostly reuse the update logic block, but simpler to just implement standard creation here
-                             # For brevity, reusing the standard "Insert then Update" pattern is often cleaner, 
-                             # but let's implement the specific Insert for standard strat.
-                             pass # Proceed to Git logic
-                        except Exception:
-                             pass
-
                     cursor.execute("""
                         INSERT INTO CUSTOM_STRATEGIES (
                             user_id, strategy_name, class_name, description, ai_description, code, 
@@ -1545,62 +1424,29 @@ class PostgreSQLDatabase(DatabaseInterface):
                           parent_strategy_id, clone_source_commit_sha))
 
                 strategy_id = cursor.fetchone()[0]
-                
-                # If we just inserted a Standard Strategy (with code), we should do the Git Init now.
-                # However, your existing codebase did the Git Commit *before* Insert in the "Else" block (which I replaced).
-                # To be robust: If we have code, we should trigger the Git Sync immediately after obtaining the ID.
-                
-                if code and git_service:
-                     # Trigger post-creation sync (or simple "Update" call) to create branch
-                     # Since we are inside the transaction, we can just call the Git logic here.
-                     try:
-                         branch_name = f"strategies/user-{user_id}/strat-{strategy_id}"
-                         git_service.create_branch(branch_name, from_branch='empty-template')
-                         
-                         # Commit Initial
-                         files_to_commit = {'strategy.py': code, 'metadata.json': json.dumps({"strategy_name": strategy_name}, indent=2)}
-                         git_commit_sha = git_service.commit_multiple_files(branch_name=branch_name, files=files_to_commit, message=f"Initial commit: {strategy_name}")
-                         
-                         # Update DB with Git info
-                         cursor.execute("UPDATE CUSTOM_STRATEGIES SET git_branch_name=%s, git_commit_sha=%s, git_repo_url=%s WHERE id=%s",
-                                        (branch_name, git_commit_sha, f"https://github.com/{git_service.repo_owner}/{git_service.repo_name}", strategy_id))
-                     except Exception as e:
-                         logging.error(f"Failed to init Git for new strategy {strategy_id}: {e}")
 
                 if parent_strategy_id:
-                     self.increment_fork_count(parent_strategy_id)
-                        
-                # 3. Fallback: Content Hash (Critical for Identity)
+                    # Inline on the SAME cursor/connection: calling
+                    # self.increment_fork_count here would check out a second
+                    # pooled connection while this one is mid-transaction
+                    # (pool-exhaustion deadlock hazard).
+                    cursor.execute(
+                        "UPDATE CUSTOM_STRATEGIES SET fork_count = COALESCE(fork_count, 0) + 1 WHERE id = %s",
+                        (parent_strategy_id,))
+
+                # Content hash is the strategy's identity (git_commit_sha is
+                # a legacy column name; the DB is the authoritative store).
                 if code and not git_commit_sha:
-                    # Calculate hash if Git didn't provide one (e.g. service unavailable or failure)
                     git_commit_sha = calculate_strategy_hash(code, json.loads(parameters_json) if parameters_json else {})
-                    logging.info(f"Using content hash for {strategy_name} (Git unavailable/failed): {git_commit_sha}")
-                    
-                    # Update DB with content hash
+
                     cursor.execute("""
-                        UPDATE CUSTOM_STRATEGIES 
+                        UPDATE CUSTOM_STRATEGIES
                         SET git_commit_sha = %s,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = %s
                     """, (git_commit_sha, strategy_id))
 
             conn.commit()
-            
-            # --- Post-Commit Verification ---
-            # Reuse existing connection to avoid pool deadlock risk.
-            # commit() closed the previous transaction, so this SELECT starts a new one
-            # and will only see the data if it was successfully committed.
-            try:
-                # Use a fresh cursor just to be clean
-                verify_cursor = self._get_cursor(conn)
-                verify_cursor.execute("SELECT id FROM CUSTOM_STRATEGIES WHERE id = %s", (strategy_id,))
-                if not verify_cursor.fetchone():
-                    logging.critical(f"CRITICAL: Strategy {strategy_id} committed but NOT found in verification check!")
-                    return False
-            except Exception as ve:
-                logging.error(f"Verification check failed: {ve}")
-                # Don't fail the save if just the check failed
-                pass
 
             return strategy_id
         except Exception as e:
@@ -1821,11 +1667,11 @@ class PostgreSQLDatabase(DatabaseInterface):
     @log_db_call
     def get_strategy_evolution_history(self, strategy_id):
         """
-        Fetch evolution history from Git metadata.
-        
+        Fetch evolution history from the DB (V37 evolution_history column).
+
         Args:
             strategy_id: Strategy ID
-        
+
         Returns:
             List of evolution entries with timestamp, request, commit_sha, user_id
         """
@@ -1833,7 +1679,7 @@ class PostgreSQLDatabase(DatabaseInterface):
         try:
             cursor = self._get_cursor(conn)
             cursor.execute("""
-                SELECT git_branch_name, git_commit_sha, evolution_history
+                SELECT evolution_history
                 FROM CUSTOM_STRATEGIES
                 WHERE id = %s
             """, (strategy_id,))
@@ -1842,34 +1688,11 @@ class PostgreSQLDatabase(DatabaseInterface):
             if not row:
                 return []
 
-            branch_name, commit_sha, db_history = row
+            db_history = row[0]
 
             if isinstance(db_history, str):
                 db_history = json.loads(db_history)
-            db_history = db_history or []
-
-            # Git metadata covers entries from the old GitHub-backed app;
-            # the DB column (V37) covers everything since. A save with git
-            # configured writes to both, so merge with dedup rather than
-            # letting either source hide the other.
-            git_history = []
-            if branch_name:
-                try:
-                    from services.git_service import get_git_service
-                    git_service = get_git_service()
-                    metadata = git_service.get_metadata(branch_name, commit_sha)
-                    if metadata and 'evolution_history' in metadata:
-                        git_history = metadata['evolution_history'] or []
-                except Exception as e:
-                    logging.error(f"Failed to fetch evolution history from Git: {e}")
-
-            # A git-configured save writes the same event to both stores with
-            # slightly different timestamp suffixes — key on seconds + request.
-            def _key(e):
-                return ((e.get('timestamp') or '')[:19], e.get('request'))
-
-            seen = {_key(e) for e in git_history}
-            return git_history + [e for e in db_history if _key(e) not in seen]
+            return db_history or []
         except Exception as e:
             logging.error(f"Failed to get evolution history: {e}", exc_info=True)
             return []
