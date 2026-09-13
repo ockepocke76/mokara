@@ -11,19 +11,7 @@ admin:
     description: If true, detailed performance timing logs (PERF_TIMING) will be written. Disable in production for reduced log volume.
     value: false  # Production default - reduces log noise
 monitoring:
-  description: Performance monitoring and observability settings for Google Cloud Monitoring integration
-  cloud_monitoring_enabled:
-    description: If true, exports performance metrics to Google Cloud Monitoring (requires GCP credentials and project ID)
-    value: true
-  cloud_monitoring_project_id:
-    description: Google Cloud Project ID for monitoring. Leave empty to use GCP_MONITORING_PROJECT_ID environment variable.
-    value: ""
-  metric_export_interval:
-    description: How often to flush buffered metrics to Cloud Monitoring (seconds)
-    value: 60
-  track_web_vitals:
-    description: If true, tracks frontend Web Vitals (LCP, FID, CLS) via JavaScript injection
-    value: true
+  description: Local performance monitoring settings (Cloud Monitoring export was removed in R4 — rely on Cloud Run's built-in metrics)
   slow_query_threshold:
     description: Threshold in seconds to log slow database queries
     value: 1.0

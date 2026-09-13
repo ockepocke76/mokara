@@ -225,20 +225,9 @@ class PostgreSQLDatabase(DatabaseInterface):
             self._active_connections += 1
             current_active = self._active_connections
         
-        # Export pool utilization to Cloud Monitoring
-        try:
-            pool_max = int(os.getenv('DB_POOL_MAX', 20))
-            utilization_pct = (current_active / pool_max) * 100
-            
-            from monitoring.cloud_monitoring import export_metric
-            export_metric('db_pool_utilization', utilization_pct, {
-                'pool_size': str(pool_max),
-                'active_connections': str(current_active)
-            })
-        except Exception:
-            pass  # Silently fail if monitoring unavailable
-        
-        # Max pool size is 10 (hardcoded in init currently)
+        # (The old per-checkout Cloud Monitoring export never worked — it
+        # NameError'd on an unimported os and swallowed it; rely on Cloud
+        # Run's built-in metrics instead.)
         if current_active >= 8: # 80% warning threshold
              # COMMENTED OUT TO PREVENT RECURSIVE LOGGING BOMB
              # The DatabaseHandler captures logs/stderr and writes to DB, calling get_connection...
