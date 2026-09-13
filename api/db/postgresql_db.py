@@ -378,6 +378,13 @@ class PostgreSQLDatabase(DatabaseInterface):
         finally:
             if locked:
                 try:
+                    # Control may reach here with the transaction aborted
+                    # (e.g. the schema_version bootstrap failed before the
+                    # per-migration loop) — executing on an aborted
+                    # transaction raises and would silently LEAK the session
+                    # lock into the pool, wedging every future run. Roll
+                    # back first so the unlock always reaches Postgres.
+                    conn.rollback()
                     cursor.execute("SELECT pg_advisory_unlock(hashtext('mokara_migrations'))")
                     conn.commit()
                 except Exception:
