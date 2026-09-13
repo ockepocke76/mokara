@@ -29,6 +29,16 @@ export const NAV_ITEMS: NavItem[] = [
 /** The five primary destinations shown in the mobile bottom bar. */
 export const BOTTOM_NAV_ITEMS = NAV_ITEMS.slice(0, 5);
 
+/** Docs sub-pages: fold-out under Docs in the sidebar, pill row on mobile. */
+export const DOCS_NAV = [
+  { href: "/docs/about", label: "About" },
+  { href: "/docs/methodology", label: "Methodology" },
+  { href: "/docs/assets", label: "Assets" },
+  { href: "/docs/glossary", label: "Glossary" },
+  { href: "/docs/strategy-api", label: "Strategy API" },
+  { href: "/docs/disclaimer", label: "Disclaimer" },
+];
+
 export function isActivePath(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }

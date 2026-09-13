@@ -1,4 +1,4 @@
-import { DocsMobileNav, DocsSidebarNav } from "./docs-nav";
+import { DocsMobileNav } from "./docs-nav";
 
 export default function DocsLayout({
   children,
@@ -8,11 +8,8 @@ export default function DocsLayout({
   return (
     <>
       <DocsMobileNav />
-      <div className="mx-auto flex w-full max-w-5xl flex-1 gap-10 px-4 py-6 md:py-10">
-        <aside className="hidden w-44 shrink-0 md:block">
-          <DocsSidebarNav />
-        </aside>
-        <article className="prose prose-neutral dark:prose-invert min-w-0 max-w-none flex-1">
+      <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-6 md:py-10">
+        <article className="prose prose-neutral dark:prose-invert min-w-0 max-w-none">
           {children}
         </article>
       </div>

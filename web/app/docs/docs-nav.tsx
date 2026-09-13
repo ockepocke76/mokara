@@ -4,44 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
-import { isActivePath } from "@/components/nav-items";
-
-const DOCS_NAV = [
-  { href: "/docs/about", label: "About" },
-  { href: "/docs/methodology", label: "Methodology" },
-  { href: "/docs/assets", label: "Assets" },
-  { href: "/docs/glossary", label: "Glossary" },
-  { href: "/docs/strategy-api", label: "Strategy API" },
-  { href: "/docs/disclaimer", label: "Disclaimer" },
-];
-
-/** Vertical docs nav for the desktop layout's secondary sidebar. */
-export function DocsSidebarNav() {
-  const pathname = usePathname();
-
-  return (
-    <nav className="sticky top-10 flex flex-col gap-2 text-sm">
-      {DOCS_NAV.map((item) => {
-        const active = isActivePath(pathname, item.href);
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            aria-current={active ? "page" : undefined}
-            className={cn(
-              "transition-colors",
-              active
-                ? "font-medium text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {item.label}
-          </Link>
-        );
-      })}
-    </nav>
-  );
-}
+import { DOCS_NAV, isActivePath } from "@/components/nav-items";
 
 /** Horizontally scrollable pill row, pinned under the mobile top bar. */
 export function DocsMobileNav() {
