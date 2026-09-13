@@ -933,15 +933,16 @@ class PostgreSQLDatabase(DatabaseInterface):
         try:
             cursor = self._get_cursor(conn)
             cursor.execute(
-                """SELECT status, results_id, component_hashes, parameters, updated_at, created_at
-                   FROM CACHED_SIMULATIONS 
+                """SELECT status, results_id, component_hashes, parameters, updated_at, created_at,
+                          EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(updated_at, created_at))) AS age_seconds
+                   FROM CACHED_SIMULATIONS
                    WHERE simulation_hash = %s""",
                 (simulation_hash,)
             )
             row = cursor.fetchone()
-            
+
             if row:
-                status, results_id, hashes, parameters, updated_at, created_at = row
+                status, results_id, hashes, parameters, updated_at, created_at, age_seconds = row
                 
                 # Deserialize component hashes from JSONB
                 hashes = self.deserialize_json_column(hashes)
@@ -955,30 +956,20 @@ class PostgreSQLDatabase(DatabaseInterface):
                     except Exception as e:
                         logging.warning(f"Failed to extract fallback hashes from parameters: {e}")
                 
-                # Check for stale pending state (older than 5 minutes)
+                # Check for stale pending state (older than 5 minutes).
+                # Age is computed in SQL against the DB clock — comparing a
+                # Python-side naive now() with the column broke as soon as
+                # server TZ and column semantics diverged (e.g. UTC on
+                # Cloud Run).
                 if status in ['PENDING', 'RUNNING']:
-                    # Calculate staleness
-                    import datetime
-                    # Ensure timezone awareness compatibility if needed, but simple comparison usually works
-                    # if db returns naive datetime.
-                    now = datetime.datetime.now()
-                    ref_time = updated_at or created_at
-                    
-                    # LOGGING FOR DEBUG
-                    try:
-                        diff_seconds = (now - ref_time).total_seconds() if ref_time else 0
-                        logging.info(f"STALE CHECK: Hash={simulation_hash[:8]} Status={status} Now={now} Ref={ref_time} Diff={diff_seconds}s")
-                    except Exception as e:
-                        logging.error(f"STALE CHECK CALC ERROR: {e}")
-
-                    if ref_time and (now - ref_time).total_seconds() > 300: # 5 minutes
-                        logging.warning(f"Found stale simulation {status} for {simulation_hash} (age: {now - ref_time}). invalidating.")
+                    logging.info(f"STALE CHECK: Hash={simulation_hash[:8]} Status={status} Age={age_seconds}s")
+                    if age_seconds is not None and age_seconds > 300:  # 5 minutes
+                        logging.warning(f"Found stale simulation {status} for {simulation_hash} (age: {age_seconds:.0f}s). invalidating.")
                         # Treat as not found so it triggers a re-run
-                        # Optionally mark as FAILED in DB to be clean?
                         try:
                             cursor.execute("UPDATE CACHED_SIMULATIONS SET status = 'FAILED' WHERE simulation_hash = %s", (simulation_hash,))
                             conn.commit()
-                        except:
+                        except Exception:
                             conn.rollback()
                         return None, None, None
                 
