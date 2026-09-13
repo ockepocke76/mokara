@@ -643,7 +643,7 @@ def generate_pdf_report(params, input_plot_buffers, output_plot_buffers, output_
         canvas.saveState()
         canvas.setFont(body_font, 9)
         canvas.setFillColor(DARK_GRAY)
-        canvas.drawString(inch, 0.75 * inch, f"MyMonteCarlo - Financial Simulation & Strategy Report | Page {doc.page}")
+        canvas.drawString(inch, 0.75 * inch, f"Mokara - Financial Simulation & Strategy Report | Page {doc.page}")
         canvas.drawRightString(doc.width + doc.leftMargin, 0.75 * inch, "Strictly Private and Confidential")
         canvas.setStrokeColor(DARK_BLUE)
         canvas.setLineWidth(2)

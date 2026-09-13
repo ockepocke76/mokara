@@ -262,14 +262,14 @@ def DatabaseQueryTracker(operation_name: str, query_type: Optional[str] = None):
 @contextmanager
 def ComponentRenderTracker(component_name: str):
     """
-    Specialized tracker for Streamlit component rendering.
-    
+    Tracker for expensive render/build steps (charts, report sections).
+
     Args:
-        component_name: Name of the component being rendered
-    
+        component_name: Name of the component being built
+
     Example:
         with ComponentRenderTracker("simulation_card"):
-            st.plotly_chart(fig)
+            build_preview_figure()
     """
     start_time = time.time()
     
