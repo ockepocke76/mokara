@@ -290,40 +290,6 @@ class ExecutiveColors:
 # HELPER FUNCTIONS
 # ============================================================================
 
-def get_plotly_dark_theme_template():
-    """
-    Returns a dictionary with Plotly template configuration for the dark theme.
-    This can be used to create the template in interactive_plotting.py
-    """
-    return {
-        'layout': {
-            'font_color': DarkTheme.FONT_COLOR,
-            'paper_bgcolor': DarkTheme.PAPER_BG,
-            'plot_bgcolor': DarkTheme.PLOT_BG,
-            'xaxis': {
-                'gridcolor': DarkTheme.GRID_COLOR,
-                'linecolor': DarkTheme.LINE_COLOR,
-                'zerolinecolor': DarkTheme.ZEROLINE_COLOR
-            },
-            'yaxis': {
-                'gridcolor': DarkTheme.GRID_COLOR,
-                'linecolor': DarkTheme.LINE_COLOR,
-                'zerolinecolor': DarkTheme.ZEROLINE_COLOR
-            },
-            'legend': {
-                'bgcolor': DarkTheme.LEGEND_BG
-            },
-            'title_font_color': DarkTheme.TITLE_FONT_COLOR,
-            'updatemenudefaults': {
-                'font': {'color': DarkTheme.FONT_COLOR},
-                'bgcolor': DarkTheme.UPDATEMENU_BG,
-                'active': 0,
-                'bordercolor': DarkTheme.UPDATEMENU_BORDER
-            }
-        }
-    }
-
-
 def get_flowchart_style(node_type, theme='dark'):
     """
     Get the Mermaid style string for a flowchart node type.
