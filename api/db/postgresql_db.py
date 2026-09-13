@@ -1567,22 +1567,6 @@ class PostgreSQLDatabase:
             self.release_connection(conn)
 
     @log_db_call
-    def increment_fork_count(self, strategy_id):
-        """Increments the fork count for a strategy."""
-        conn = self.get_connection()
-        try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("UPDATE CUSTOM_STRATEGIES SET fork_count = COALESCE(fork_count, 0) + 1 WHERE id = %s", (strategy_id,))
-            conn.commit()
-            return True
-        except Exception as e:
-            logging.error(f"Failed to increment fork count for strategy {strategy_id}: {e}")
-            conn.rollback()
-            return False
-        finally:
-            self.release_connection(conn)
-    
-    @log_db_call
     def set_strategy_published_status(self, strategy_id, user_id, is_published):
         """Toggle whether a custom strategy is published to the leaderboard."""
         conn = self.get_connection()
