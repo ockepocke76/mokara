@@ -16,17 +16,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.deps import get_current_user, verify_internal_secret
+from app.deps import get_current_user, require_user as _require_user, verify_internal_secret
 
 router = APIRouter(dependencies=[Depends(verify_internal_secret)])
 
 TERMINAL_EVENTS = {'run_completed', 'run_failed', 'run_discarded'}
-
-
-def _require_user(user: Optional[dict]) -> dict:
-    if user is None:
-        raise HTTPException(status_code=401, detail="Sign in to manage strategies")
-    return user
 
 
 def _stringify_dates(row: dict) -> dict:

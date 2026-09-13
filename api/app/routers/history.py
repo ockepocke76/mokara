@@ -6,15 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
 from app.access import require_simulation_owner, require_simulation_view
-from app.deps import get_current_user, verify_internal_secret
+from app.deps import get_current_user, require_user as _require_user, verify_internal_secret
 
 router = APIRouter(dependencies=[Depends(verify_internal_secret)])
-
-
-def _require_user(user: Optional[dict]) -> dict:
-    if user is None:
-        raise HTTPException(status_code=401, detail="authentication required")
-    return user
 
 
 @router.get("/simulations")
