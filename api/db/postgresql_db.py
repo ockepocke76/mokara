@@ -283,17 +283,28 @@ class PostgreSQLDatabase(DatabaseInterface):
 
     
     def run_migrations(self, conn=None):
-        """Apply PostgreSQL migrations."""
+        """Apply PostgreSQL migrations.
+
+        Serialized cluster-wide with an advisory lock (api startup, worker
+        startup, and the admin endpoint may race otherwise), and a genuine
+        migration failure ABORTS the run — later migrations must not apply
+        on top of a half-failed schema.
+        """
         logging.info("Running PostgreSQL migrations...")
-        
+
         should_release = False
         if conn is None:
             conn = self.get_connection()
             should_release = True
-        
+
+        locked = False
         try:
             cursor = self._get_cursor(conn)
-            
+
+            # One runner at a time, cluster-wide.
+            cursor.execute("SELECT pg_advisory_lock(hashtext('mokara_migrations'))")
+            locked = True
+
             # Create schema_version table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS schema_version (
@@ -342,8 +353,11 @@ class PostgreSQLDatabase(DatabaseInterface):
                         error_str = str(e)
                         # Rollback the failed transaction first
                         conn.rollback()
-                        
-                        # Skip if migration was already applied (idempotent)
+
+                        # Legacy bootstrap tolerance: the original schema
+                        # predates migration tracking, so early migrations
+                        # hit objects that already exist (or drop ones that
+                        # never did). Those are recorded and skipped.
                         if "already exists" in error_str or "does not exist" in error_str:
                             logging.warning(f"⚠️  Skipping {version}: {error_str}")
                             # Mark as applied anyway to prevent re-running (in new transaction)
@@ -352,15 +366,22 @@ class PostgreSQLDatabase(DatabaseInterface):
                                 (version,)
                             )
                             conn.commit()
-                        else:
-                            logging.error(f"❌ Failed {version}: {e}", exc_info=True)
-                        continue
-            
+                            continue
+                        # Anything else is a real failure: abort the run —
+                        # applying later migrations on a half-failed schema
+                        # compounds the damage. (Previously this logged and
+                        # continued.)
+                        logging.error(f"❌ Failed {version}: {e}", exc_info=True)
+                        raise
+
             logging.info("Migrations complete")
-        except Exception as e:
-            logging.error(f"Migration error: {e}", exc_info=True)
-            conn.rollback()
         finally:
+            if locked:
+                try:
+                    cursor.execute("SELECT pg_advisory_unlock(hashtext('mokara_migrations'))")
+                    conn.commit()
+                except Exception:
+                    logging.exception("Failed to release migration advisory lock")
             if should_release:
                 self.release_connection(conn)
     

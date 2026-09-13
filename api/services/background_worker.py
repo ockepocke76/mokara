@@ -368,6 +368,12 @@ def run_worker():
     from logger import configure_logging
     configure_logging()
 
+    # Schema readiness, once per worker start (advisory-locked; replaces the
+    # old per-simulation-job run_migrations call). A failed migration must
+    # stop the worker, not let it process jobs against a broken schema.
+    from db.database import db
+    db.run_migrations()
+
     # Graceful-shutdown signals, only for the real worker process.
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
