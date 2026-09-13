@@ -114,24 +114,38 @@ main before this doc landed — R3 below is annotated with what they resolved.
 
 ## R2 — Correctness
 
+> **Status 2026-09-13:** R2.1-R2.5 merged to main (`126f584` job pipeline,
+> `66ca0fc` migrations, `05090bb` report single-flight), each branch
+> reviewed pre-merge; review fixes included: never-heartbeated jobs get
+> their full timeout before reclaim (rolling-deploy double-run), rollback
+> before advisory unlock (lock-leak wedge), deterministic single-flight
+> tests. The simulate-form poll leak (R2.5 second item) is deferred to
+> R5.6's shared hook as planned.
+>
+> Accepted residuals: `timeout_seconds` is now a hard SLA — a job
+> finishing slightly over budget shows FAILED even though its results
+> landed in the content-addressed cache (re-submit returns 'cached'
+> instantly); distinct report hashes colliding on one of the 32 stripes
+> serialize (rare, harmless at this scale).
+
 ### R2.1 🔴 Stale-job recovery can double-run long simulations
 (Found independently by two review passes.)
-- [ ] `reset_stale_jobs` resets anything PROCESSING > 900s global
+- [x] `reset_stale_jobs` resets anything PROCESSING > 900s global
       (`db/postgresql_db.py:2841-2867`, called with 900 from
       `services/background_worker.py:345`) but sims are queued with
       `timeout_seconds=1800` (`services/background_manager.py:75`) and the
       column is never read → a >15-min sim is reset to PENDING and claimed
       by a second worker while the first still runs. Use
       `started_at < now() - (timeout_seconds * interval '1 second')`.
-- [ ] Fence completion: `complete_job`/`fail_job`/progress updates
+- [x] Fence completion: `complete_job`/`fail_job`/progress updates
       (`postgresql_db.py:2699-2753`) update by `id` alone — add
       `AND worker_id = %s` so an evicted worker can't overwrite the
       reclaimer's result.
-- [ ] Add a worker heartbeat column; key recovery on "stopped
+- [x] Add a worker heartbeat column; key recovery on "stopped
       heartbeating", not wall-clock (also needed for R3.4).
 
 ### R2.2 🟡 Simulation job progress is dead plumbing
-- [ ] The worker defines `update_progress` then never passes it —
+- [x] The worker defines `update_progress` then never passes it —
       `run_and_save_simulation` gets `progress_queue=None` and no `job_id`
       (`background_worker.py:275-291`), so `/jobs/{id}` polls
       `progress_value` that nothing writes
@@ -139,17 +153,17 @@ main before this doc landed — R3 below is annotated with what they resolved.
       `progress_callback(job_id)` through, or delete the plumbing.
 
 ### R2.3 🟡 Migration runner: unsafe semantics + broken script
-- [ ] `db.run_migrations()` runs on **every simulation job**
+- [x] `db.run_migrations()` runs on **every simulation job**
       (`background_tasks.py:113`) with no advisory lock, marks
       "already exists"-failures as applied, and `continue`s past genuine
       failures (`postgresql_db.py:326-357`). Run once, deploy-time
       (Cloud Run job / CI step), under `pg_advisory_lock`; failures abort.
-- [ ] `api/run_migrations.py:4` hardcodes
+- [x] `api/run_migrations.py:4` hardcodes
       `sys.path.insert(0, '/Users/oscarsverud/dev/btc_sim')` — a stale
       path from two repos ago. Fix.
 
 ### R2.4 🟡 Synchronous report rendering in the request path
-- [ ] `GET /simulations/{hash}/report` → `regenerate_ui_results` (~700
+- [x] `GET /simulations/{hash}/report` → `regenerate_ui_results` (~700
       lines) runs inline behind a 16-entry TTL cache
       (`app/routers/simulations.py:412-462`); N concurrent cache misses
       render N full reports, each holding a threadpool thread + DB
@@ -157,7 +171,7 @@ main before this doc landed — R3 below is annotated with what they resolved.
       job queue like PDFs.
 
 ### R2.5 🟢 Misc
-- [ ] Naive-datetime staleness check in `check_simulation_cache`
+- [x] Naive-datetime staleness check in `check_simulation_cache`
       (`postgresql_db.py:961-974`) — breaks/misfires when server TZ ≠ DB
       column semantics (UTC on Cloud Run). Use `timestamptz` + UTC now, or
       compute age in SQL. Kill the bare `except:` at `:981`.
