@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 
+from app.access import require_simulation_owner, require_simulation_view
 from app.deps import get_current_user, verify_internal_secret
 
 router = APIRouter(dependencies=[Depends(verify_internal_secret)])
@@ -16,25 +17,15 @@ def _require_user(user: Optional[dict]) -> dict:
     return user
 
 
-def _own_history_row(user: dict, simulation_hash: str) -> dict:
-    from db.database import db
-
-    rows = db.get_user_simulations_with_params(user["email"]) or []
-    for row in rows:
-        if row.get("simulation_hash") == simulation_hash:
-            return dict(row)
-    raise HTTPException(status_code=404, detail="Simulation not in your history")
-
-
 @router.get("/simulations")
 def list_simulations(user: Optional[dict] = Depends(get_current_user)) -> dict:
     """The viewer's simulation history with preview stats."""
     user = _require_user(user)
+    from app.access import own_history_rows
     from db.cache import get_simulation_final_stats_cached
-    from db.database import db
     from utils.helpers import generate_simulation_description
 
-    rows = db.get_user_simulations_with_params(user["email"]) or []
+    rows = own_history_rows(user)
     items = []
     for row in rows:
         params = row.get("all_params") or {}
@@ -75,10 +66,16 @@ def delete_simulation(
     from core.cache import clear_all
     from db.database import db
 
-    row = _own_history_row(user, simulation_hash)
-    db.permanently_delete_simulation(row["id"])
+    access = require_simulation_owner(simulation_hash, user)
+    try:
+        db.permanently_delete_simulation(access["history_id"])
+    except ValueError:
+        # Public simulations are shared history — the DB layer refuses.
+        raise HTTPException(
+            status_code=409, detail="Public simulations cannot be deleted"
+        )
     clear_all()
-    return {"deleted": True, "history_id": row["id"]}
+    return {"deleted": True, "history_id": access["history_id"]}
 
 
 @router.post("/simulations/{simulation_hash}/pdf")
@@ -89,19 +86,23 @@ def request_pdf(
     user = _require_user(user)
     from services.background_manager import BackgroundManager
 
-    row = _own_history_row(user, simulation_hash)
+    access = require_simulation_owner(simulation_hash, user)
     job_id = BackgroundManager.start_pdf_generation(
-        history_id=row["id"], user=user
+        history_id=access["history_id"], user=user
     )
     if not job_id:
         raise HTTPException(status_code=500, detail="Failed to queue PDF job")
-    return {"job_id": job_id, "history_id": row["id"]}
+    return {"job_id": job_id, "history_id": access["history_id"]}
 
 
 @router.get("/simulations/{simulation_hash}/pdf/status")
-def pdf_status(simulation_hash: str) -> dict:
+def pdf_status(
+    simulation_hash: str,
+    user: Optional[dict] = Depends(get_current_user),
+) -> dict:
     from db.database import db
 
+    require_simulation_view(simulation_hash, user)
     info = db.get_pdf_info_by_hash(simulation_hash)
     if not info:
         return {"pdf_status": None}
@@ -121,7 +122,7 @@ def download_pdf(
     from db.database import db
     from db.pdf_storage import get_pdf_storage
 
-    _own_history_row(user, simulation_hash)
+    require_simulation_view(simulation_hash, user)
     info = db.get_pdf_info_by_hash(simulation_hash)
     # Engine status vocabulary: pending -> ready | failed
     if not info or info.get("pdf_status") != "ready" or not info.get("pdf_storage_path"):

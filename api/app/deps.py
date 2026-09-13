@@ -10,6 +10,7 @@ with:
 get_current_user returns a user dict shaped like the engine expects
 ({'email', 'name', 'id'}) or None for anonymous requests.
 """
+import hmac
 import logging
 from typing import Optional
 
@@ -22,7 +23,7 @@ def verify_internal_secret(x_internal_secret: str = Header(default="")) -> None:
     expected = get_secret("INTERNAL_API_SECRET")
     if not expected:
         raise HTTPException(status_code=503, detail="INTERNAL_API_SECRET not configured")
-    if x_internal_secret != expected:
+    if not hmac.compare_digest(x_internal_secret.encode(), expected.encode()):
         raise HTTPException(status_code=401, detail="invalid internal secret")
 
 

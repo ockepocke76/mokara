@@ -27,9 +27,10 @@ def signal_handler(signum, frame):
     logging.info(f"⚠️  Received signal {signum}, initiating graceful shutdown...")
     shutdown_requested = True
 
-# Register signal handlers
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
+# Signal handlers are registered in run_worker(), not at import time:
+# multiprocessing's spawn children re-import this module (via worker.py as
+# __main__), and an import-time SIGTERM handler would make the sandbox
+# validation subprocess ignore terminate().
 
 
 class JobWorker:
@@ -286,14 +287,20 @@ class JobWorker:
         # Run simulation with correct parameter names
         try:
             # Note: run_and_save_simulation expects: ui_params, full_sim_params, simulation_hash
-            # The function handles its own database saving
-            run_and_save_simulation(
+            # The function handles its own database saving. It swallows its
+            # own exceptions and reports failure through the return value —
+            # ignoring it would mark a failed simulation's job as successful.
+            success, _ = run_and_save_simulation(
                 ui_params=ui_params,
                 full_sim_params=full_sim_params,
                 simulation_hash=simulation_hash,
                 progress_queue=None  # We use callback instead
             )
-            
+            if not success:
+                raise RuntimeError(
+                    f"Simulation failed for {simulation_hash[:10]} "
+                    "(see simulation logs for the cause)")
+
             logging.info(f"✅ Simulation complete: {simulation_hash[:10]}")
             
             return {
@@ -360,6 +367,10 @@ def run_worker():
     """Main entry point for worker service."""
     from logger import configure_logging
     configure_logging()
+
+    # Graceful-shutdown signals, only for the real worker process.
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
     logging.info("=" * 60)
     logging.info("Background Worker Service Starting")

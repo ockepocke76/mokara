@@ -18,7 +18,8 @@ export function MermaidChart({ code }: { code: string }) {
           code,
         );
         if (!cancelled && ref.current) ref.current.innerHTML = svg;
-      } catch {
+      } catch (err) {
+        console.error("Mermaid render failed:", err);
         if (!cancelled) setError(true);
       }
     })();

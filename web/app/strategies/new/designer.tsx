@@ -29,6 +29,7 @@ import {
   SpecCard,
   TestFlightCard,
 } from "./cards";
+import { FlowDiagram } from "./flow-diagram";
 
 const STARTERS: { label: string; text: string }[] = [
   {
@@ -305,6 +306,7 @@ function EntryForm({
       <Button onClick={onStart} disabled={busy || request.trim().length < 10}>
         {busy ? "Starting…" : "Generate — uses 1 AI credit"}
       </Button>
+      <FlowDiagram />
     </div>
   );
 }
