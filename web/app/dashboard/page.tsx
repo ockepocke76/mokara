@@ -17,6 +17,7 @@ import {
   type FeaturedStrategy,
 } from "@/components/featured-strategy-card";
 import { SimPreviewCard, type SimPreview } from "@/components/sim-preview-card";
+import { DesignerFlowSection } from "@/components/designer-flow";
 import { HomeSections, type HomePayload } from "./home-sections";
 
 export const metadata: Metadata = { title: "Home" };
@@ -136,6 +137,8 @@ export default async function DashboardPage() {
         </section>
       )}
 
+      <DesignerFlowSection authenticated />
+
       <section className="border-t pt-8">
         <Accordion type="multiple">
           <AccordionItem value="kb" className="rounded-lg border bg-card px-4">
@@ -251,6 +254,9 @@ function GuestHome({
           <Link href="/docs/methodology">📖 Read Full Methodology</Link>
         </Button>
       </section>
+
+      {/* The AI designer, in depth */}
+      <DesignerFlowSection authenticated={false} />
 
       {/* Sample simulations */}
       {previews.length > 0 && (

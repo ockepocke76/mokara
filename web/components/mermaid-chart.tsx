@@ -2,12 +2,39 @@
 
 import { useEffect, useRef, useState } from "react";
 
-/** Renders a Mermaid diagram client-side (old app's render_mermaid). */
+/**
+ * Renders a Mermaid diagram client-side (old app's render_mermaid). The
+ * mermaid bundle is loaded and rendered only once the container scrolls near
+ * the viewport — a hidden container (e.g. inside a closed <details>) never
+ * intersects, so rendering defers until it is revealed.
+ */
 export function MermaidChart({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [error, setError] = useState(false);
+  const [inView, setInView] = useState(false);
 
   useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === "undefined") {
+      const id = requestAnimationFrame(() => setInView(true));
+      return () => cancelAnimationFrame(id);
+    }
+    const observer = new IntersectionObserver(
+      (entries, obs) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          obs.disconnect();
+          setInView(true);
+        }
+      },
+      { rootMargin: "100px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!inView) return;
     let cancelled = false;
     (async () => {
       try {
@@ -26,7 +53,7 @@ export function MermaidChart({ code }: { code: string }) {
     return () => {
       cancelled = true;
     };
-  }, [code]);
+  }, [code, inView]);
 
   if (error) {
     return (
