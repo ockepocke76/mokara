@@ -38,19 +38,37 @@ def test_same_hash_renders_are_serialized(monkeypatch):
 def test_different_hashes_can_render_concurrently(monkeypatch):
     from app.routers import simulations as sim
 
-    # Two keys on different stripes must not block each other.
-    keys = ['a', 'b', 'c', 'd', 'e']
-    stripes = {hash((k, False)) % 32 for k in keys}
-    assert len(stripes) > 1, "test needs keys on at least two stripes"
+    # Keys on distinct stripes must not block each other. Stripe assignment
+    # is hash-salted per process, so pick keys that land on different
+    # stripes at runtime.
+    keys, seen = [], set()
+    for i in range(1000):
+        k = f"h{i}"
+        stripe = hash((k, False)) % 32
+        if stripe not in seen:
+            seen.add(stripe)
+            keys.append(k)
+        if len(keys) == 5:
+            break
+    assert len(keys) == 5
 
     state = {'active': 0, 'max_active': 0}
     guard = threading.Lock()
+
+    barrier = threading.Barrier(len(keys), timeout=5)
 
     def fake_render(simulation_hash, viewer_is_admin):
         with guard:
             state['active'] += 1
             state['max_active'] = max(state['max_active'], state['active'])
-        time.sleep(0.1)
+        # Rendezvous: every thread must be inside its render at once, so the
+        # concurrency assertion cannot flake on a slow/loaded runner. Threads
+        # serialized by an (unexpected) shared lock would deadlock the
+        # barrier and time out instead.
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
         with guard:
             state['active'] -= 1
         return "{}"
