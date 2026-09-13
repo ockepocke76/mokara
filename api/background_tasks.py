@@ -148,7 +148,11 @@ def run_and_save_simulation(ui_params, full_sim_params, simulation_hash, progres
         # Note: asset_name is already set in assemble_params() from assets.yml display_name
         # Don't overwrite it with data['asset_name'] which might be a formatted fallback
         full_sim_params['component_hashes'] = get_component_hashes()
-        db.update_cached_simulation_params(simulation_hash, full_sim_params)
+        # component_hashes are persisted to CACHED_SIMULATIONS by
+        # db.update_cached_simulation_results at the end of the run. (An
+        # earlier mid-run db.update_cached_simulation_params call here had
+        # been a silent no-op — its query never existed in the PG queries
+        # class and the AttributeError was swallowed — so it was removed.)
 
         # --- REFACTOR: Prepare all return sources for the simulation engine ---
         # --- REFACTOR: Use centralized logic to prepare return sources ---

@@ -193,20 +193,8 @@ class LimitEnforcer:
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor()
-            query = "SELECT credits_used FROM AI_CREDIT_USAGE WHERE user_id = %s AND month = %s"
-            # Auto-detect SQLite vs PostgreSQL placeholder is tricky here without DB wrapper helper
-            # But the db object handles connection/cursor wrapping in new PostgreSQL code
-            # Wait, db.get_connection() returns PostgreSQLConnection which returns PostgreSQLCursor
-            # PostgreSQLCursor handles ? -> %s conversion!
-            # So I can use ? safely if the DB is wrapped!
-            
-            # Using ? for compatibility with the wrapper's fallback
-            if hasattr(self.db, 'dialect') and self.db.dialect.__class__.__name__ == 'PostgreSQLDialect':
-                 # Wrapper handles ? -> %s
-                 cursor.execute("SELECT credits_used FROM AI_CREDIT_USAGE WHERE user_id = ? AND month = ?", (user_id, current_month))
-            else:
-                 cursor.execute("SELECT credits_used FROM AI_CREDIT_USAGE WHERE user_id = ? AND month = ?", (user_id, current_month))
-                 
+            cursor.execute("SELECT credits_used FROM AI_CREDIT_USAGE WHERE user_id = %s AND month = %s", (user_id, current_month))
+
             row = cursor.fetchone()
             credits_used = row[0] if row else 0
         except Exception as e:
@@ -244,11 +232,9 @@ class LimitEnforcer:
             cursor = conn.cursor()
             
             # Insert or update
-            # Using ? placeholders as they are supported by both SQLite (natively) 
-            # and our PostgreSQL wrapper (via auto-conversion)
             cursor.execute("""
                 INSERT INTO AI_CREDIT_USAGE (user_id, month, credits_used)
-                VALUES (?, ?, 1)
+                VALUES (%s, %s, 1)
                 ON CONFLICT(user_id, month)
                 DO UPDATE SET 
                     credits_used = AI_CREDIT_USAGE.credits_used + 1,
@@ -280,7 +266,7 @@ class LimitEnforcer:
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM USERS WHERE id = ?", (user_id,))
+            cursor.execute("SELECT * FROM USERS WHERE id = %s", (user_id,))
             columns = [desc[0] for desc in cursor.description]
             row = cursor.fetchone()
             return dict(zip(columns, row)) if row else None
@@ -303,7 +289,7 @@ class LimitEnforcer:
             cursor.execute("""
                 SELECT COUNT(*) 
                 FROM USER_SIMULATION_HISTORY 
-                WHERE user_id = ? AND is_removed = ?
+                WHERE user_id = %s AND is_removed = %s
             """, (user_id, False))
             return cursor.fetchone()[0]
         except Exception as e:
@@ -321,7 +307,7 @@ class LimitEnforcer:
             cursor.execute("""
                 SELECT COUNT(*) 
                 FROM CUSTOM_STRATEGIES 
-                WHERE user_id = ?
+                WHERE user_id = %s
                 AND deleted_at IS NULL
             """, (user_id,))
             return cursor.fetchone()[0]

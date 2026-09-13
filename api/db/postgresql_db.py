@@ -18,17 +18,14 @@ import logging
 import json
 import io
 import pickle
-import re
 from datetime import datetime, timezone
 import pandas as pd
 from pathlib import Path
 
 from core.cache import ttl_cache
 
-from .database_interface import DatabaseInterface, Dialect
 from .utils import _sanitize_for_json
 from utils.strategy_utils import calculate_strategy_hash
-from db.queries import PostgreSQLQueries
 from .logging_utils import log_db_call
 
 
@@ -57,119 +54,15 @@ def _save_dict_to_db(cursor, results_id, data_key, data_dict):
     )
 
 
-class PostgreSQLDialect(Dialect):
-    """PostgreSQL-specific SQL dialect."""
-    
-    def json_parse(self, column):
-        """PostgreSQL uses  JSONB."""
-        return f"{column}::jsonb"
-
-
-
-class PostgreSQLCursor:
-    """Cursor wrapper to auto-convert SQLite ? placeholders to PostgreSQL %s."""
-    def __init__(self, cursor):
-        self._cursor = cursor
-        
-    def execute(self, query, params=None):
-        """Execute with automatic placeholder and parameter conversion.
-        
-        Simplified for PostgreSQL-only usage:
-        - Queries already using %(param)s syntax are passed through unchanged
-        - Legacy :param style is converted to %(param)s
-        - Legacy ? style is converted to %s
-        """
-        if isinstance(query, str):
-            # QUICK FIX: Skip transformation if query already uses PostgreSQL %(param)s syntax
-            if '%(' in query:
-                # Query already uses PostgreSQL-native syntax, pass through unchanged
-                return self._cursor.execute(query, params)
-            
-            if isinstance(params, dict):
-                original_query = query
-                # Convert :key to %(key)s for PostgreSQL named parameters
-                for key in params.keys():
-                    # Regex matches :key but not ::key (casts) or :key_suffix.
-                    # Pattern: (?<!:):key\b
-                    query = re.sub(rf'(?<!:):{re.escape(str(key))}\b', f'%({key})s', query)
-                
-                # If named parameters were not used/found, check for positional (?)
-                if query == original_query and '?' in query:
-                    # Fallback for legacy queries using ? but receiving a dict
-                    query = query.replace('?', '%s')
-                    params = tuple(params.values())
-            else:
-                # Sequence params - Convert ? to %s for PostgreSQL (positional)
-                query = query.replace('?', '%s')
-        
-        return self._cursor.execute(query, params)
-    
-    def executescript(self, script):
-        return self._cursor.execute(script)
-    
-    def fetchone(self):
-        return self._cursor.fetchone()
-    
-    def fetchall(self):
-        return self._cursor.fetchall()
-    
-    @property
-    def rowcount(self):
-        return self._cursor.rowcount
-    
-    @property
-    def description(self):
-        return self._cursor.description
-    
-    def __getattr__(self, name):
-        return getattr(self._cursor, name)
-
-
-class PostgreSQLConnection:
-    """Wrapper for psycopg2 connection to ensure cursors are wrapped."""
-    def __init__(self, connection):
-        self._conn = connection
-    
-    def cursor(self, *args, **kwargs):
-        """Return a wrapped cursor (or unwrapped for RealDictCursor)."""
-        raw_cursor = self._conn.cursor(*args, **kwargs)
-        
-        # SIMPLIFIED: For PostgreSQL-only deployment, don't wrap RealDictCursor
-        # RealDictCursor already uses PostgreSQL-native %(param)s syntax
-        if isinstance(raw_cursor, extras.RealDictCursor):
-            return raw_cursor
-        
-        # Wrap other cursor types for legacy SQLite syntax compatibility
-        return PostgreSQLCursor(raw_cursor)
-    
-    def commit(self):
-        return self._conn.commit()
-    
-    def rollback(self):
-        return self._conn.rollback()
-    
-    def close(self):
-        return self._conn.close()
-        
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-
-class PostgreSQLDatabase(DatabaseInterface):
+class PostgreSQLDatabase:
     """
     PostgreSQL database implementation with connection pooling.
-    
-    Benefits over SQLite:
-    - No file locking
-    - True MVCC concurrency
-    - Better scaling
     """
-    
+
     def __init__(self, queries, config):
-        super().__init__(queries)
+        self.queries = queries
         self.config = config
-        self.dialect = PostgreSQLDialect()
-        
+
         # Create connection pool
         # Connect to DB
         # Optimized for Cloud Run and Streamlit concurrency
@@ -219,7 +112,7 @@ class PostgreSQLDatabase(DatabaseInterface):
         }
 
     def get_connection(self):
-        """Get connection from pool - returns WRAPPED connection."""
+        """Get a psycopg2 connection from the pool."""
         # Log high usage
         with self._lock:
             self._active_connections += 1
@@ -237,8 +130,7 @@ class PostgreSQLDatabase(DatabaseInterface):
         import time 
         for i in range(5):
             try:
-                conn = self.pool.getconn()
-                return PostgreSQLConnection(conn)
+                return self.pool.getconn()
             except psycopg2.pool.PoolError:
                 if i == 4:
                     with self._lock: # Revert count if we fail
@@ -249,24 +141,18 @@ class PostgreSQLDatabase(DatabaseInterface):
                 time.sleep(0.2) # Wait a bit
         
         # Fallback (should be covered by raise above)
-        conn = self.pool.getconn()
-        return PostgreSQLConnection(conn)
-    
+        return self.pool.getconn()
+
     def release_connection(self, conn):
         """Releases the connection back to the pool."""
         try:
-            if hasattr(conn, '_conn'):
-                # It's a wrapped connection
-                self.pool.putconn(conn._conn)
-            else:
-                self.pool.putconn(conn)
+            self.pool.putconn(conn)
         finally:
              with self._lock:
                 self._active_connections = max(0, self._active_connections - 1)
 
     def _get_cursor(self, conn, cursor_factory=None):
-        """Helper to get a wrapped cursor."""
-        # Conn is already wrapped, so conn.cursor() returns PostgreSQLCursor
+        """Helper to get a cursor (optionally with a cursor_factory, e.g. RealDictCursor)."""
         return conn.cursor(cursor_factory=cursor_factory)
     
 
@@ -505,7 +391,6 @@ class PostgreSQLDatabase(DatabaseInterface):
                 return row[0]
             
             # Create with RETURNING
-            # Create with RETURNING
             # Try to set display_name to user_name initially
             try:
                 cursor.execute(
@@ -542,10 +427,7 @@ class PostgreSQLDatabase(DatabaseInterface):
             
             logging.info(f"Created user {user_email} (ID:{user_id})")
             return user_id
-            
-            logging.info(f"Created user {user_email} (ID:{user_id})")
-            return user_id
-            
+
         except Exception as e:
             logging.error(f"Failed get/create user: {e}", exc_info=True)
             conn.rollback()
@@ -1270,21 +1152,6 @@ class PostgreSQLDatabase(DatabaseInterface):
             self.release_connection(conn)
 
     @log_db_call
-    def update_cached_simulation_params(self, simulation_hash, params):
-        conn = self.get_connection()
-        try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(self.queries.UPDATE_SIMULATION_PARAMS, {
-                'simulation_hash': simulation_hash,
-                'params': json.dumps(_sanitize_for_json(params))
-            })
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
-    
-    @log_db_call
     def save_custom_strategy(self, user_id, strategy_name, class_name, description, ai_description, code, 
                             parameters_json, validation_status='not_started', validation_error=None, 
                             last_validation_timestamp=None, strategy_id=None, parent_strategy_id=None, 
@@ -1936,20 +1803,6 @@ class PostgreSQLDatabase(DatabaseInterface):
             self.release_connection(conn)
     
     @log_db_call
-    def get_leaderboard(self, category=None, limit=50):
-        """Get strategy leaderboard."""
-        conn = self.get_connection()
-        try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute(self.queries.GET_LEADERBOARD.replace('?', '%s'), (category, limit))
-            return cursor.fetchall()
-        except Exception as e:
-            logging.error(f"Failed: {e}", exc_info=True)
-            return []
-        finally:
-            self.release_connection(conn)
-    
-    @log_db_call
     def get_strategy_evaluation(self, git_commit_sha, lookup_fallback_sha=None):
         """
         Get evaluation for specific strategy version by SHA.
@@ -1971,7 +1824,7 @@ class PostgreSQLDatabase(DatabaseInterface):
             # Primary lookup
             result = None
             if git_commit_sha:
-                cursor.execute(self.queries.GET_STRATEGY_EVALUATION_BY_SHA.replace('?', '%s'), (git_commit_sha,))
+                cursor.execute(self.queries.GET_STRATEGY_EVALUATION_BY_SHA, (git_commit_sha,))
                 result = cursor.fetchone()
             
             # Fallback lookup (for clones)
@@ -1979,7 +1832,7 @@ class PostgreSQLDatabase(DatabaseInterface):
                 primary_display = git_commit_sha[:7] if git_commit_sha else "None"
                 fallback_display = lookup_fallback_sha[:7] if lookup_fallback_sha else "None"
                 logging.info(f"Primary SHA {primary_display} not found, checking fallback {fallback_display}")
-                cursor.execute(self.queries.GET_STRATEGY_EVALUATION_BY_SHA.replace('?', '%s'), (lookup_fallback_sha,))
+                cursor.execute(self.queries.GET_STRATEGY_EVALUATION_BY_SHA, (lookup_fallback_sha,))
                 result = cursor.fetchone()
                 
             return result
