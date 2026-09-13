@@ -11,29 +11,8 @@ export type RunEvent = {
   payload: any;
 };
 
-export const STAGES = [
-  "understanding",
-  "examples",
-  "blueprint",
-  "code",
-  "checks",
-  "test_flight",
-  "behavior",
-  "decision",
-] as const;
-
-export type StageKey = (typeof STAGES)[number];
-
-export const STAGE_LABELS: Record<StageKey, string> = {
-  understanding: "Understanding",
-  examples: "Studying examples",
-  blueprint: "Blueprint",
-  code: "Writing code",
-  checks: "Safety checks",
-  test_flight: "Test flight",
-  behavior: "Behavior review",
-  decision: "Your decision",
-};
+export { STAGES, STAGE_LABELS, type StageKey } from "@/lib/stage-labels";
+import { STAGES, type StageKey } from "@/lib/stage-labels";
 
 export type StageStatus = "pending" | "active" | "done" | "needs_you" | "failed";
 

@@ -1,9 +1,6 @@
-"use client";
-
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
 
-import { STAGE_LABELS } from "@/app/strategies/model";
+import { STAGE_LABELS } from "@/lib/stage-labels";
 import { MermaidChart } from "@/components/mermaid-chart";
 import { Button } from "@/components/ui/button";
 
@@ -45,47 +42,16 @@ flowchart TD
     class failed,discarded bad
 `;
 
-/** Mounts the mermaid chart only when scrolled near the viewport, so pages
- * embedding the diagram don't pay for the mermaid bundle up front. */
-export function DesignerFlowChart() {
-  const ref = useRef<HTMLDivElement>(null);
-  const [inView, setInView] = useState(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || inView) return;
-    if (typeof IntersectionObserver === "undefined") {
-      const id = requestAnimationFrame(() => setInView(true));
-      return () => cancelAnimationFrame(id);
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) setInView(true);
-      },
-      { rootMargin: "300px" },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [inView]);
-
-  return (
-    <div ref={ref} className="min-h-64">
-      {inView && <MermaidChart code={DESIGNER_FLOW} />}
-    </div>
-  );
-}
+/** Legend for the diagram's amber "needs you" steps — shared so the diagram
+ * and its caption can't drift apart across surfaces. */
+export const DESIGNER_FLOW_CAPTION =
+  "Amber steps pause and wait for you; everything else runs on its own.";
 
 /** Marketing section for the landing page and logged-in home: what the
  * AI designer is, the flowchart, and a call to action. */
-export function DesignerFlowSection({
-  authenticated,
-  className = "mb-10",
-}: {
-  authenticated: boolean;
-  className?: string;
-}) {
+export function DesignerFlowSection({ authenticated }: { authenticated: boolean }) {
   return (
-    <section className={className}>
+    <section className={authenticated ? "mb-8 border-t pt-8" : "mb-10"}>
       <h2 className="mb-3 text-lg font-semibold">
         🤖 Inside the AI Strategy Designer
       </h2>
@@ -100,9 +66,11 @@ export function DesignerFlowSection({
         <p>✅ <strong>You get the final say</strong> — nothing is saved until you approve it</p>
       </div>
       <div className="rounded-lg border px-4 py-4">
-        <DesignerFlowChart />
+        <div className="min-h-64">
+          <MermaidChart code={DESIGNER_FLOW} />
+        </div>
         <p className="mt-2 text-center text-xs text-muted-foreground">
-          Amber steps pause and wait for you; everything else runs on its own.
+          {DESIGNER_FLOW_CAPTION}
         </p>
       </div>
       <Button asChild size="sm" className="mt-3">

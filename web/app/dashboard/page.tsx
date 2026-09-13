@@ -137,7 +137,7 @@ export default async function DashboardPage() {
         </section>
       )}
 
-      <DesignerFlowSection authenticated className="mb-8 border-t pt-8" />
+      <DesignerFlowSection authenticated />
 
       <section className="border-t pt-8">
         <Accordion type="multiple">
