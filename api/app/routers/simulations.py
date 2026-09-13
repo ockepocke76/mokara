@@ -8,6 +8,7 @@ statuses the frontend acts on: 'cached' | 'running' | 'queued'.
 """
 import logging
 import os
+import threading
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -419,6 +420,21 @@ def simulation_results(
 # the web app renders the identical charts (light theme per config.yml).
 # ---------------------------------------------------------------------------
 
+# Single-flight guard for report rendering: a cache miss runs the ~full
+# report regeneration inline (seconds of CPU + pooled DB connections), so N
+# concurrent requests for the same hash must not render N copies — later
+# arrivals wait on the stripe lock and then hit the TTL cache. Fixed stripe
+# pool keeps memory bounded; unrelated hashes colliding on a stripe merely
+# serialize (rare, harmless).
+_REPORT_RENDER_STRIPES = [threading.Lock() for _ in range(32)]
+
+
+def _render_report_json_singleflight(simulation_hash: str, viewer_is_admin: bool) -> str:
+    stripe = _REPORT_RENDER_STRIPES[hash((simulation_hash, viewer_is_admin)) % 32]
+    with stripe:
+        return _render_report_json(simulation_hash, viewer_is_admin)
+
+
 @ttl_cache(ttl=600, maxsize=16)
 def _render_report_json(simulation_hash: str, viewer_is_admin: bool) -> str:
     import base64
@@ -489,5 +505,5 @@ def get_report(
 
         viewer_is_admin = db.get_user_tier(user["id"]) == "ADMIN"
 
-    payload = _render_report_json(simulation_hash, viewer_is_admin)
+    payload = _render_report_json_singleflight(simulation_hash, viewer_is_admin)
     return _Response(content=payload, media_type="application/json")
