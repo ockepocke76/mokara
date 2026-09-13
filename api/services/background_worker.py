@@ -44,17 +44,45 @@ class JobWorker:
     - Timeout detection and recovery
     """
     
+    HEARTBEAT_INTERVAL_SECONDS = 30
+
     def __init__(self, worker_id: str = None):
         self.worker_id = worker_id or f"worker_{os.getpid()}"
         self.current_job_id = None
         logging.info(f"🔧 Worker initialized: {self.worker_id}")
-    
+
+    def _heartbeat_loop(self):
+        """Beats the current job every HEARTBEAT_INTERVAL_SECONDS.
+
+        Stale-job recovery presumes a worker dead when its job stops
+        heartbeating — this thread is what keeps a long simulation from
+        being re-queued mid-run. Job handlers run synchronously in the main
+        thread, so liveness must come from a side thread.
+        """
+        from db.database import db
+
+        while not shutdown_requested:
+            job_id = self.current_job_id
+            if job_id:
+                try:
+                    if not db.heartbeat_job(job_id, self.worker_id):
+                        logging.warning(
+                            f"💔 Job {job_id}: claim no longer held by {self.worker_id}; "
+                            "its result will be discarded (fenced)")
+                except Exception as e:
+                    logging.warning(f"Heartbeat error for job {job_id}: {e}")
+            time.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+
     def run(self):
         """Main worker loop."""
         from db.database import db
-        
+
         logging.info(f"🚀 Worker {self.worker_id} started")
-        
+
+        threading.Thread(
+            target=self._heartbeat_loop, daemon=True,
+            name=f"{self.worker_id}-heartbeat").start()
+
         while not shutdown_requested:
             try:
                 # 1. Fetch and lock next job
@@ -73,7 +101,7 @@ class JobWorker:
                 try:
                     result = self._process_job(job)
                     elapsed = time.time() - start_time
-                    db.complete_job(job['id'], result)
+                    db.complete_job(job['id'], result, worker_id=self.worker_id)
                     logging.info(f"✅ Job {job['id']} completed in {elapsed:.2f}s")
                 
                 except Exception as e:
@@ -276,14 +304,15 @@ class JobWorker:
         
         logging.info(f"🎲 Running simulation: {simulation_hash[:10]}")
         
-        # Progress callback for UI updates
+        # Progress callback for UI updates (doubles as a heartbeat)
         def update_progress(progress: float, message: str = None):
             """Called by simulation code to report progress (0.0-1.0)."""
             try:
-                db.update_job_progress(job_id, progress, message)
+                db.update_job_progress(job_id, progress, message,
+                                       worker_id=self.worker_id)
             except Exception as e:
                 logging.warning(f"Failed to update progress: {e}")
-        
+
         # Run simulation with correct parameter names
         try:
             # Note: run_and_save_simulation expects: ui_params, full_sim_params, simulation_hash
@@ -294,7 +323,8 @@ class JobWorker:
                 ui_params=ui_params,
                 full_sim_params=full_sim_params,
                 simulation_hash=simulation_hash,
-                progress_queue=None  # We use callback instead
+                progress_queue=None,
+                progress_callback=update_progress,
             )
             if not success:
                 raise RuntimeError(
@@ -327,14 +357,14 @@ class JobWorker:
             backoff_seconds = min(2 ** (retry_count + 1) * 10, 300)
             scheduled_at = time.time() + backoff_seconds
             
-            db.retry_job(job_id, error_message, scheduled_at)
+            db.retry_job(job_id, error_message, scheduled_at, worker_id=self.worker_id)
             logging.warning(
                 f"🔄 Job {job_id} will retry in {backoff_seconds}s "
                 f"(attempt {retry_count + 1}/{max_retries})"
             )
         else:
             # Max retries exceeded - permanently failed
-            db.fail_job(job_id, error_message)
+            db.fail_job(job_id, error_message, worker_id=self.worker_id)
             logging.error(
                 f"💀 Job {job_id} failed permanently after {max_retries} retries"
             )
@@ -352,15 +382,21 @@ def cleanup_stale_jobs():
     Should be run periodically in a background thread.
     """
     from db.database import db
-    
-    timeout_threshold = 900  # 15 minutes default
-    recovered = db.reset_stale_jobs(timeout_threshold)
-    
+
+    # Dead workers: no heartbeat for 5 minutes → re-queue for retry.
+    heartbeat_timeout = 300
+    recovered = db.reset_stale_jobs(heartbeat_timeout)
     if recovered > 0:
         logging.warning(
             f"🔧 Recovered {recovered} stale jobs "
-            f"(timeout: {timeout_threshold}s)"
+            f"(no heartbeat for {heartbeat_timeout}s)"
         )
+
+    # Live-but-runaway jobs: exceeded their own timeout_seconds → FAILED
+    # (terminal; the still-running worker's late result is fenced out).
+    timed_out = db.fail_timed_out_jobs(heartbeat_timeout)
+    if timed_out > 0:
+        logging.warning(f"⏰ Failed {timed_out} jobs that exceeded their timeout")
 
 
 def run_worker():

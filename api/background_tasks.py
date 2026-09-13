@@ -79,7 +79,7 @@ def on_simulation_complete(simulation_hash):
     logging.info(f"✅ Simulation complete for {simulation_hash[:10]}. PDF generation is available on-demand.")
 
 
-def run_and_save_simulation(ui_params, full_sim_params, simulation_hash, progress_queue=None, progress_range=(0.0, 1.0)): # noqa
+def run_and_save_simulation(ui_params, full_sim_params, simulation_hash, progress_queue=None, progress_range=(0.0, 1.0), progress_callback=None): # noqa
     """
     Runs the full simulation and report generation process based on the provided parameters.
     This function is designed to be run in a background process.
@@ -113,10 +113,18 @@ def run_and_save_simulation(ui_params, full_sim_params, simulation_hash, progres
     db.run_migrations()
 
     def send_progress(p, status_text=None):
+        scaled_progress = progress_range[0] + p * (progress_range[1] - progress_range[0])
+        scaled_progress = max(0.0, min(1.0, scaled_progress))
         if progress_queue:
-            scaled_progress = progress_range[0] + p * (progress_range[1] - progress_range[0])
-            scaled_progress = max(0.0, min(1.0, scaled_progress))
             progress_queue.put((scaled_progress, status_text))
+        if progress_callback:
+            # Job-queue path: the worker persists progress to the job row
+            # (the UI polls it via /jobs/{id}); never let a progress hiccup
+            # kill the simulation itself.
+            try:
+                progress_callback(scaled_progress, status_text)
+            except Exception:
+                logging.warning("progress_callback failed", exc_info=True)
 
     try:
         logging.info(f"\n--- Running Simulation (Background Process) for hash: {simulation_hash[:10]}... ---")
