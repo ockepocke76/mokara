@@ -142,6 +142,33 @@ def test_per_job_timeout_fails_runaway_but_live_jobs(job_id):
     assert _job_row(job_id)['status'] == 'FAILED'
 
 
+def test_never_heartbeated_job_gets_its_full_timeout_before_reclaim(job_id):
+    """Rolling-deploy case: a pre-heartbeat worker binary never beats.
+    Such jobs must get their own timeout_seconds (1800 here), not the
+    5-minute heartbeat window, before being presumed dead."""
+    assert _claim('old_worker_v1', job_id)
+    # 10 minutes in, no heartbeat ever — within its 1800s budget.
+    _forge(job_id, started_at=600)
+    _null_heartbeat(job_id)
+    db.reset_stale_jobs(heartbeat_timeout_seconds=300)
+    assert _job_row(job_id)['status'] == 'PROCESSING'
+    # 31 minutes in — over budget, now reclaimable.
+    _forge(job_id, started_at=1860)
+    _null_heartbeat(job_id)
+    assert db.reset_stale_jobs(heartbeat_timeout_seconds=300) >= 1
+    assert _job_row(job_id)['status'] == 'PENDING'
+
+
+def _null_heartbeat(job_id):
+    conn = db.get_connection()
+    try:
+        cur = db._get_cursor(conn)
+        cur.execute("UPDATE BACKGROUND_JOBS SET heartbeat_at = NULL WHERE id = %s", (job_id,))
+        conn.commit()
+    finally:
+        db.release_connection(conn)
+
+
 def test_within_budget_long_job_is_not_timed_out(job_id):
     assert _claim('wA', job_id)
     # 20 minutes into a 30-minute budget, heartbeating.

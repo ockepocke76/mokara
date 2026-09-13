@@ -2962,8 +2962,14 @@ class PostgreSQLDatabase(DatabaseInterface):
         Recovery keys on worker liveness, not wall-clock job age: a long
         simulation on a live worker keeps beating and is never reset mid-run
         (the old global age cutoff re-queued legitimately long jobs and
-        caused concurrent double-runs — CODE_REVIEW R2.1). Jobs claimed
-        before the heartbeat column existed fall back to started_at.
+        caused concurrent double-runs — CODE_REVIEW R2.1).
+
+        Jobs with NULL heartbeat_at were claimed by a worker that never
+        beats (pre-heartbeat binary during a rolling deploy, or in-flight
+        rows from before migration V38). Presuming those dead after the
+        heartbeat window would re-introduce the double-run for legitimately
+        long jobs — they instead get their own full timeout_seconds budget
+        (default 900s) before reclaim.
 
         Args:
             heartbeat_timeout_seconds: silence threshold before a worker is
@@ -2984,8 +2990,14 @@ class PostgreSQLDatabase(DatabaseInterface):
                     worker_id = NULL,
                     error_message = 'Recovered: worker stopped heartbeating'
                 WHERE status = 'PROCESSING'
-                  AND COALESCE(heartbeat_at, started_at)
-                      < CURRENT_TIMESTAMP - make_interval(secs => %s)
+                  AND (
+                    (heartbeat_at IS NOT NULL
+                     AND heartbeat_at < CURRENT_TIMESTAMP - make_interval(secs => %s))
+                    OR
+                    (heartbeat_at IS NULL
+                     AND started_at < CURRENT_TIMESTAMP
+                         - make_interval(secs => COALESCE(timeout_seconds, 900)))
+                  )
                 RETURNING id
             """, (heartbeat_timeout_seconds,))
 
