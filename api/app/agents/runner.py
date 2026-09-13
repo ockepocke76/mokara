@@ -160,5 +160,9 @@ def resume_run(run_id: str, payload: dict) -> None:
     # launch graph threads on the same thread_id.
     if not sg.claim_run(run_id, 'needs_input', 'running'):
         raise ValueError(f"run {run_id} was just resumed by another request")
-    sg.append_event(run_id, 'input_received', {'kind': payload.get('kind')})
+    # Persist the human input itself, not just that input arrived — the
+    # strategy History tab shows the user everything they typed into a run.
+    sg.append_event(run_id, 'input_received',
+                    {k: payload[k] for k in ('kind', 'action', 'feedback', 'answers')
+                     if payload.get(k) is not None})
     _launch(run_id, run['thread_id'], Command(resume=payload))

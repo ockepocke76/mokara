@@ -136,3 +136,16 @@ def test_broken_codegen_exhausts_attempts_and_saves_draft(monkeypatch):
     draft = db.get_custom_strategy(draft_id)
     assert draft['validation_status'] == 'failed'
     assert '(draft ' in draft['strategy_name']
+
+
+def test_blueprint_test_capital_clamped():
+    from app.agents.graph import _test_capital
+
+    assert _test_capital({'test_initial_investment': 10_000}, 500_000) == 10_000
+    assert _test_capital({'test_initial_investment': '25000'}, 500_000) == 25_000
+    assert _test_capital({}, 500_000) == 500_000
+    assert _test_capital({'test_initial_investment': None}, 500_000) == 500_000
+    assert _test_capital({'test_initial_investment': 'lots'}, 500_000) == 500_000
+    assert _test_capital({'test_initial_investment': -5}, 500_000) == 0.0
+    assert _test_capital({'test_initial_investment': 9e12}, 500_000) == 10_000_000.0
+    assert _test_capital({'test_initial_investment': float('nan')}, 500_000) == 500_000

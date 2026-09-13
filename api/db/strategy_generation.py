@@ -203,3 +203,28 @@ def list_events(run_id: str, after_seq: int = 0) -> list[dict]:
         ]
     finally:
         db.release_connection(conn)
+
+
+def list_runs_for_strategy(strategy_id: int) -> list[dict]:
+    """All runs that produced or evolved this strategy (the create run,
+    evolve runs, and a failed run whose saved draft this is), oldest first.
+    Powers the strategy History tab's human-input timeline."""
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, status, user_request, seed_strategy_id, created_at
+            FROM STRATEGY_GENERATION_RUNS
+            WHERE final_strategy_id = %s
+            ORDER BY created_at
+            """,
+            (strategy_id,),
+        )
+        keys = ['id', 'status', 'user_request', 'seed_strategy_id', 'created_at']
+        runs = [dict(zip(keys, row)) for row in cursor.fetchall()]
+        for run in runs:
+            run['id'] = str(run['id'])
+        return runs
+    finally:
+        db.release_connection(conn)

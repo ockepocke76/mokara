@@ -29,6 +29,21 @@ SANDBOX_RULES = """
 - `evaluation_category()` must return 'WITHDRAWAL_ONLY', 'CONTRIBUTION_ONLY', or 'HYBRID'.
 """
 
+ENGINE_MECHANICS = """
+## Engine mechanics (the engine does these — never re-implement or demand them)
+- Interest on outstanding debt is charged BY THE ENGINE every year, at the
+  simulation's own loan interest rate. Management fees and taxes likewise.
+  Their sum arrives as the `mandatory_costs` argument to
+  execute_strategy_for_year: the strategy's job is only to FUND that amount
+  (plus its desired drawdown), never to compute it.
+- Therefore a strategy must NOT declare interest-rate/fee/tax parameters and
+  must NOT subtract borrowing costs from its cash flows. Borrowing via
+  'debt_increase' pays interest automatically — the bank is the engine.
+- The user sets the simulation's starting capital and horizon at run time;
+  the strategy must work with WHATEVER starting capital the engine hands it.
+  Never treat starting capital as artificial or try to neutralize it.
+"""
+
 COMMON_MISTAKES = """
 ## Common mistakes seen in failed generations (avoid all of these)
 - Using in-place operators (`+=`, `-=`) — the sandbox rewrites them poorly; write it out.
@@ -117,11 +132,18 @@ with the strategy mostly through these.
 
 Spec:
 {json.dumps(spec, indent=2)}
-{examples_block}
+{ENGINE_MECHANICS}{examples_block}
+Also choose test_initial_investment: the starting capital the 30-year smoke
+test should run with so EVERY phase of the strategy can actually be observed.
+An accumulation-from-income spec needs a small start (e.g. 10000 — a big
+head start would trigger any retirement/target rule immediately); a
+withdrawal spec needs a funded portfolio (e.g. 1000000).
+
 Respond with JSON:
 {{
   "rules": ["rule 1", "rule 2", ...],
   "parameters": [{{"name": "...", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "description": "..."}}],
+  "test_initial_investment": 1000000,
   "self_check": "one sentence confirming every spec mechanic maps to a rule, or naming what is missing"
 }}"""
 
@@ -148,6 +170,7 @@ Spec (for context):
 {json.dumps(spec, indent=2)}
 
 {strategy_api_docs()}
+{ENGINE_MECHANICS}
 {SANDBOX_RULES}
 {COMMON_MISTAKES}
 {examples_block}
@@ -161,6 +184,11 @@ Review this strategy code against its blueprint. For each rule, decide whether
 the code actually implements it (not whether it compiles — a separate check
 handles that). Also flag spec constraints the code violates and parameters
 declared but never read.
+{ENGINE_MECHANICS}
+Judge blueprint rules THROUGH the engine's division of labor: a rule about
+paying interest, fees, or taxes is implemented by borrowing/holding assets at
+all — the engine charges those costs. Never fail a rule because the code does
+not compute interest or deduct borrowing costs itself.
 
 Blueprint rules:
 {json.dumps(plan.get('rules', []), indent=2)}
@@ -182,17 +210,36 @@ Respond with JSON:
 
 def analyze_prompt(spec: dict, plan: dict, summary_stats: dict,
                    baseline_stats: dict | None, baseline_name: str | None,
-                   worst_path_trace: list[dict]) -> str:
+                   worst_path_trace: list[dict],
+                   test_capital: float | None = None) -> str:
     baseline_block = "No baseline comparison was run."
     if baseline_stats:
         baseline_block = (f"Baseline ('{baseline_name}', same market paths): "
                           f"{json.dumps(baseline_stats)}")
+    capital_block = ""
+    if test_capital is not None:
+        capital_block = (f"\nTest conditions: every path starts with "
+                         f"${test_capital:,.0f} already invested. Judge trigger "
+                         f"timing against THAT capital plus market growth — a "
+                         f"threshold rule that fires because the starting "
+                         f"portfolio already satisfies it is behaving "
+                         f"correctly, not prematurely.\n")
     return f"""TASK: analyze
 A quick smoke test (10 simulated markets) ran for a newly generated strategy.
+{capital_block}
 Judge ONE thing: does the observed behavior match the spec and blueprint?
 Performance is NOT your verdict — a faithful strategy with poor numbers still
 conforms; report the numbers neutrally and let the user decide. Never use
 advisory language ("you should", "best") — describe only.
+
+The smoke test runs with the platform's standardized starting capital for the
+strategy's category and a fixed horizon; the strategy does not control that,
+and the user can set any starting capital in real runs. If a spec behavior
+(a rare trigger, a phase the horizon never reaches) simply cannot be observed
+under these test conditions, that is NOT a mismatch: set
+conforms_to_spec=true and describe the untested behavior in notes so the user
+knows. Interest, fees, and taxes are charged by the engine automatically —
+never call their absence from the strategy's own arithmetic a mismatch.
 
 Spec:
 {json.dumps(spec, indent=2)}

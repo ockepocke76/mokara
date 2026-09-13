@@ -88,14 +88,26 @@ def _emit(state: GenState, event_type: str, **payload) -> None:
 
 def _llm(state: GenState, config: dict, prompt: str, tier: str,
          json_mode: bool = True) -> tuple[Any, int]:
-    """One LLM call; returns (parsed-or-raw response, calls-so-far)."""
-    calls = state.get('llm_calls', 0) + 1
-    if calls > MAX_LLM_CALLS:
-        raise GenerationBudgetExceeded(
-            f"LLM call budget ({MAX_LLM_CALLS}) exhausted for this run")
+    """One LLM call; returns (parsed-or-raw response, calls-so-far).
+    A malformed JSON response gets ONE retry (counted against the budget) —
+    it is a transient generation glitch, not a reason to kill the run."""
+    calls = state.get('llm_calls', 0)
     llm_call = config['configurable']['llm_call']
-    text = llm_call(prompt, tier=tier, json_mode=json_mode)
-    return (parse_json_response(text) if json_mode else text), calls
+    last_error = None
+    for _ in range(2):
+        calls += 1
+        if calls > MAX_LLM_CALLS:
+            raise GenerationBudgetExceeded(
+                f"LLM call budget ({MAX_LLM_CALLS}) exhausted for this run")
+        text = llm_call(prompt, tier=tier, json_mode=json_mode)
+        if not json_mode:
+            return text, calls
+        try:
+            return parse_json_response(text), calls
+        except ValueError as e:
+            last_error = e
+            logging.warning("Malformed JSON from LLM (attempt with retry): %s", e)
+    raise last_error
 
 
 def _sanitize(value):
@@ -255,19 +267,44 @@ def _condense_paths(result: dict) -> list[dict]:
 from core.sandbox_tester import SIM_RNG_LOCK as _test_sim_lock
 
 
+def _test_capital(plan: dict, fallback: float) -> float:
+    """The blueprint's smoke-test starting capital, clamped to sane bounds;
+    anything missing or malformed falls back to the category standard."""
+    value = (plan or {}).get('test_initial_investment')
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(value):
+        return fallback
+    return min(max(value, 0.0), 10_000_000.0)
+
+
 def test_sim(state: GenState, config) -> dict:
     from core.sandbox_tester import run_sandbox_test
 
     _emit(state, 'stage_started', stage='test_flight',
           message=f"Running {TEST_PATHS} simulated markets x {TEST_YEARS} years")
-    # num_simulations/num_years must be explicit: assemble_params merges the
-    # config defaults (1000 sims) over anything run_sandbox_test setdefaults.
-    test_params = {'num_years': TEST_YEARS, 'num_simulations': TEST_PATHS,
-                   'num_random_paths': TEST_PATHS,
-                   'strategy_params': {p: (v.get('default') if isinstance(v, dict) else v)
-                                       for p, v in (state.get('parameters') or {}).items()}}
+    from core.sandbox_tester import capital_params_for_category
+
     seed = state.get('seed', 12345)
     category = state['spec'].get('category', 'HYBRID')
+    # num_simulations/num_years must be explicit: assemble_params merges the
+    # config defaults (1000 sims) over anything run_sandbox_test setdefaults.
+    # Capital shape is pinned to the SPEC's category for BOTH runs — the
+    # baseline builtin may belong to another category, and a paired
+    # comparison is only fair when the two see identical conditions. The
+    # blueprint can override the starting capital (it knows the scenario's
+    # scale — a lifecycle-from-salary spec needs a near-zero start or its
+    # retirement trigger legitimately fires on day one and the career phase
+    # is never observed); the full evaluation stays standardized.
+    capital = capital_params_for_category(category)
+    capital['initial_investment'] = _test_capital(
+        state['plan'], capital.get('initial_investment', 1_000_000))
+    test_params = {'num_years': TEST_YEARS, 'num_simulations': TEST_PATHS,
+                   'num_random_paths': TEST_PATHS, **capital,
+                   'strategy_params': {p: (v.get('default') if isinstance(v, dict) else v)
+                                       for p, v in (state.get('parameters') or {}).items()}}
     baseline_key, baseline_class, baseline_source = retrieval.baseline_for_category(category)
     baseline = {}
     with _test_sim_lock:
@@ -280,7 +317,8 @@ def test_sim(state: GenState, config) -> dict:
                 baseline_run = run_sandbox_test(baseline_source, baseline_class,
                                                 {'num_years': TEST_YEARS,
                                                  'num_simulations': TEST_PATHS,
-                                                 'num_random_paths': TEST_PATHS}, seed=seed)
+                                                 'num_random_paths': TEST_PATHS,
+                                                 **capital}, seed=seed)
                 if baseline_run.get('success'):
                     baseline = {'name': baseline_class,
                                 'summary_stats': _sanitize(baseline_run['summary_stats'])}
@@ -296,6 +334,7 @@ def test_sim(state: GenState, config) -> dict:
     test_result = {'summary_stats': _sanitize(result['summary_stats']),
                    'paths': _sanitize(_condense_paths(result)),
                    'num_paths': TEST_PATHS, 'num_years': TEST_YEARS,
+                   'test_capital': capital['initial_investment'],
                    'worst_path_trace': _worst_path_trace(result)}
     _emit(state, 'stage_completed', stage='test_flight',
           artifact={'summary_stats': test_result['summary_stats'],
@@ -340,7 +379,8 @@ def analyze(state: GenState, config) -> dict:
         state['spec'], state['plan'],
         state['test_result']['summary_stats'],
         baseline.get('summary_stats'), baseline.get('name'),
-        state['test_result']['worst_path_trace']), tier='strong')
+        state['test_result']['worst_path_trace'],
+        test_capital=state['test_result'].get('test_capital')), tier='strong')
     sg.update_run(state['run_id'], llm_calls=calls)
     conforms = bool(verdict.get('conforms_to_spec'))
     _emit(state, 'stage_completed', stage='behavior',
