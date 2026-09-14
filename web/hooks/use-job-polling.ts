@@ -4,8 +4,12 @@ import { useEffect, useState } from "react";
 
 /** Same cadence as the previous inline loop in simulate-form. */
 const POLL_MS = 1_500;
-/** Consecutive failed polls (network error or non-OK) before giving up. */
-const MAX_CONSECUTIVE_FAILURES = 8;
+/** Failed polls back off to this spacing so a redeploy isn't hammered. */
+const FAILURE_RETRY_MS = 4_000;
+/** Consecutive failed polls (network error or non-OK) before giving up.
+ *  15 × 4s ≈ 60s of tolerance — enough to ride out a rolling redeploy or
+ *  worker restart (review: 12s was shorter than a realistic outage). */
+const MAX_CONSECUTIVE_FAILURES = 15;
 
 export type Job = {
   status: string;
@@ -49,7 +53,7 @@ export function useJobPolling(jobId: string | null) {
       if (failures >= MAX_CONSECUTIVE_FAILURES) {
         setError("Lost contact with the simulation job — please try again.");
       } else {
-        timer = setTimeout(() => void poll(), POLL_MS);
+        timer = setTimeout(() => void poll(), FAILURE_RETRY_MS);
       }
     };
 
