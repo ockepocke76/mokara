@@ -45,9 +45,22 @@ export type Spec = {
   proposed_parameters?: { name: string; default?: number; description?: string }[];
 };
 
+export type TestPath = {
+  label: string;
+  years: number[];
+  net_worth: (number | null)[];
+  // Optional yearly series (older runs' persisted events carry only net_worth)
+  asset_value?: (number | null)[];
+  debt?: (number | null)[];
+  cash?: (number | null)[];
+  contributed?: (number | null)[];
+  withdrawn?: (number | null)[];
+  is_backtest?: boolean;
+};
+
 export type TestArtifact = {
   summary_stats: Record<string, number | string | null>;
-  paths?: { label: string; years: number[]; net_worth: number[] }[];
+  paths?: TestPath[];
   baseline?: { name: string; summary_stats: Record<string, number | null> } | null;
   num_paths?: number;
   num_years?: number;

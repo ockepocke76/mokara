@@ -81,7 +81,11 @@ def test_full_generation_flow_and_crud():
     body = r.json()
     assert body["success"] is True
     assert body["summary_stats"]["success_rate"] is not None
-    assert len(body["paths"]) == body["num_paths"]
+    # num_paths random markets, plus the flagged historical backtest when
+    # market data provides one
+    random_paths = [p for p in body["paths"] if not p.get("is_backtest")]
+    assert len(random_paths) == body["num_paths"]
+    assert len(body["paths"]) - len(random_paths) <= 1
 
     # Evaluate queues a job
     r = client.post(f"/strategies/{strategy_id}/evaluate", headers=headers)

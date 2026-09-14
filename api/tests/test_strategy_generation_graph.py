@@ -49,7 +49,15 @@ def test_happy_path_to_review_then_save():
     artifact = test_event['payload']['artifact']
     assert artifact['summary_stats']['success_rate'] is not None
     assert artifact['baseline'] and artifact['baseline']['name'] == 'TrinityStrategy'
-    assert len(artifact['paths']) == 10
+    # 10 random paths + the flagged historical backtest, each carrying the
+    # full yearly series for the charts (not just net worth)
+    random_paths = [p for p in artifact['paths'] if not p.get('is_backtest')]
+    backtests = [p for p in artifact['paths'] if p.get('is_backtest')]
+    assert len(random_paths) == 10
+    assert len(backtests) == 1
+    for series in ('net_worth', 'asset_value', 'debt', 'cash',
+                   'contributed', 'withdrawn'):
+        assert len(artifact['paths'][0][series]) == len(artifact['paths'][0]['years'])
 
     runner.resume_run(run_id, {'kind': 'review', 'action': 'save'})
     run = sg.get_run(run_id)
