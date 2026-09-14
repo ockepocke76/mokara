@@ -5,6 +5,7 @@ import { apiFetch, getViewer } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SignInGate } from "@/components/sign-in-gate";
 
 export const metadata: Metadata = { title: "Strategies" };
 
@@ -33,15 +34,10 @@ export default async function StrategiesPage() {
 
   if (!viewer.authenticated) {
     return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
-        <h1 className="text-3xl font-semibold tracking-tight">Strategies</h1>
-        <p className="text-muted-foreground">
-          Sign in to design and manage strategies.
-        </p>
-        <Button asChild>
-          <Link href="/login">Sign in</Link>
-        </Button>
-      </main>
+      <SignInGate
+        title="Strategies"
+        message="Sign in to design and manage strategies."
+      />
     );
   }
 

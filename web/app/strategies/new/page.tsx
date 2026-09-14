@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 
 import { apiFetch, getViewer } from "@/lib/api";
-import { Button } from "@/components/ui/button";
+import { SignInGate } from "@/components/sign-in-gate";
 
 import { Designer } from "./designer";
 
@@ -18,13 +17,10 @@ export default async function NewStrategyPage({
 
   if (!viewer.authenticated) {
     return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
-        <h1 className="text-3xl font-semibold tracking-tight">Strategy Designer</h1>
-        <p className="text-muted-foreground">Sign in to design strategies.</p>
-        <Button asChild>
-          <Link href="/login">Sign in</Link>
-        </Button>
-      </main>
+      <SignInGate
+        title="Strategy Designer"
+        message="Sign in to design strategies."
+      />
     );
   }
 

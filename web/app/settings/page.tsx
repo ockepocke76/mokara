@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 
 import { getViewer } from "@/lib/api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -11,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { SignInGate } from "@/components/sign-in-gate";
 import { SettingsForm } from "./settings-form";
 import { UsernameForm } from "./username-form";
 
@@ -20,16 +19,7 @@ export default async function SettingsPage() {
   const viewer = await getViewer();
 
   if (!viewer.authenticated) {
-    return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
-        <h1 className="text-3xl font-bold tracking-tight">
-          ⚙️ Settings &amp; Profile
-        </h1>
-        <Button asChild>
-          <Link href="/login">Sign in</Link>
-        </Button>
-      </main>
-    );
+    return <SignInGate title="⚙️ Settings & Profile" />;
   }
 
   const initial = (viewer.name ?? viewer.email ?? "?")

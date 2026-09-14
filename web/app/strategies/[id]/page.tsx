@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { apiFetch, getViewer } from "@/lib/api";
-import { Button } from "@/components/ui/button";
+import { SignInGate } from "@/components/sign-in-gate";
 
 import { StrategyDetail } from "./strategy-detail";
 
@@ -21,14 +20,7 @@ export default async function StrategyPage({
   const viewer = await getViewer();
 
   if (!viewer.authenticated) {
-    return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
-        <p className="text-muted-foreground">Sign in to view strategies.</p>
-        <Button asChild>
-          <Link href="/login">Sign in</Link>
-        </Button>
-      </main>
-    );
+    return <SignInGate message="Sign in to view strategies." />;
   }
 
   const res = await apiFetch(`/strategies/${encodeURIComponent(id)}`);
