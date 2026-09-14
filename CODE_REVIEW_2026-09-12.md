@@ -217,7 +217,7 @@ scaffolding) implements; remaining deltas are the open items below.
       at `--max-instances 10` with the default pool of 20 → 200+ potential
       api connections alone. Set `DB_POOL_MAX` 3-5 in the deploy env
       and/or cap api max-instances. (Socket connection already done.)
-- [ ] **R3.6 🟡 File logging**: `RotatingFileHandler('simulation.log')` +
+- [x] **R3.6 🟡 File logging** — LOG_TO_FILES=0 gates the file handlers (R4 logger rewrite); set it in deploy.sh: `RotatingFileHandler('simulation.log')` +
       `ui_interaction.log` (`logger.py:101-111`) → in-memory FS on Cloud
       Run, invisible to Cloud Logging. Env-gate to stdout-only in prod.
 - [ ] **R3.7 🟡→🟢 Next.js**: `output: "standalone"` landed
@@ -243,9 +243,17 @@ scaffolding) implements; remaining deltas are the open items below.
 
 ## R4 — Deletion pass (~3-4k lines, no behavior change)
 
-Do this *before* the R5 refactors — it shrinks them substantially.
+> **Status 2026-09-14:** MERGED to main (net −3,919 lines, 9 commits,
+> reviewed with a liveness sweep + behavior-preservation pass, both
+> clean). Bonus closures: R5.1's nested-connection hazard (fork count
+> inlined on the save transaction), R3.6 (LOG_TO_FILES=0 for Cloud Run).
+> Latent bugs surfaced and repaired: perf/memory/slow-query config flags
+> never actually read config.yml; update_cached_simulation_params was a
+> silent no-op all PG era; limits/user_profile only worked via the regex
+> cursor wrapper. Leftovers for later: inert GCP_MONITORING_* env vars in
+> deploy.sh; pre-existing dead core/db_logger.py.
 
-- [ ] 🟡 Dead half of `background_tasks.py` (1,864 lines): zero-caller
+- [x] 🟡 Dead half of `background_tasks.py` (1,864 lines): zero-caller
       Streamlit-era entry points `run_simulation_process` (:42),
       `on_simulation_complete` (:70), `regenerate_ui_thread` (:463),
       `_truly_lightweight_debug_process` (:1203),
@@ -254,34 +262,34 @@ Do this *before* the R5 refactors — it shrinks them substantially.
       queue/process plumbing. Live: `run_and_save_simulation`,
       `regenerate_ui_results`, `_generate_pdf_for_simulation` — give them
       proper modules.
-- [ ] 🟡 `services/git_service.py` (496 lines) GitHub-as-strategy-store +
+- [x] 🟡 `services/git_service.py` (496 lines) GitHub-as-strategy-store +
       the git branches of `save_custom_strategy` and `builtin_sync`: the
       DB is authoritative (`postgresql_db.py:1433-1435` says so), every
       call site is try/except-and-continue. Keep
       `calculate_strategy_hash` as the identity mechanism.
-- [ ] 🟡 Multi-backend DB abstraction: `db/database_interface.py` (one
+- [x] 🟡 Multi-backend DB abstraction: `db/database_interface.py` (one
       impl, drifted signatures), `Dialect`/factory branches,
       `SQLiteQueries` entries for nonexistent tables (`db/queries.py`),
       and the `PostgreSQLCursor`/`Connection` regex-translation wrappers
       (`postgresql_db.py:69-155`). One plain class, native `%(param)s`.
-- [ ] 🟡 `monitoring/cloud_monitoring.py`: imports nonexistent
+- [x] 🟡 `monitoring/cloud_monitoring.py`: imports nonexistent
       `core.config_manager` → permanently self-disabled (`:33-40`); every
       connection checkout pays a wasted hook (`postgresql_db.py:228-239`,
       which itself has a `NameError` on `os` swallowed since day one).
       Delete both; use Cloud Run built-in metrics first.
-- [ ] 🟢 Dead reporting: `reporting/plotting.py` (0 bytes),
+- [x] 🟢 Dead reporting: `reporting/plotting.py` (0 bytes),
       `metric_glossary.py`, `thumbnail_gauge.py`,
       `plot_simulation_overview_interactive_old`
       (`interactive_plotting.py:975`), `get_plotly_dark_theme_template`,
       `_create_settings_table_old` + deprecated block in `pdf.py`,
       unused `executive_visuals` builders.
-- [ ] 🟢 Dead app-layer bits: duplicate shadowed `get_leaderboard`
+- [x] 🟢 Dead app-layer bits: duplicate shadowed `get_leaderboard`
       (`postgresql_db.py:2059` vs `:2301` — first would `AttributeError`
       if unshadowed), unreachable block in `get_or_create_user_id`
       (`:526-530`), dead `require_user` in `deps.py:45-48` + three private
       copies, stray `api/assets/logger.py`, Streamlit noise in
       `logger.py:44-51`.
-- [ ] 🟢 Branding scrub: PDF footer still says MyMonteCarlo
+- [x] 🟢 Branding scrub: PDF footer still says MyMonteCarlo
       (`reporting/pdf.py:693`); Streamlit references in
       `background_tasks.py:1-9`, `utils/performance.py:280-309`,
       `core/currency_config_example.py:24`.
@@ -290,7 +298,7 @@ Do this *before* the R5 refactors — it shrinks them substantially.
 
 ## R5 — Architecture refactors
 
-- [ ] **R5.1 🔴 `save_custom_strategy` layering inversion**
+- [x] **R5.1 🔴 `save_custom_strategy` layering inversion** — closed by R4's git excision (plain transactional upsert; fork count inlined on the same cursor)
       (`postgresql_db.py:1243-1556`, 314 lines): db→services import, GitHub
       network I/O inside an open transaction, nested pool checkout via
       `increment_fork_count` (:1516) = pool-exhaustion deadlock pattern.
