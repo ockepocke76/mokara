@@ -70,11 +70,28 @@ export type Viewer = {
   };
 };
 
-/** The acting viewer's profile from the API (anonymous-safe). */
+/** What /me returns for anonymous viewers — also our fallback when it fails. */
+function anonymousViewer(): Viewer {
+  return {
+    authenticated: false,
+    beta: { current_users: 0, max_users: 0, is_full: false, percent_full: 0 },
+  };
+}
+
+/**
+ * The acting viewer's profile from the API (anonymous-safe).
+ *
+ * Degrades gracefully: if /me fails (API down or non-OK), returns the
+ * anonymous viewer shape instead of throwing, so public pages render
+ * logged-out during an API outage. Pages that require auth still gate
+ * correctly, since the fallback is unauthenticated (and not admin/allowed).
+ */
 export async function getViewer(): Promise<Viewer> {
-  const res = await apiFetch("/me");
-  if (!res.ok) {
-    throw new Error(`GET /me failed: ${res.status}`);
+  try {
+    const res = await apiFetch("/me");
+    if (!res.ok) return anonymousViewer();
+    return await res.json();
+  } catch {
+    return anonymousViewer();
   }
-  return res.json();
 }
