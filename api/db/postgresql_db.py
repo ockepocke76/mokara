@@ -13,6 +13,7 @@ Key changes:
 import psycopg2
 from typing import Optional, Dict, List, Any
 from psycopg2 import pool, extras,sql
+from contextlib import contextmanager
 import threading
 import logging
 import json
@@ -154,7 +155,24 @@ class PostgreSQLDatabase:
     def _get_cursor(self, conn, cursor_factory=None):
         """Helper to get a cursor (optionally with a cursor_factory, e.g. RealDictCursor)."""
         return conn.cursor(cursor_factory=cursor_factory)
-    
+
+    @contextmanager
+    def _connection_cursor(self, cursor_factory=None, commit=True):
+        """Pooled connection + cursor; commits on success, rolls back on
+        exception, always releases. Methods keep their own except-and-return
+        policies — this only owns the connection lifecycle."""
+        conn = self.get_connection()
+        try:
+            cursor = self._get_cursor(conn, cursor_factory=cursor_factory)
+            yield cursor
+            if commit:
+                conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self.release_connection(conn)
+
 
     
     def run_migrations(self, conn=None):
@@ -272,73 +290,65 @@ class PostgreSQLDatabase:
                                 results_dataframe, average_results_df, median_yearly_results_df,
                                 gemini_content, user_id, simulation_name, is_replacement_run=False):
         """Save simulation results - PostgreSQL version."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            
-            # Create results entry with RETURNING
-            cursor.execute(
-                """INSERT INTO SIMULATION_RESULTS (stats, gemini_content, pdf_status)
-                   VALUES (%s, %s, NULL)
-                   RETURNING id""",
-                (json.dumps(_sanitize_for_json(stats)), gemini_content)
-            )
-            results_id = cursor.fetchone()[0]
-            
-            # Save DataFrames
-            _save_dataframe_to_db(cursor, results_id, 'results_dataframe', results_dataframe)
-            _save_dataframe_to_db(cursor, results_id, 'average_results_df', average_results_df)
-            _save_dataframe_to_db(cursor, results_id, 'median_yearly_results_df', median_yearly_results_df)
-            
-            # Update or insert cached simulation
-            cursor.execute(
-                """INSERT INTO CACHED_SIMULATIONS 
-                   (simulation_hash, parameters, ui_parameters, status, results_id)
-                   VALUES (%s, %s, %s, %s, %s)
-                   ON CONFLICT (simulation_hash) DO UPDATE SET
-                   results_id = EXCLUDED.results_id,
-                   status = EXCLUDED.status,
-                   updated_at = CURRENT_TIMESTAMP""",
-                (simulation_hash, json.dumps(_sanitize_for_json(params)),
-                 json.dumps(_sanitize_for_json(ui_params)), 'COMPLETED', results_id)
-            )
-            
-            # Add to user history
-            cursor.execute(
-                """INSERT INTO USER_SIMULATION_HISTORY 
-                   (user_id, simulation_hash, simulation_name, status)
-                   VALUES (%s, %s, %s, %s)
-                   RETURNING id""",
-                (user_id, simulation_hash, simulation_name, 'completed')
-            )
-            history_id = cursor.fetchone()[0]
-            
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                # Create results entry with RETURNING
+                cursor.execute(
+                    """INSERT INTO SIMULATION_RESULTS (stats, gemini_content, pdf_status)
+                       VALUES (%s, %s, NULL)
+                       RETURNING id""",
+                    (json.dumps(_sanitize_for_json(stats)), gemini_content)
+                )
+                results_id = cursor.fetchone()[0]
+
+                # Save DataFrames
+                _save_dataframe_to_db(cursor, results_id, 'results_dataframe', results_dataframe)
+                _save_dataframe_to_db(cursor, results_id, 'average_results_df', average_results_df)
+                _save_dataframe_to_db(cursor, results_id, 'median_yearly_results_df', median_yearly_results_df)
+
+                # Update or insert cached simulation
+                cursor.execute(
+                    """INSERT INTO CACHED_SIMULATIONS
+                       (simulation_hash, parameters, ui_parameters, status, results_id)
+                       VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (simulation_hash) DO UPDATE SET
+                       results_id = EXCLUDED.results_id,
+                       status = EXCLUDED.status,
+                       updated_at = CURRENT_TIMESTAMP""",
+                    (simulation_hash, json.dumps(_sanitize_for_json(params)),
+                     json.dumps(_sanitize_for_json(ui_params)), 'COMPLETED', results_id)
+                )
+
+                # Add to user history
+                cursor.execute(
+                    """INSERT INTO USER_SIMULATION_HISTORY
+                       (user_id, simulation_hash, simulation_name, status)
+                       VALUES (%s, %s, %s, %s)
+                       RETURNING id""",
+                    (user_id, simulation_hash, simulation_name, 'completed')
+                )
+                history_id = cursor.fetchone()[0]
+
             logging.info(f"Saved simulation {simulation_hash[:10]}, history_id={history_id}")
             return history_id
-            
+
         except Exception as e:
             logging.error(f"Failed to save simulation: {e}", exc_info=True)
-            conn.rollback()
             return None
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_user_simulations(self, user_email=None):
         """Fetch user simulations. If user_email is None, fetch demo simulations."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            
-            if user_email is None:
-                # For anonymous users, fetch demo/public simulations
-                cursor.execute(self.queries.GET_USER_SIMULATIONS_WITH_PARAMS, {'email': None})
-            else:
-                # For authenticated users, fetch their simulations
-                cursor.execute(self.queries.GET_USER_SIMULATIONS_WITH_PARAMS, {'email': user_email})
-            
-            rows = cursor.fetchall()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                if user_email is None:
+                    # For anonymous users, fetch demo/public simulations
+                    cursor.execute(self.queries.GET_USER_SIMULATIONS_WITH_PARAMS, {'email': None})
+                else:
+                    # For authenticated users, fetch their simulations
+                    cursor.execute(self.queries.GET_USER_SIMULATIONS_WITH_PARAMS, {'email': user_email})
+
+                rows = cursor.fetchall()
             logging.info(f"[DEDUP] Fetched {len(rows)} rows from database")
             
             # Deduplicate by simulation_hash (keep first occurrence)
@@ -374,9 +384,7 @@ class PostgreSQLDatabase:
         except Exception as e:
             logging.error(f"Failed to get simulations: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
-    
+
     @log_db_call
     def get_or_create_user_id(self, user_email, user_name):
         """Get or create user."""
@@ -440,88 +448,65 @@ class PostgreSQLDatabase:
     @log_db_call
     def log_login_request(self, email, name):
         """Log or update unauthorized login attempt."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                INSERT INTO login_requests (email, name, attempt_count)
-                VALUES (%s, %s, 1)
-                ON CONFLICT (email) DO UPDATE SET
-                    last_attempt_at = CURRENT_TIMESTAMP,
-                    attempt_count = login_requests.attempt_count + 1,
-                    name = EXCLUDED.name
-            """, (email.lower(), name))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO login_requests (email, name, attempt_count)
+                    VALUES (%s, %s, 1)
+                    ON CONFLICT (email) DO UPDATE SET
+                        last_attempt_at = CURRENT_TIMESTAMP,
+                        attempt_count = login_requests.attempt_count + 1,
+                        name = EXCLUDED.name
+                """, (email.lower(), name))
         except Exception as e:
             logging.error(f"Failed to log login request: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_login_requests(self, limit=100):
         """Get all login requests ordered by most recent."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute("""
-                SELECT id, email, name, first_attempt_at, last_attempt_at, attempt_count, notes
-                FROM login_requests
-                ORDER BY last_attempt_at DESC
-                LIMIT %s
-            """, (limit,))
-            return cursor.fetchall()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute("""
+                    SELECT id, email, name, first_attempt_at, last_attempt_at, attempt_count, notes
+                    FROM login_requests
+                    ORDER BY last_attempt_at DESC
+                    LIMIT %s
+                """, (limit,))
+                return cursor.fetchall()
         except Exception as e:
             logging.error(f"Failed to get login requests: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def delete_login_request(self, email):
         """Remove a login request."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("DELETE FROM login_requests WHERE email = %s", (email.lower(),))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("DELETE FROM login_requests WHERE email = %s", (email.lower(),))
         except Exception as e:
             logging.error(f"Failed to delete login request: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def add_allowed_user(self, email, added_by=None, notes=None):
         """Grant access to a user."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                INSERT INTO allowed_users (email, added_by, notes)
-                VALUES (%s, %s,%s)
-                ON CONFLICT (email) DO NOTHING
-            """, (email.lower(), added_by, notes))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO allowed_users (email, added_by, notes)
+                    VALUES (%s, %s,%s)
+                    ON CONFLICT (email) DO NOTHING
+                """, (email.lower(), added_by, notes))
         except Exception as e:
             logging.error(f"Failed to add allowed user: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def remove_allowed_user(self, email):
         """Revoke access from a user."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("DELETE FROM allowed_users WHERE email = %s", (email.lower(),))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("DELETE FROM allowed_users WHERE email = %s", (email.lower(),))
         except Exception as e:
             logging.error(f"Failed to remove allowed user: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def delete_user(self, email):
@@ -533,58 +518,49 @@ class PostgreSQLDatabase:
         - Login Requests
         - Subscription History
         """
-        conn = self.get_connection()
         email_lower = email.lower()
         try:
-            cursor = self._get_cursor(conn)
-            
-            # 1. Delete from Login Requests
-            cursor.execute("DELETE FROM login_requests WHERE email = %s", (email_lower,))
-            
-            # 2. Delete from Subscription History
-            # Need user_id first to be safe, or join?
-            # Sub history links to user_id.
-            cursor.execute("SELECT id FROM users WHERE email = %s", (email_lower,))
-            row = cursor.fetchone()
-            if row:
-                user_id = row[0]
-                cursor.execute("DELETE FROM subscription_history WHERE user_id = %s", (user_id,))
-            
-            # 3. Delete from Allowed Users
-            cursor.execute("DELETE FROM allowed_users WHERE email = %s", (email_lower,))
-            
-            # 4. Delete from Users (Cascades to Sims, Strategies)
-            cursor.execute("DELETE FROM users WHERE email = %s", (email_lower,))
-            
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                # 1. Delete from Login Requests
+                cursor.execute("DELETE FROM login_requests WHERE email = %s", (email_lower,))
+
+                # 2. Delete from Subscription History
+                # Need user_id first to be safe, or join?
+                # Sub history links to user_id.
+                cursor.execute("SELECT id FROM users WHERE email = %s", (email_lower,))
+                row = cursor.fetchone()
+                if row:
+                    user_id = row[0]
+                    cursor.execute("DELETE FROM subscription_history WHERE user_id = %s", (user_id,))
+
+                # 3. Delete from Allowed Users
+                cursor.execute("DELETE FROM allowed_users WHERE email = %s", (email_lower,))
+
+                # 4. Delete from Users (Cascades to Sims, Strategies)
+                cursor.execute("DELETE FROM users WHERE email = %s", (email_lower,))
+
             logging.info(f"Successfully deleted user: {email}")
             return True
-            
+
         except Exception as e:
             logging.error(f"Failed to delete user {email}: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
 
     @log_db_call
     def get_allowed_users(self,):
         """Get all allowed users."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute("""
-                SELECT id, email, added_at, added_by, notes
-                FROM allowed_users
-                ORDER BY added_at DESC
-            """)
-            return cursor.fetchall()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute("""
+                    SELECT id, email, added_at, added_by, notes
+                    FROM allowed_users
+                    ORDER BY added_at DESC
+                """)
+                return cursor.fetchall()
         except Exception as e:
             logging.error(f"Failed to get allowed users: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
 
     
     @log_db_call
@@ -599,31 +575,27 @@ class PostgreSQLDatabase:
 
     @ttl_cache(ttl=300)
     def _fetch_beta_status(self):
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-                
-            # Get max users
-            cursor.execute("SELECT setting_value FROM SYSTEM_SETTINGS WHERE setting_key = 'max_beta_users'")
-            row = cursor.fetchone()
-            max_users = int(row[0]) if row and row[0] is not None else 50
-                
-            # Get current count
-            cursor.execute("SELECT COUNT(*) FROM allowed_users")
-            current_users = cursor.fetchone()[0]
-                
-            return {
-                'current_users': current_users,
-                'max_users': max_users,
-                'is_full': current_users >= max_users,
-                'percent_full': min(current_users / max_users, 1.0) if max_users > 0 else 1.0
-            }
+            with self._connection_cursor(commit=False) as cursor:
+                # Get max users
+                cursor.execute("SELECT setting_value FROM SYSTEM_SETTINGS WHERE setting_key = 'max_beta_users'")
+                row = cursor.fetchone()
+                max_users = int(row[0]) if row and row[0] is not None else 50
+
+                # Get current count
+                cursor.execute("SELECT COUNT(*) FROM allowed_users")
+                current_users = cursor.fetchone()[0]
+
+                return {
+                    'current_users': current_users,
+                    'max_users': max_users,
+                    'is_full': current_users >= max_users,
+                    'percent_full': min(current_users / max_users, 1.0) if max_users > 0 else 1.0
+                }
         except Exception as e:
             logging.error(f"Failed to get beta status: {e}")
             # Fallback to conservative "Full" status on error
             return {'current_users': 0, 'max_users': 0, 'is_full': True, 'percent_full': 1.0}
-        finally:
-            self.release_connection(conn)
 
         
     @log_db_call
@@ -632,60 +604,51 @@ class PostgreSQLDatabase:
         Check if user has access.
         Auto-approves new users if 'max_beta_users' quota is not met.
         """
-        conn = self.get_connection()
         email_lower = email.lower()
         try:
-            cursor = self._get_cursor(conn)
-            
-            # 1. Check if user is ALREADY allowed (fast path)
-            cursor.execute("SELECT 1 FROM allowed_users WHERE email = %s", (email_lower,))
-            if cursor.fetchone() is not None:
-                return True
-            
-            # 2. Check Beta Quota
-            # Get max users (default 50)
-            cursor.execute("SELECT setting_value FROM SYSTEM_SETTINGS WHERE setting_key = 'max_beta_users'")
-            row = cursor.fetchone()
-            max_users = int(row[0]) if row and row[0] is not None else 50
-            
-            # Get current count
-            cursor.execute("SELECT COUNT(*) FROM allowed_users")
-            current_users = cursor.fetchone()[0]
-            
-            # 3. Auto-approve logic
-            if current_users < max_users:
-                logging.info(f"Auto-approving beta user: {email} ({current_users + 1}/{max_users})")
-                cursor.execute("""
-                    INSERT INTO allowed_users (email, added_by, notes)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (email) DO NOTHING
-                """, (email_lower, 'system_auto_join', 'Auto-joined via Beta Quota'))
-                conn.commit()
-                return True
-            
-            logging.info(f"Beta quota full. User rejected: {email} ({current_users}/{max_users})")
-            return False
-            
+            with self._connection_cursor() as cursor:
+                # 1. Check if user is ALREADY allowed (fast path)
+                cursor.execute("SELECT 1 FROM allowed_users WHERE email = %s", (email_lower,))
+                if cursor.fetchone() is not None:
+                    return True
+
+                # 2. Check Beta Quota
+                # Get max users (default 50)
+                cursor.execute("SELECT setting_value FROM SYSTEM_SETTINGS WHERE setting_key = 'max_beta_users'")
+                row = cursor.fetchone()
+                max_users = int(row[0]) if row and row[0] is not None else 50
+
+                # Get current count
+                cursor.execute("SELECT COUNT(*) FROM allowed_users")
+                current_users = cursor.fetchone()[0]
+
+                # 3. Auto-approve logic
+                if current_users < max_users:
+                    logging.info(f"Auto-approving beta user: {email} ({current_users + 1}/{max_users})")
+                    cursor.execute("""
+                        INSERT INTO allowed_users (email, added_by, notes)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (email) DO NOTHING
+                    """, (email_lower, 'system_auto_join', 'Auto-joined via Beta Quota'))
+                    return True
+
+                logging.info(f"Beta quota full. User rejected: {email} ({current_users}/{max_users})")
+                return False
+
         except Exception as e:
             logging.error(f"Failed to check allowed user: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
     def get_system_setting(self, key, default=None):
         """Get a global system setting."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("SELECT setting_value FROM SYSTEM_SETTINGS WHERE setting_key = %s", (key,))
-            row = cursor.fetchone()
-            return row[0] if row else default
+            with self._connection_cursor(commit=False) as cursor:
+                cursor.execute("SELECT setting_value FROM SYSTEM_SETTINGS WHERE setting_key = %s", (key,))
+                row = cursor.fetchone()
+                return row[0] if row else default
         except Exception as e:
             logging.error(f"Failed to get system setting '{key}': {e}")
             return default
-        finally:
-            self.release_connection(conn)
     
     # ============================================================================
     # USERNAME MANAGEMENT
@@ -694,20 +657,17 @@ class PostgreSQLDatabase:
     @log_db_call
     def username_exists(self, username):
         """Check if display name already exists (case-insensitive)."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(
-                "SELECT COUNT(*) FROM USERS WHERE LOWER(display_name) = LOWER(%s)",
-                (username,)
-            )
-            count = cursor.fetchone()[0]
-            return count > 0
+            with self._connection_cursor(commit=False) as cursor:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM USERS WHERE LOWER(display_name) = LOWER(%s)",
+                    (username,)
+                )
+                count = cursor.fetchone()[0]
+                return count > 0
         except Exception as e:
             logging.error(f"Failed to check username existence: {e}", exc_info=True)
             return False
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def update_display_name(self, user_id, new_name):
@@ -721,67 +681,55 @@ class PostgreSQLDatabase:
         Returns:
             True if successful, False otherwise
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(
-                """
-                UPDATE USERS 
-                SET display_name = %s,
-                    display_name_updated_at = NOW()
-                WHERE id = %s
-                """,
-                (new_name, user_id)
-            )
-            conn.commit()
-            return cursor.rowcount > 0
+            with self._connection_cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE USERS
+                    SET display_name = %s,
+                        display_name_updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (new_name, user_id)
+                )
+                updated = cursor.rowcount > 0
+            return updated
         except Exception as e:
             logging.error(f"Failed to update display name: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_display_name(self, user_id):
         """Get user's display name (or email as fallback)."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(
-                "SELECT display_name, email FROM USERS WHERE id = %s",
-                (user_id,)
-            )
-            row = cursor.fetchone()
-            if row:
-                # Return display_name if set, otherwise fall back to email
-                return row[0] if row[0] else row[1]
-            return None
+            with self._connection_cursor(commit=False) as cursor:
+                cursor.execute(
+                    "SELECT display_name, email FROM USERS WHERE id = %s",
+                    (user_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    # Return display_name if set, otherwise fall back to email
+                    return row[0] if row[0] else row[1]
+                return None
         except Exception as e:
             logging.error(f"Failed to get display name: {e}", exc_info=True)
             return None
-        finally:
-            self.release_connection(conn)
 
     def set_system_setting(self, key, value):
         """Set a global system setting."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                INSERT INTO SYSTEM_SETTINGS (setting_key, setting_value, updated_at)
-                VALUES (%s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (setting_key) 
-                DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
-            """, (key, str(value)))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO SYSTEM_SETTINGS (setting_key, setting_value, updated_at)
+                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (setting_key)
+                    DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
+                """, (key, str(value)))
             return True
         except Exception as e:
             logging.error(f"Failed to set system setting '{key}': {e}")
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
     def migrate_allowed_users_from_file(self):
         """One-time migration from allowed_users.txt to database."""
@@ -796,26 +744,21 @@ class PostgreSQLDatabase:
             with open(file_path, 'r') as f:
                 emails = [line.strip().lower() for line in f if line.strip() and not line.startswith('#')]
             
-            conn = self.get_connection()
             try:
-                cursor = self._get_cursor(conn)
-                migrated = 0
-                for email in emails:
-                    cursor.execute("""
-                        INSERT INTO allowed_users (email, added_by, notes)
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT (email) DO NOTHING
-                    """, (email, 'migration', 'Migrated from allowed_users.txt'))
-                    if cursor.rowcount > 0:
-                        migrated += 1
-                conn.commit()
-                return migrated
+                with self._connection_cursor() as cursor:
+                    migrated = 0
+                    for email in emails:
+                        cursor.execute("""
+                            INSERT INTO allowed_users (email, added_by, notes)
+                            VALUES (%s, %s, %s)
+                            ON CONFLICT (email) DO NOTHING
+                        """, (email, 'migration', 'Migrated from allowed_users.txt'))
+                        if cursor.rowcount > 0:
+                            migrated += 1
+                    return migrated
             except Exception as e:
                 logging.error(f"Failed to migrate allowed users: {e}", exc_info=True)
-                conn.rollback()
                 return 0
-            finally:
-                self.release_connection(conn)
         except Exception as e:
             logging.error(f"Failed to read allowed_users.txt: {e}", exc_info=True)
             return 0
@@ -884,75 +827,59 @@ class PostgreSQLDatabase:
     @log_db_call
     def add_to_user_history(self, user_id, simulation_hash, simulation_name):
         """Add simulation to user history."""
-        conn = self.get_connection()
         logging.info(f"DEBUG: add_to_user_history called for User={user_id} Hash={simulation_hash[:8]}")
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(
-                """INSERT INTO USER_SIMULATION_HISTORY 
-                   (user_id, simulation_hash, simulation_name)
-                   VALUES (%s, %s, %s)
-                   RETURNING id""",
-                (user_id, simulation_hash, simulation_name)
-            )
-            history_id = cursor.fetchone()[0]
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO USER_SIMULATION_HISTORY
+                       (user_id, simulation_hash, simulation_name)
+                       VALUES (%s, %s, %s)
+                       RETURNING id""",
+                    (user_id, simulation_hash, simulation_name)
+                )
+                history_id = cursor.fetchone()[0]
             return history_id
         except Exception as e:
             logging.error(f"Failed to add history: {e}", exc_info=True)
-            conn.rollback()
             return None
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def create_cached_simulation_entry(self, simulation_hash, params):
         """Create pending cache entry."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(
-                """INSERT INTO CACHED_SIMULATIONS 
-                   (simulation_hash, parameters, status)
-                   VALUES (%s, %s, 'PENDING')
-                   ON CONFLICT (simulation_hash) DO NOTHING""",
-                (simulation_hash, json.dumps(_sanitize_for_json(params)))
-            )
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO CACHED_SIMULATIONS
+                       (simulation_hash, parameters, status)
+                       VALUES (%s, %s, 'PENDING')
+                       ON CONFLICT (simulation_hash) DO NOTHING""",
+                    (simulation_hash, json.dumps(_sanitize_for_json(params)))
+                )
         except Exception as e:
             logging.error(f"Failed to create cache entry: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
 
     
     @log_db_call
     def update_cached_simulation_status(self, simulation_hash, status):
         """Update simulation status."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(
-                """UPDATE CACHED_SIMULATIONS 
-                   SET status = %s, updated_at = CURRENT_TIMESTAMP
-                   WHERE simulation_hash = %s""",
-                (status, simulation_hash)
-            )
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute(
+                    """UPDATE CACHED_SIMULATIONS
+                       SET status = %s, updated_at = CURRENT_TIMESTAMP
+                       WHERE simulation_hash = %s""",
+                    (status, simulation_hash)
+                )
         except Exception as e:
             logging.error(f"Failed to update status: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_user_simulations_with_params(self, user_email):
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute(self.queries.GET_USER_SIMULATIONS_WITH_PARAMS, {'email': user_email})
-            rows = cursor.fetchall()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute(self.queries.GET_USER_SIMULATIONS_WITH_PARAMS, {'email': user_email})
+                rows = cursor.fetchall()
             for row in rows:
                 # Use abstraction layer for JSON deserialization
                 if 'all_params' in row:
@@ -964,8 +891,6 @@ class PostgreSQLDatabase:
             return rows
         except Exception as e:
             return []
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def mark_simulation_as_removed(self, simulation_id, user_id=None):
@@ -974,86 +899,73 @@ class PostgreSQLDatabase:
         If it's a demo simulation and a user_id is provided, it hides it for that user instead of deleting it.
         SECURE: Requires valid user_id and verifies ownership for non-demo simulations.
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            
-            # Check if it is a public simulation by joining with CACHED_SIMULATIONS
-            cursor.execute("""
-                SELECT cs.is_public, h.user_id 
-                FROM USER_SIMULATION_HISTORY h
-                JOIN CACHED_SIMULATIONS cs ON h.simulation_hash = cs.simulation_hash
-                WHERE h.id = %s
-            """, (simulation_id,))
-            row = cursor.fetchone()
-            
-            if not row:
-                logging.warning(f"Simulation {simulation_id} not found")
-                return False
-            
-            is_public = row[0]
-            owner_user_id = row[1]
-            
-            if is_public:
-                # Soft delete for user (hide it via USER_HIDDEN_ITEMS)
-                # If user_id is None, it means an admin or system is trying to remove a public simulation,
-                # in which case we use the owner_user_id to hide it from the original creator's view.
-                # This logic might need refinement based on exact requirements for public simulation removal.
-                return self.hide_shared_item(user_id or owner_user_id, 'simulation', simulation_id)
-            else:
-                # For private simulations, we perform a soft delete (set is_removed = TRUE)
-                # This assumes that the user_id check for ownership is handled upstream or
-                # that only the owner can trigger this for private simulations.
-                # If user_id is provided, we can add an extra check:
-                if user_id and owner_user_id != user_id:
-                    logging.warning(f"SECURITY: User {user_id} attempted to remove private simulation {simulation_id} owned by {owner_user_id}")
+            with self._connection_cursor() as cursor:
+                # Check if it is a public simulation by joining with CACHED_SIMULATIONS
+                cursor.execute("""
+                    SELECT cs.is_public, h.user_id
+                    FROM USER_SIMULATION_HISTORY h
+                    JOIN CACHED_SIMULATIONS cs ON h.simulation_hash = cs.simulation_hash
+                    WHERE h.id = %s
+                """, (simulation_id,))
+                row = cursor.fetchone()
+
+                if not row:
+                    logging.warning(f"Simulation {simulation_id} not found")
                     return False
-                
-                cursor.execute("UPDATE USER_SIMULATION_HISTORY SET is_removed = TRUE WHERE id = %s", (simulation_id,))
-                conn.commit()
-                return cursor.rowcount > 0
+
+                is_public = row[0]
+                owner_user_id = row[1]
+
+                if is_public:
+                    # Soft delete for user (hide it via USER_HIDDEN_ITEMS)
+                    # If user_id is None, it means an admin or system is trying to remove a public simulation,
+                    # in which case we use the owner_user_id to hide it from the original creator's view.
+                    # This logic might need refinement based on exact requirements for public simulation removal.
+                    return self.hide_shared_item(user_id or owner_user_id, 'simulation', simulation_id)
+                else:
+                    # For private simulations, we perform a soft delete (set is_removed = TRUE)
+                    # This assumes that the user_id check for ownership is handled upstream or
+                    # that only the owner can trigger this for private simulations.
+                    # If user_id is provided, we can add an extra check:
+                    if user_id and owner_user_id != user_id:
+                        logging.warning(f"SECURITY: User {user_id} attempted to remove private simulation {simulation_id} owned by {owner_user_id}")
+                        return False
+
+                    cursor.execute("UPDATE USER_SIMULATION_HISTORY SET is_removed = TRUE WHERE id = %s", (simulation_id,))
+                    return cursor.rowcount > 0
         except Exception as e:
             logging.error(f"Failed to remove simulation: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def permanently_delete_simulation(self, simulation_id):
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            
-            # Defensive check: Ensure we're not deleting a public simulation's history entry
-            cursor.execute("""
-                SELECT cs.is_public 
-                FROM USER_SIMULATION_HISTORY h
-                JOIN CACHED_SIMULATIONS cs ON h.simulation_hash = cs.simulation_hash
-                WHERE h.id = %s
-            """, (simulation_id,))
-            row = cursor.fetchone()
-            
-            if row and row[0]:  # is_public = TRUE
-                raise ValueError(f"Cannot delete public simulation history entry (id: {simulation_id}). Public simulations should not be deleted.")
-            
-            # Deleting from history. Cache remains for others/deduplication.
-            cursor.execute("DELETE FROM USER_SIMULATION_HISTORY WHERE id = %s", (simulation_id,))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                # Defensive check: Ensure we're not deleting a public simulation's history entry
+                cursor.execute("""
+                    SELECT cs.is_public
+                    FROM USER_SIMULATION_HISTORY h
+                    JOIN CACHED_SIMULATIONS cs ON h.simulation_hash = cs.simulation_hash
+                    WHERE h.id = %s
+                """, (simulation_id,))
+                row = cursor.fetchone()
+
+                if row and row[0]:  # is_public = TRUE
+                    raise ValueError(f"Cannot delete public simulation history entry (id: {simulation_id}). Public simulations should not be deleted.")
+
+                # Deleting from history. Cache remains for others/deduplication.
+                cursor.execute("DELETE FROM USER_SIMULATION_HISTORY WHERE id = %s", (simulation_id,))
         except Exception as e:
             logging.error(f"Failed to delete: {e}", exc_info=True)
-            conn.rollback()
             raise
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_all_simulations(self):
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute(self.queries.GET_ALL_SIMULATIONS)
-            records = [dict(row) for row in cursor.fetchall()]
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute(self.queries.GET_ALL_SIMULATIONS)
+                records = [dict(row) for row in cursor.fetchall()]
             # Use abstraction layer for JSON deserialization
             for row in records:
                 if 'all_params' in row:
@@ -1065,29 +977,26 @@ class PostgreSQLDatabase:
             return records
         except Exception as e:
             return []
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_simulation_details(self, simulation_hash):
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            # Use inline query to access CACHED_SIMULATIONS structure correctly
-            # Returns: parameters (jsonb), stats (jsonb), component_hashes (text), results_id (int)
-            cursor.execute("""
-                SELECT 
-                    c.parameters, 
-                    r.stats,
-                    r.gemini_content,
-                    c.component_hashes, 
-                    c.results_id 
-                FROM CACHED_SIMULATIONS c
-                JOIN SIMULATION_RESULTS r ON c.results_id = r.id
-                WHERE c.simulation_hash = %s
-            """, (simulation_hash,))
-            
-            row = cursor.fetchone()
+            with self._connection_cursor(commit=False) as cursor:
+                # Use inline query to access CACHED_SIMULATIONS structure correctly
+                # Returns: parameters (jsonb), stats (jsonb), component_hashes (text), results_id (int)
+                cursor.execute("""
+                    SELECT
+                        c.parameters,
+                        r.stats,
+                        r.gemini_content,
+                        c.component_hashes,
+                        c.results_id
+                    FROM CACHED_SIMULATIONS c
+                    JOIN SIMULATION_RESULTS r ON c.results_id = r.id
+                    WHERE c.simulation_hash = %s
+                """, (simulation_hash,))
+
+                row = cursor.fetchone()
             if row:
                 params, stats, gemini_content, component_hashes, results_id = row[0], row[1], row[2], row[3], row[4]
                 
@@ -1111,8 +1020,6 @@ class PostgreSQLDatabase:
         except Exception as e:
             logging.error(f"Failed to get simulation details: {e}", exc_info=True)
             return None, None, None
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_simulation_access(self, simulation_hash, user_id=None):
@@ -1125,31 +1032,28 @@ class PostgreSQLDatabase:
         are deterministic functions of the parameters — not unguessable —
         so visibility must be enforced by the caller, not by hash secrecy.
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(
-                "SELECT is_public FROM CACHED_SIMULATIONS WHERE simulation_hash = %s",
-                (simulation_hash,))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            access = {'is_public': bool(row[0]), 'history_id': None}
-            if user_id is not None:
-                cursor.execute("""
-                    SELECT id FROM USER_SIMULATION_HISTORY
-                    WHERE simulation_hash = %s AND user_id = %s AND is_removed = FALSE
-                    ORDER BY id LIMIT 1
-                """, (simulation_hash, user_id))
-                h = cursor.fetchone()
-                if h:
-                    access['history_id'] = h[0]
-            return access
+            with self._connection_cursor(commit=False) as cursor:
+                cursor.execute(
+                    "SELECT is_public FROM CACHED_SIMULATIONS WHERE simulation_hash = %s",
+                    (simulation_hash,))
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                access = {'is_public': bool(row[0]), 'history_id': None}
+                if user_id is not None:
+                    cursor.execute("""
+                        SELECT id FROM USER_SIMULATION_HISTORY
+                        WHERE simulation_hash = %s AND user_id = %s AND is_removed = FALSE
+                        ORDER BY id LIMIT 1
+                    """, (simulation_hash, user_id))
+                    h = cursor.fetchone()
+                    if h:
+                        access['history_id'] = h[0]
+                return access
         except Exception as e:
             logging.error(f"Failed to get simulation access: {e}", exc_info=True)
             return None
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def save_custom_strategy(self, user_id, strategy_name, class_name, description, ai_description, code, 
@@ -1325,99 +1229,88 @@ class PostgreSQLDatabase:
     
     @log_db_call
     def get_user_custom_strategies(self, user_id):
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            # Fetch user's strategies OR public strategies, 
-            # joined with evaluation results.
-            # UPDATED: Includes fallback for unedited clones to use parent's evaluation (Source SHA)
-            cursor.execute("""
-                SELECT * FROM (
-                    -- Use DISTINCT ON to ensure one row per strategy even if multiple evaluations exist
-                    -- Prioritize actual user's strategies over public ones if ID matches
-                    SELECT DISTINCT ON (c.id)
-                        c.id, c.user_id, c.strategy_name, 
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                # Fetch user's strategies OR public strategies,
+                # joined with evaluation results.
+                # UPDATED: Includes fallback for unedited clones to use parent's evaluation (Source SHA)
+                cursor.execute("""
+                    SELECT * FROM (
+                        -- Use DISTINCT ON to ensure one row per strategy even if multiple evaluations exist
+                        -- Prioritize actual user's strategies over public ones if ID matches
+                        SELECT DISTINCT ON (c.id)
+                            c.id, c.user_id, c.strategy_name,
+                            COALESCE(c.class_name, p.class_name) as class_name,
+                            COALESCE(c.description, p.description) as description,
+                            COALESCE(c.code, p.code) as code,
+                            COALESCE(c.parameters_json, p.parameters_json) as parameters_json,
+                            COALESCE(c.ai_description, p.ai_description) as ai_description,
+                            c.validation_status, c.validation_error,
+                            c.created_at, c.updated_at, c.last_validation_timestamp,
+                            c.git_branch_name, c.git_commit_sha, c.git_repo_url,
+                            c.parent_strategy_id, c.clone_source_commit_sha, c.cloned_at,
+                            c.is_public, c.is_published_to_leaderboard, c.fork_count,
+                            c.is_clone_unedited,
+                            (c.code IS NULL AND c.parent_strategy_id IS NOT NULL) as is_pure_clone,
+                            e.excellence_score, e.sharpe_ratio, e.sortino_ratio,
+                            (e.id IS NOT NULL) as has_evaluation
+                        FROM CUSTOM_STRATEGIES c
+                        LEFT JOIN CUSTOM_STRATEGIES p ON c.parent_strategy_id = p.id
+                        LEFT JOIN STRATEGY_EVALUATIONS e ON (
+                            e.git_commit_sha = COALESCE(c.git_commit_sha, c.clone_source_commit_sha)
+                        )
+                        WHERE (c.user_id = %s OR (c.is_public = TRUE AND c.user_id != 0))
+                        AND c.deleted_at IS NULL
+                        ORDER BY c.id, c.updated_at DESC, e.created_at DESC
+                    ) sub
+                    ORDER BY sub.updated_at DESC
+                """, (user_id,))
+                return cursor.fetchall()
+        except Exception as e:
+            logging.error(f"Failed to get custom strategies: {e}", exc_info=True)
+            return []
+
+    @log_db_call
+    def get_custom_strategy(self, strategy_id):
+        """Fetch a specific custom strategy by ID."""
+        try:
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                # Use LEFT JOIN for Pure Reference Cloning
+                cursor.execute("""
+                    SELECT
+                        c.id, c.user_id, c.strategy_name,
                         COALESCE(c.class_name, p.class_name) as class_name,
                         COALESCE(c.description, p.description) as description,
                         COALESCE(c.code, p.code) as code,
                         COALESCE(c.parameters_json, p.parameters_json) as parameters_json,
                         COALESCE(c.ai_description, p.ai_description) as ai_description,
-                        c.validation_status, c.validation_error, 
+                        c.validation_status, c.validation_error,
                         c.created_at, c.updated_at, c.last_validation_timestamp,
                         c.git_branch_name, c.git_commit_sha, c.git_repo_url,
                         c.parent_strategy_id, c.clone_source_commit_sha, c.cloned_at,
                         c.is_public, c.is_published_to_leaderboard, c.fork_count,
-                        c.is_clone_unedited,
-                        (c.code IS NULL AND c.parent_strategy_id IS NOT NULL) as is_pure_clone,
-                        e.excellence_score, e.sharpe_ratio, e.sortino_ratio,
-                        (e.id IS NOT NULL) as has_evaluation
+                        c.deleted_at,
+                        (c.code IS NULL AND c.parent_strategy_id IS NOT NULL) as is_pure_clone
                     FROM CUSTOM_STRATEGIES c
                     LEFT JOIN CUSTOM_STRATEGIES p ON c.parent_strategy_id = p.id
-                    LEFT JOIN STRATEGY_EVALUATIONS e ON (
-                        e.git_commit_sha = COALESCE(c.git_commit_sha, c.clone_source_commit_sha)
-                    )
-                    WHERE (c.user_id = %s OR (c.is_public = TRUE AND c.user_id != 0))
-                    AND c.deleted_at IS NULL
-                    ORDER BY c.id, c.updated_at DESC, e.created_at DESC
-                ) sub
-                ORDER BY sub.updated_at DESC
-            """, (user_id,))
-            return cursor.fetchall()
-        except Exception as e:
-            logging.error(f"Failed to get custom strategies: {e}", exc_info=True)
-            return []
-        finally:
-            self.release_connection(conn)
-    @log_db_call
-    def get_custom_strategy(self, strategy_id):
-        """Fetch a specific custom strategy by ID."""
-        conn = self.get_connection()
-        try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            
-            # Use LEFT JOIN for Pure Reference Cloning
-            cursor.execute("""
-                SELECT 
-                    c.id, c.user_id, c.strategy_name, 
-                    COALESCE(c.class_name, p.class_name) as class_name,
-                    COALESCE(c.description, p.description) as description,
-                    COALESCE(c.code, p.code) as code,
-                    COALESCE(c.parameters_json, p.parameters_json) as parameters_json,
-                    COALESCE(c.ai_description, p.ai_description) as ai_description,
-                    c.validation_status, c.validation_error, 
-                    c.created_at, c.updated_at, c.last_validation_timestamp,
-                    c.git_branch_name, c.git_commit_sha, c.git_repo_url,
-                    c.parent_strategy_id, c.clone_source_commit_sha, c.cloned_at,
-                    c.is_public, c.is_published_to_leaderboard, c.fork_count,
-                    c.deleted_at,
-                    (c.code IS NULL AND c.parent_strategy_id IS NOT NULL) as is_pure_clone
-                FROM CUSTOM_STRATEGIES c
-                LEFT JOIN CUSTOM_STRATEGIES p ON c.parent_strategy_id = p.id
-                WHERE c.id = %s
-            """, (strategy_id,))
-            
-            return cursor.fetchone()
+                    WHERE c.id = %s
+                """, (strategy_id,))
+
+                return cursor.fetchone()
         except Exception as e:
             logging.error(f"Failed to get custom strategy {strategy_id}: {e}", exc_info=True)
             return None
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def hide_shared_item(self, user_id, item_type, item_id):
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(self.queries.HIDE_SHARED_ITEM, 
-                          {'user_id': user_id, 'item_type': item_type, 'item_id': item_id})
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute(self.queries.HIDE_SHARED_ITEM,
+                              {'user_id': user_id, 'item_type': item_type, 'item_id': item_id})
             return True
         except Exception as e:
             logging.error(f"Failed to hide shared item: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def delete_custom_strategy(self, strategy_id, user_id):
@@ -1430,42 +1323,37 @@ class PostgreSQLDatabase:
         Soft deletes a custom strategy by setting deleted_at timestamp.
         Preserves data for lineage tracking and potential restore.
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            
-            # Verify ownership and that strategy isn't already deleted
-            cursor.execute("""
-                SELECT id, user_id FROM CUSTOM_STRATEGIES 
-                WHERE id = %s AND deleted_at IS NULL
-            """, (strategy_id,))
-            
-            row = cursor.fetchone()
-            if not row:
-                logging.warning(f"Strategy {strategy_id} not found or already deleted")
-                return False
-            
-            _, owner_id = row
-            if owner_id != user_id:
-                logging.warning(f"SECURITY: User {user_id} attempted to delete strategy {strategy_id} owned by {owner_id}")
-                return False
-            
-            # Soft delete: set timestamp
-            cursor.execute("""
-                UPDATE CUSTOM_STRATEGIES 
-                SET deleted_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-            """, (strategy_id,))
-            
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                # Verify ownership and that strategy isn't already deleted
+                cursor.execute("""
+                    SELECT id, user_id FROM CUSTOM_STRATEGIES
+                    WHERE id = %s AND deleted_at IS NULL
+                """, (strategy_id,))
+
+                row = cursor.fetchone()
+                if not row:
+                    logging.warning(f"Strategy {strategy_id} not found or already deleted")
+                    return False
+
+                _, owner_id = row
+                if owner_id != user_id:
+                    logging.warning(f"SECURITY: User {user_id} attempted to delete strategy {strategy_id} owned by {owner_id}")
+                    return False
+
+                # Soft delete: set timestamp
+                cursor.execute("""
+                    UPDATE CUSTOM_STRATEGIES
+                    SET deleted_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (strategy_id,))
+
+                updated = cursor.rowcount > 0
             logging.info(f"Soft deleted strategy {strategy_id} for user {user_id}")
-            return cursor.rowcount > 0
+            return updated
         except Exception as e:
             logging.error(f"Failed to soft delete strategy: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def restore_custom_strategy(self, strategy_id, user_id):
@@ -1473,63 +1361,54 @@ class PostgreSQLDatabase:
         Restores a soft-deleted strategy by clearing deleted_at timestamp.
         Note: Admin check should be done by caller before calling this method.
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            
-            # Verify strategy exists and is deleted
-            cursor.execute("""
-                SELECT id, user_id FROM CUSTOM_STRATEGIES 
-                WHERE id = %s AND deleted_at IS NOT NULL
-            """, (strategy_id,))
-            
-            row = cursor.fetchone()
-            if not row:
-                logging.warning(f"Strategy {strategy_id} not found or not deleted")
-                return False
-            
-            # Restore: clear timestamp
-            cursor.execute("""
-                UPDATE CUSTOM_STRATEGIES 
-                SET deleted_at = NULL
-                WHERE id = %s
-            """, (strategy_id,))
-            
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                # Verify strategy exists and is deleted
+                cursor.execute("""
+                    SELECT id, user_id FROM CUSTOM_STRATEGIES
+                    WHERE id = %s AND deleted_at IS NOT NULL
+                """, (strategy_id,))
+
+                row = cursor.fetchone()
+                if not row:
+                    logging.warning(f"Strategy {strategy_id} not found or not deleted")
+                    return False
+
+                # Restore: clear timestamp
+                cursor.execute("""
+                    UPDATE CUSTOM_STRATEGIES
+                    SET deleted_at = NULL
+                    WHERE id = %s
+                """, (strategy_id,))
+
+                updated = cursor.rowcount > 0
             logging.info(f"Restored strategy {strategy_id}")
-            return cursor.rowcount > 0
+            return updated
         except Exception as e:
             logging.error(f"Failed to restore strategy: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
     
     @log_db_call
     def update_custom_strategy(self, strategy_id, user_id, strategy_name, description, ai_description, parameters_json, git_branch_name=None, git_commit_sha=None):
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                UPDATE CUSTOM_STRATEGIES 
-                SET strategy_name = %s,
-                    description = %s,
-                    ai_description = %s,
-                    parameters_json = %s,
-                    git_branch_name = COALESCE(%s, git_branch_name),
-                    git_commit_sha = COALESCE(%s, git_commit_sha),
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND user_id = %s
-            """, (strategy_name, description, ai_description, parameters_json, git_branch_name, git_commit_sha, strategy_id, user_id))
-            conn.commit()
-            return cursor.rowcount > 0
+            with self._connection_cursor() as cursor:
+                cursor.execute("""
+                    UPDATE CUSTOM_STRATEGIES
+                    SET strategy_name = %s,
+                        description = %s,
+                        ai_description = %s,
+                        parameters_json = %s,
+                        git_branch_name = COALESCE(%s, git_branch_name),
+                        git_commit_sha = COALESCE(%s, git_commit_sha),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s AND user_id = %s
+                """, (strategy_name, description, ai_description, parameters_json, git_branch_name, git_commit_sha, strategy_id, user_id))
+                updated = cursor.rowcount > 0
+            return updated
         except Exception as e:
             logging.error(f"Failed to update custom strategy: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def get_strategy_evolution_history(self, strategy_id):
@@ -1542,47 +1421,41 @@ class PostgreSQLDatabase:
         Returns:
             List of evolution entries with timestamp, request, commit_sha, user_id
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                SELECT evolution_history
-                FROM CUSTOM_STRATEGIES
-                WHERE id = %s
-            """, (strategy_id,))
+            with self._connection_cursor(commit=False) as cursor:
+                cursor.execute("""
+                    SELECT evolution_history
+                    FROM CUSTOM_STRATEGIES
+                    WHERE id = %s
+                """, (strategy_id,))
 
-            row = cursor.fetchone()
-            if not row:
-                return []
+                row = cursor.fetchone()
+                if not row:
+                    return []
 
-            db_history = row[0]
+                db_history = row[0]
 
-            if isinstance(db_history, str):
-                db_history = json.loads(db_history)
-            return db_history or []
+                if isinstance(db_history, str):
+                    db_history = json.loads(db_history)
+                return db_history or []
         except Exception as e:
             logging.error(f"Failed to get evolution history: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def set_strategy_published_status(self, strategy_id, user_id, is_published):
         """Toggle whether a custom strategy is published to the leaderboard."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            # Verify ownership before allowing change
-            cursor.execute("""
-                UPDATE CUSTOM_STRATEGIES 
-                SET is_published_to_leaderboard = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND user_id = %s
-            """, (is_published, strategy_id, user_id))
-            conn.commit()
-            
-            success = cursor.rowcount > 0
-            
+            with self._connection_cursor() as cursor:
+                # Verify ownership before allowing change
+                cursor.execute("""
+                    UPDATE CUSTOM_STRATEGIES
+                    SET is_published_to_leaderboard = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s AND user_id = %s
+                """, (is_published, strategy_id, user_id))
+                success = cursor.rowcount > 0
+
             # Clear leaderboard cache when publish status changes
             if success:
                 try:
@@ -1591,107 +1464,90 @@ class PostgreSQLDatabase:
                     logging.info(f"Cleared leaderboard cache after {'publishing' if is_published else 'unpublishing'} strategy {strategy_id}")
                 except Exception as cache_error:
                     logging.warning(f"Failed to clear leaderboard cache: {cache_error}")
-            
+
             return success
         except Exception as e:
             logging.error(f"Failed to set publish status: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
     
     def get_simulations_needing_pdf(self, limit=10):
         """Get simulations with pending PDF status."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            # Use query direct or from queries object if verified available
-            cursor.execute("""
-                SELECT 
-                    cs.simulation_hash,
-                    sr.id as results_id,
-                    sr.pdf_status
-                FROM CACHED_SIMULATIONS cs
-                JOIN SIMULATION_RESULTS sr ON cs.results_id = sr.id
-                WHERE sr.pdf_status = 'pending'
-                ORDER BY sr.created_at ASC
-                LIMIT %s
-            """, (limit,))
-            return cursor.fetchall()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                # Use query direct or from queries object if verified available
+                cursor.execute("""
+                    SELECT
+                        cs.simulation_hash,
+                        sr.id as results_id,
+                        sr.pdf_status
+                    FROM CACHED_SIMULATIONS cs
+                    JOIN SIMULATION_RESULTS sr ON cs.results_id = sr.id
+                    WHERE sr.pdf_status = 'pending'
+                    ORDER BY sr.created_at ASC
+                    LIMIT %s
+                """, (limit,))
+                return cursor.fetchall()
         except Exception as e:
             logging.error(f"Failed: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def update_simulation_pdf_storage(self, simulation_hash, storage_path, status, gen_time_ms=None, error_msg=None):
         """Update PDF storage info."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            if gen_time_ms is not None:
-                cursor.execute("""
-                    UPDATE SIMULATION_RESULTS
-                    SET pdf_storage_path = %s,
-                        pdf_status = %s,
-                        pdf_generated_at = CURRENT_TIMESTAMP,
-                        pdf_generation_time_ms = %s,
-                        pdf_error_message = %s
-                    WHERE id = (
-                        SELECT results_id FROM CACHED_SIMULATIONS
-                        WHERE simulation_hash = %s
-                    )
-                """, (storage_path, status, gen_time_ms, error_msg, simulation_hash))
-            else:
-                cursor.execute("""
-                    UPDATE SIMULATION_RESULTS
-                    SET pdf_storage_path = %s,
-                        pdf_status = %s,
-                        pdf_error_message = %s
-                    WHERE id = (
-                        SELECT results_id FROM CACHED_SIMULATIONS
-                        WHERE simulation_hash = %s
-                    )
-                """, (storage_path, status, error_msg, simulation_hash))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                if gen_time_ms is not None:
+                    cursor.execute("""
+                        UPDATE SIMULATION_RESULTS
+                        SET pdf_storage_path = %s,
+                            pdf_status = %s,
+                            pdf_generated_at = CURRENT_TIMESTAMP,
+                            pdf_generation_time_ms = %s,
+                            pdf_error_message = %s
+                        WHERE id = (
+                            SELECT results_id FROM CACHED_SIMULATIONS
+                            WHERE simulation_hash = %s
+                        )
+                    """, (storage_path, status, gen_time_ms, error_msg, simulation_hash))
+                else:
+                    cursor.execute("""
+                        UPDATE SIMULATION_RESULTS
+                        SET pdf_storage_path = %s,
+                            pdf_status = %s,
+                            pdf_error_message = %s
+                        WHERE id = (
+                            SELECT results_id FROM CACHED_SIMULATIONS
+                            WHERE simulation_hash = %s
+                        )
+                    """, (storage_path, status, error_msg, simulation_hash))
         except Exception as e:
             logging.error(f"Failed: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_pdf_info_by_hash(self, simulation_hash):
         """Get PDF info for simulation."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute("""
-                SELECT 
-                    sr.pdf_status,
-                    sr.pdf_storage_path,
-                    sr.pdf_generated_at,
-                    sr.pdf_generation_time_ms,
-                    sr.pdf_error_message
-                FROM CACHED_SIMULATIONS cs
-                JOIN SIMULATION_RESULTS sr ON cs.results_id = sr.id
-                WHERE cs.simulation_hash = %s
-            """, (simulation_hash,))
-            return cursor.fetchone()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute("""
+                    SELECT
+                        sr.pdf_status,
+                        sr.pdf_storage_path,
+                        sr.pdf_generated_at,
+                        sr.pdf_generation_time_ms,
+                        sr.pdf_error_message
+                    FROM CACHED_SIMULATIONS cs
+                    JOIN SIMULATION_RESULTS sr ON cs.results_id = sr.id
+                    WHERE cs.simulation_hash = %s
+                """, (simulation_hash,))
+                return cursor.fetchone()
         except Exception as e:
             logging.error(f"Failed: {e}", exc_info=True)
             return None
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def save_strategy_evaluation(self, evaluation_data):
         """Save strategy evaluation using INSERT...ON CONFLICT."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            
             # Construct parameters dict ensuring all keys required by query exist
             params = {
                 'strategy_name': evaluation_data['strategy_name'],
@@ -1750,41 +1606,38 @@ class PostgreSQLDatabase:
                 """
                 id_lookup_param = (params['strategy_name'],)
 
-            cursor.execute(query, params)
-            
-            # --- Get the evaluation_id of the just-inserted/updated row ---
-            cursor.execute(id_lookup_query, id_lookup_param)
-            row = cursor.fetchone()
-            evaluation_id = row[0] if row else None
-            
-            # --- NEW: Insert profile scores if evaluation succeeded ---
-            if evaluation_id and 'profile_scores' in evaluation_data:
-                for profile_key, score in evaluation_data['profile_scores'].items():
-                    try:
-                        cursor.execute("""
-                            INSERT INTO STRATEGY_PROFILE_SCORES 
-                            (evaluation_id, profile_key, excellence_score)
-                            VALUES (%s, %s, %s)
-                            ON CONFLICT (evaluation_id, profile_key)
-                            DO UPDATE SET 
-                                excellence_score = EXCLUDED.excellence_score,
-                                calculated_at = CURRENT_TIMESTAMP
-                        """, (evaluation_id, profile_key, float(score)))
-                    except Exception as e:
-                        logging.error(f"Failed to insert profile score for {profile_key}: {e}")
-                        # Continue with other profiles even if one fails
-                
-                logging.info(f"Saved {len(evaluation_data['profile_scores'])} profile scores for evaluation {evaluation_id}")
-            
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute(query, params)
+
+                # --- Get the evaluation_id of the just-inserted/updated row ---
+                cursor.execute(id_lookup_query, id_lookup_param)
+                row = cursor.fetchone()
+                evaluation_id = row[0] if row else None
+
+                # --- NEW: Insert profile scores if evaluation succeeded ---
+                if evaluation_id and 'profile_scores' in evaluation_data:
+                    for profile_key, score in evaluation_data['profile_scores'].items():
+                        try:
+                            cursor.execute("""
+                                INSERT INTO STRATEGY_PROFILE_SCORES
+                                (evaluation_id, profile_key, excellence_score)
+                                VALUES (%s, %s, %s)
+                                ON CONFLICT (evaluation_id, profile_key)
+                                DO UPDATE SET
+                                    excellence_score = EXCLUDED.excellence_score,
+                                    calculated_at = CURRENT_TIMESTAMP
+                            """, (evaluation_id, profile_key, float(score)))
+                        except Exception as e:
+                            logging.error(f"Failed to insert profile score for {profile_key}: {e}")
+                            # Continue with other profiles even if one fails
+
+                    logging.info(f"Saved {len(evaluation_data['profile_scores'])} profile scores for evaluation {evaluation_id}")
+
             logging.info(f"Successfully saved evaluation for {evaluation_data['strategy_name']}")
             return True  # Return success indicator
         except Exception as e:
             logging.error(f"Failed to save evaluation: {e}", exc_info=True)
-            conn.rollback()
             return False  # Return failure indicator
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_strategy_evaluation(self, git_commit_sha, lookup_fallback_sha=None):
@@ -1800,77 +1653,60 @@ class PostgreSQLDatabase:
         """
         if not git_commit_sha and not lookup_fallback_sha:
             return None
-            
-        conn = self.get_connection()
+
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            
-            # Primary lookup
-            result = None
-            if git_commit_sha:
-                cursor.execute(self.queries.GET_STRATEGY_EVALUATION_BY_SHA, (git_commit_sha,))
-                result = cursor.fetchone()
-            
-            # Fallback lookup (for clones)
-            if not result and lookup_fallback_sha:
-                primary_display = git_commit_sha[:7] if git_commit_sha else "None"
-                fallback_display = lookup_fallback_sha[:7] if lookup_fallback_sha else "None"
-                logging.info(f"Primary SHA {primary_display} not found, checking fallback {fallback_display}")
-                cursor.execute(self.queries.GET_STRATEGY_EVALUATION_BY_SHA, (lookup_fallback_sha,))
-                result = cursor.fetchone()
-                
-            return result
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                # Primary lookup
+                result = None
+                if git_commit_sha:
+                    cursor.execute(self.queries.GET_STRATEGY_EVALUATION_BY_SHA, (git_commit_sha,))
+                    result = cursor.fetchone()
+
+                # Fallback lookup (for clones)
+                if not result and lookup_fallback_sha:
+                    primary_display = git_commit_sha[:7] if git_commit_sha else "None"
+                    fallback_display = lookup_fallback_sha[:7] if lookup_fallback_sha else "None"
+                    logging.info(f"Primary SHA {primary_display} not found, checking fallback {fallback_display}")
+                    cursor.execute(self.queries.GET_STRATEGY_EVALUATION_BY_SHA, (lookup_fallback_sha,))
+                    result = cursor.fetchone()
+
+                return result
         except Exception as e:
             logging.error(f"Failed to get evaluation: {e}", exc_info=True)
             return None
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_user_tier(self, user_id):
         """Get user's tier."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("SELECT plan_tier FROM USERS WHERE id = %s", (user_id,))
-            row = cursor.fetchone()
-            return row[0] if row else None
+            with self._connection_cursor(commit=False) as cursor:
+                cursor.execute("SELECT plan_tier FROM USERS WHERE id = %s", (user_id,))
+                row = cursor.fetchone()
+                return row[0] if row else None
         except Exception as e:
             logging.error(f"Failed: {e}", exc_info=True)
             return None
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def update_user_tier(self, user_id, new_tier, changed_by, reason):
         """Update user's tier."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("UPDATE USERS SET plan_tier = %s, tier_set_at = CURRENT_TIMESTAMP, tier_set_by = %s WHERE id = %s",
-                         (new_tier, changed_by, user_id))
-            cursor.execute("INSERT INTO SUBSCRIPTION_HISTORY (user_id, plan_tier, changed_to, changed_by, reason) VALUES (%s, %s, %s, %s, %s)",
-                         (user_id, new_tier, new_tier, changed_by, reason))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("UPDATE USERS SET plan_tier = %s, tier_set_at = CURRENT_TIMESTAMP, tier_set_by = %s WHERE id = %s",
+                             (new_tier, changed_by, user_id))
+                cursor.execute("INSERT INTO SUBSCRIPTION_HISTORY (user_id, plan_tier, changed_to, changed_by, reason) VALUES (%s, %s, %s, %s, %s)",
+                             (user_id, new_tier, new_tier, changed_by, reason))
         except Exception as e:
             logging.error(f"Failed: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def update_history_status(self, history_id, status):
         """Update history entry status."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("UPDATE USER_SIMULATION_HISTORY SET status = %s WHERE id = %s", (status, history_id))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("UPDATE USER_SIMULATION_HISTORY SET status = %s WHERE id = %s", (status, history_id))
         except Exception as e:
             logging.error(f"Failed: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def ensure_admin_user_exists(self):
@@ -1879,208 +1715,195 @@ class PostgreSQLDatabase:
         If no users have ADMIN tier, assigns it to the bootstrap admin email.
         """
         BOOTSTRAP_ADMIN_EMAIL = 'oscar.sverud@gmail.com'
-        
-        conn = self.get_connection()
+
         try:
-            cursor = self._get_cursor(conn)
-            
-            # Check if any user has ADMIN tier
-            cursor.execute("SELECT COUNT(*) FROM USERS WHERE plan_tier = 'ADMIN'")
-            admin_count = cursor.fetchone()[0]
-            
-            if admin_count == 0:
-                # No admins exist, assign to bootstrap user
-                logging.info(f"No admin users found. Auto-assigning ADMIN tier to {BOOTSTRAP_ADMIN_EMAIL}")
-                
-                # Get or create the bootstrap user
-                cursor.execute("SELECT id FROM USERS WHERE email = %s", (BOOTSTRAP_ADMIN_EMAIL,))
-                row = cursor.fetchone()
-                
-                if row:
-                    user_id = row[0]
-                    # Update existing user
-                    self.update_user_tier(
-                        user_id=user_id,
-                        new_tier='ADMIN',
-                        changed_by='SYSTEM',
-                        reason='Bootstrap admin - no admins existed'
-                    )
-                else:
-                    # Create the user if they don't exist
-                    user_id = self.get_or_create_user_id(BOOTSTRAP_ADMIN_EMAIL, 'Oscar Sverud')
-                    if user_id:
+            with self._connection_cursor(commit=False) as cursor:
+                # Check if any user has ADMIN tier
+                cursor.execute("SELECT COUNT(*) FROM USERS WHERE plan_tier = 'ADMIN'")
+                admin_count = cursor.fetchone()[0]
+
+                if admin_count == 0:
+                    # No admins exist, assign to bootstrap user
+                    logging.info(f"No admin users found. Auto-assigning ADMIN tier to {BOOTSTRAP_ADMIN_EMAIL}")
+
+                    # Get or create the bootstrap user
+                    cursor.execute("SELECT id FROM USERS WHERE email = %s", (BOOTSTRAP_ADMIN_EMAIL,))
+                    row = cursor.fetchone()
+
+                    if row:
+                        user_id = row[0]
+                        # Update existing user
                         self.update_user_tier(
                             user_id=user_id,
                             new_tier='ADMIN',
                             changed_by='SYSTEM',
-                            reason='Bootstrap admin - initial setup'
+                            reason='Bootstrap admin - no admins existed'
                         )
-                logging.info(f"Successfully assigned ADMIN tier to {BOOTSTRAP_ADMIN_EMAIL}")
+                    else:
+                        # Create the user if they don't exist
+                        user_id = self.get_or_create_user_id(BOOTSTRAP_ADMIN_EMAIL, 'Oscar Sverud')
+                        if user_id:
+                            self.update_user_tier(
+                                user_id=user_id,
+                                new_tier='ADMIN',
+                                changed_by='SYSTEM',
+                                reason='Bootstrap admin - initial setup'
+                            )
+                    logging.info(f"Successfully assigned ADMIN tier to {BOOTSTRAP_ADMIN_EMAIL}")
         except Exception as e:
             logging.error(f"Failed to ensure admin user exists: {e}", exc_info=True)
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def update_cached_simulation_results(self, simulation_hash, params, ui_params, stats, 
                                         results_dataframe, average_results_df, 
                                         median_yearly_results_df, gemini_content, status='COMPLETED', evaluation_data=None):
         """Update cached simulation with results."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            # Create results entry (pdf_status NULL = no auto-generation, user must click button)
-            cursor.execute("INSERT INTO SIMULATION_RESULTS (stats, gemini_content, evaluation_data) VALUES (%s, %s, %s) RETURNING id",
-                         (json.dumps(_sanitize_for_json(stats)), json.dumps(gemini_content), json.dumps(_sanitize_for_json(evaluation_data)) if evaluation_data else None))
-            results_id = cursor.fetchone()[0]
-            
-            
-            # CRITICAL FIX: Calculate and save ALL precalculated data (matching SQLite implementation)
-            # This fixes empty plots by ensuring all data needed for visualization is stored
-            import numpy as np
-            import pandas as pd
-            
-            percentile_paths = None
-            asset_percentile_paths = None
-            final_net_worths_hist_data = None
-            sampled_paths = None
-            backtest_path_df = None
+            with self._connection_cursor() as cursor:
+                # Create results entry (pdf_status NULL = no auto-generation, user must click button)
+                cursor.execute("INSERT INTO SIMULATION_RESULTS (stats, gemini_content, evaluation_data) VALUES (%s, %s, %s) RETURNING id",
+                             (json.dumps(_sanitize_for_json(stats)), json.dumps(gemini_content), json.dumps(_sanitize_for_json(evaluation_data)) if evaluation_data else None))
+                results_id = cursor.fetchone()[0]
 
-            if results_dataframe is not None and not results_dataframe.empty:
-                monte_carlo_df =results_dataframe
-                if 'Backtest' in results_dataframe.columns:
-                    backtest_path_df = results_dataframe['Backtest'].unstack(level='Metric')
-                    monte_carlo_df = results_dataframe.drop(columns='Backtest')
 
-                asset_value_df = monte_carlo_df.xs('Asset Value', level=1, axis=0)
-                net_worth_df = monte_carlo_df.xs('Net Worth', level=1, axis=0)
+                # CRITICAL FIX: Calculate and save ALL precalculated data (matching SQLite implementation)
+                # This fixes empty plots by ensuring all data needed for visualization is stored
+                import numpy as np
+                import pandas as pd
 
-                percentile_paths = pd.DataFrame({
-                    'p25': net_worth_df.quantile(0.25, axis=1),
-                    'p50': net_worth_df.median(axis=1),
-                    'p75': net_worth_df.quantile(0.75, axis=1)
-                })
+                percentile_paths = None
+                asset_percentile_paths = None
+                final_net_worths_hist_data = None
+                sampled_paths = None
+                backtest_path_df = None
 
-                asset_percentile_paths = pd.DataFrame({
-                    'p25': asset_value_df.quantile(0.25, axis=1),
-                    'p50': asset_value_df.median(axis=1),
-                    'p75': asset_value_df.quantile(0.75, axis=1)
-                })
+                if results_dataframe is not None and not results_dataframe.empty:
+                    monte_carlo_df =results_dataframe
+                    if 'Backtest' in results_dataframe.columns:
+                        backtest_path_df = results_dataframe['Backtest'].unstack(level='Metric')
+                        monte_carlo_df = results_dataframe.drop(columns='Backtest')
 
-                final_net_worths_raw = net_worth_df.iloc[-1]
-                p1 = np.percentile(final_net_worths_raw, 1)
-                p99 = np.percentile(final_net_worths_raw, 99)
-                counts, bin_edges = np.histogram(final_net_worths_raw, bins=200, range=(p1, p99))
-                final_net_worths_hist_data = {'counts': counts, 'bin_edges': bin_edges}
+                    asset_value_df = monte_carlo_df.xs('Asset Value', level=1, axis=0)
+                    net_worth_df = monte_carlo_df.xs('Net Worth', level=1, axis=0)
 
-                num_sims = params.get('num_simulations', 10000)
-                num_to_sample = min(num_sims, 50)
-                sim_names = results_dataframe.columns.unique()
-                sampled_sim_names = np.random.choice(sim_names, num_to_sample, replace=False)
-                sampled_paths = results_dataframe[sampled_sim_names]
+                    percentile_paths = pd.DataFrame({
+                        'p25': net_worth_df.quantile(0.25, axis=1),
+                        'p50': net_worth_df.median(axis=1),
+                        'p75': net_worth_df.quantile(0.75, axis=1)
+                    })
 
-            # Save ALL data blobs (matching SQLite's save order)
-            _save_dataframe_to_db(cursor, results_id, 'net_worth_percentile_paths', percentile_paths)
-            _save_dataframe_to_db(cursor, results_id, 'asset_percentile_paths', asset_percentile_paths)
-            _save_dict_to_db(cursor, results_id, 'final_net_worths_hist', final_net_worths_hist_data)
-            _save_dataframe_to_db(cursor, results_id, 'sampled_paths', sampled_paths)
-            _save_dataframe_to_db(cursor, results_id, 'average_results_df', average_results_df)
-            _save_dataframe_to_db(cursor, results_id, 'median_yearly_results_df', median_yearly_results_df)
+                    asset_percentile_paths = pd.DataFrame({
+                        'p25': asset_value_df.quantile(0.25, axis=1),
+                        'p50': asset_value_df.median(axis=1),
+                        'p75': asset_value_df.quantile(0.75, axis=1)
+                    })
 
-            # Save backtest path if available
-            if backtest_path_df is not None:
-                _save_dataframe_to_db(cursor, results_id, 'backtest_path', backtest_path_df)
-            
-            # Save evaluation data if available
-            if evaluation_data:
-                _save_dict_to_db(cursor, results_id, 'evaluation_data', evaluation_data)
-                logging.info(f"Saved evaluation data for results_id {results_id}")
-            
-            # Update cached simulation with component hashes
-            component_hashes = params.get('component_hashes', {})
-            cursor.execute("""UPDATE CACHED_SIMULATIONS 
-                             SET results_id = %s, 
-                                 status = %s, 
-                                 component_hashes = %s,
-                                 updated_at = CURRENT_TIMESTAMP 
-                             WHERE simulation_hash = %s""",
-                         (results_id, status, json.dumps(component_hashes), simulation_hash))
-            conn.commit()
-            return results_id
+                    final_net_worths_raw = net_worth_df.iloc[-1]
+                    p1 = np.percentile(final_net_worths_raw, 1)
+                    p99 = np.percentile(final_net_worths_raw, 99)
+                    counts, bin_edges = np.histogram(final_net_worths_raw, bins=200, range=(p1, p99))
+                    final_net_worths_hist_data = {'counts': counts, 'bin_edges': bin_edges}
+
+                    num_sims = params.get('num_simulations', 10000)
+                    num_to_sample = min(num_sims, 50)
+                    sim_names = results_dataframe.columns.unique()
+                    sampled_sim_names = np.random.choice(sim_names, num_to_sample, replace=False)
+                    sampled_paths = results_dataframe[sampled_sim_names]
+
+                # Save ALL data blobs (matching SQLite's save order)
+                _save_dataframe_to_db(cursor, results_id, 'net_worth_percentile_paths', percentile_paths)
+                _save_dataframe_to_db(cursor, results_id, 'asset_percentile_paths', asset_percentile_paths)
+                _save_dict_to_db(cursor, results_id, 'final_net_worths_hist', final_net_worths_hist_data)
+                _save_dataframe_to_db(cursor, results_id, 'sampled_paths', sampled_paths)
+                _save_dataframe_to_db(cursor, results_id, 'average_results_df', average_results_df)
+                _save_dataframe_to_db(cursor, results_id, 'median_yearly_results_df', median_yearly_results_df)
+
+                # Save backtest path if available
+                if backtest_path_df is not None:
+                    _save_dataframe_to_db(cursor, results_id, 'backtest_path', backtest_path_df)
+
+                # Save evaluation data if available
+                if evaluation_data:
+                    _save_dict_to_db(cursor, results_id, 'evaluation_data', evaluation_data)
+                    logging.info(f"Saved evaluation data for results_id {results_id}")
+
+                # Update cached simulation with component hashes
+                component_hashes = params.get('component_hashes', {})
+                cursor.execute("""UPDATE CACHED_SIMULATIONS
+                                 SET results_id = %s,
+                                     status = %s,
+                                     component_hashes = %s,
+                                     updated_at = CURRENT_TIMESTAMP
+                                 WHERE simulation_hash = %s""",
+                             (results_id, status, json.dumps(component_hashes), simulation_hash))
+                return results_id
         except Exception as e:
             logging.error(f"Failed: {e}", exc_info=True)
-            conn.rollback()
             return None
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_leaderboard(self, category=None, limit=50):
         """Fetch leaderboard, optionally filtered by category."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            if category and category != 'All':
-                cursor.execute("""
-                    SELECT 
-                        e.*,
-                        cs.ai_description,
-                        cs.description as custom_description,
-                        cs.is_published_to_leaderboard,
-                        COALESCE(u.display_name, u.email) as user_name,
-                        u.email as user_email
-                    FROM STRATEGY_EVALUATIONS e
-                    LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
-                    LEFT JOIN USERS u ON cs.user_id = u.id
-                    WHERE e.strategy_category = %s
-                      AND (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
-                    ORDER BY e.excellence_score DESC
-                    LIMIT %s
-                """, (category, limit))
-            else:
-                cursor.execute("""
-                    SELECT 
-                        e.*,
-                        cs.ai_description,
-                        cs.description as custom_description,
-                        cs.is_published_to_leaderboard,
-                        COALESCE(u.display_name, u.email) as user_name,
-                        u.email as user_email
-                    FROM STRATEGY_EVALUATIONS e
-                    LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
-                    LEFT JOIN USERS u ON cs.user_id = u.id
-                    WHERE (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
-                    ORDER BY e.excellence_score DESC
-                    LIMIT %s
-                """, (limit,))
-            
-            return cursor.fetchall()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                if category and category != 'All':
+                    cursor.execute("""
+                        SELECT
+                            e.*,
+                            cs.ai_description,
+                            cs.description as custom_description,
+                            cs.is_published_to_leaderboard,
+                            COALESCE(u.display_name, u.email) as user_name,
+                            u.email as user_email
+                        FROM STRATEGY_EVALUATIONS e
+                        LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
+                        LEFT JOIN USERS u ON cs.user_id = u.id
+                        WHERE e.strategy_category = %s
+                          AND (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
+                        ORDER BY e.excellence_score DESC
+                        LIMIT %s
+                    """, (category, limit))
+                else:
+                    cursor.execute("""
+                        SELECT
+                            e.*,
+                            cs.ai_description,
+                            cs.description as custom_description,
+                            cs.is_published_to_leaderboard,
+                            COALESCE(u.display_name, u.email) as user_name,
+                            u.email as user_email
+                        FROM STRATEGY_EVALUATIONS e
+                        LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
+                        LEFT JOIN USERS u ON cs.user_id = u.id
+                        WHERE (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
+                        ORDER BY e.excellence_score DESC
+                        LIMIT %s
+                    """, (limit,))
+
+                return cursor.fetchall()
         except Exception as e:
             logging.error(f"Failed to fetch leaderboard: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def get_all_custom_strategies_for_admin(self):
         """Fetch all custom strategies for admin evaluation."""
         logging.info("Admin: Fetching all custom strategies for evaluation")
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute("""
-                SELECT 
-                    cs.id,
-                    cs.user_id,
-                    cs.strategy_name,
-                    cs.class_name,
-                    cs.code,
-                    cs.description,
-                    cs.parameters_json
-                FROM CUSTOM_STRATEGIES cs
-                ORDER BY cs.user_id, cs.strategy_name
-            """)
-            records = [dict(row) for row in cursor.fetchall()]
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute("""
+                    SELECT
+                        cs.id,
+                        cs.user_id,
+                        cs.strategy_name,
+                        cs.class_name,
+                        cs.code,
+                        cs.description,
+                        cs.parameters_json
+                    FROM CUSTOM_STRATEGIES cs
+                    ORDER BY cs.user_id, cs.strategy_name
+                """)
+                records = [dict(row) for row in cursor.fetchall()]
             # Use abstraction layer for JSON deserialization
             for row in records:
                 if 'parameters_json' in row:
@@ -2089,8 +1912,6 @@ class PostgreSQLDatabase:
         except Exception as e:
             logging.error(f"Failed admin fetch: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def get_leaderboard_with_profile(self, profile_key='balanced', category=None, limit=50):
@@ -2105,56 +1926,52 @@ class PostgreSQLDatabase:
         Returns:
             List of strategy evaluations with profile_excellence_score
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            
-            if category and category != 'All':
-                cursor.execute("""
-                    SELECT 
-                        e.*,
-                        sps.excellence_score as profile_excellence_score,
-                        cs.ai_description,
-                        cs.description as custom_description,
-                        cs.is_published_to_leaderboard,
-                        COALESCE(u.display_name, u.email) as user_name,
-                        u.email as user_email,
-                        (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = TRUE) as usage_clone_count,
-                        (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = FALSE) as usage_fork_count
-                    FROM STRATEGY_EVALUATIONS e
-                    LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %s
-                    LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
-                    LEFT JOIN USERS u ON cs.user_id = u.id
-                    WHERE e.strategy_category = %s
-                      AND (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
-                    ORDER BY COALESCE(sps.excellence_score, e.excellence_score) DESC
-                    LIMIT %s
-                """, (profile_key, category, limit))
-            else:
-                cursor.execute("""
-                    SELECT 
-                        e.*,
-                        sps.excellence_score as profile_excellence_score,
-                        cs.ai_description,
-                        cs.description as custom_description,
-                        cs.is_published_to_leaderboard,
-                        COALESCE(u.display_name, u.email) as user_name,
-                        u.email as user_email
-                    FROM STRATEGY_EVALUATIONS e
-                    LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %s
-                    LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
-                    LEFT JOIN USERS u ON cs.user_id = u.id
-                    WHERE (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
-                    ORDER BY COALESCE(sps.excellence_score, e.excellence_score) DESC
-                    LIMIT %s
-                """, (profile_key, limit))
-            
-            return cursor.fetchall()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                if category and category != 'All':
+                    cursor.execute("""
+                        SELECT
+                            e.*,
+                            sps.excellence_score as profile_excellence_score,
+                            cs.ai_description,
+                            cs.description as custom_description,
+                            cs.is_published_to_leaderboard,
+                            COALESCE(u.display_name, u.email) as user_name,
+                            u.email as user_email,
+                            (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = TRUE) as usage_clone_count,
+                            (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = FALSE) as usage_fork_count
+                        FROM STRATEGY_EVALUATIONS e
+                        LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %s
+                        LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
+                        LEFT JOIN USERS u ON cs.user_id = u.id
+                        WHERE e.strategy_category = %s
+                          AND (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
+                        ORDER BY COALESCE(sps.excellence_score, e.excellence_score) DESC
+                        LIMIT %s
+                    """, (profile_key, category, limit))
+                else:
+                    cursor.execute("""
+                        SELECT
+                            e.*,
+                            sps.excellence_score as profile_excellence_score,
+                            cs.ai_description,
+                            cs.description as custom_description,
+                            cs.is_published_to_leaderboard,
+                            COALESCE(u.display_name, u.email) as user_name,
+                            u.email as user_email
+                        FROM STRATEGY_EVALUATIONS e
+                        LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %s
+                        LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
+                        LEFT JOIN USERS u ON cs.user_id = u.id
+                        WHERE (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
+                        ORDER BY COALESCE(sps.excellence_score, e.excellence_score) DESC
+                        LIMIT %s
+                    """, (profile_key, limit))
+
+                return cursor.fetchall()
         except Exception as e:
             logging.error(f"Failed to fetch leaderboard with profile: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def increment_global_counter(self, metric_key, value=1):
@@ -2162,21 +1979,16 @@ class PostgreSQLDatabase:
         Increment a global persistent counter.
         Creates the row if it doesn't exist (e.g., for new metrics).
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                INSERT INTO GLOBAL_STATS (metric_key, metric_value)
-                VALUES (%s, %s)
-                ON CONFLICT (metric_key) 
-                DO UPDATE SET metric_value = GLOBAL_STATS.metric_value + EXCLUDED.metric_value
-            """, (metric_key, value))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO GLOBAL_STATS (metric_key, metric_value)
+                    VALUES (%s, %s)
+                    ON CONFLICT (metric_key)
+                    DO UPDATE SET metric_value = GLOBAL_STATS.metric_value + EXCLUDED.metric_value
+                """, (metric_key, value))
         except Exception as e:
             logging.error(f"Failed to increment global counter {metric_key}: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def get_community_stats(self):
@@ -2184,47 +1996,45 @@ class PostgreSQLDatabase:
         Get aggregated community statistics from persistent GLOBAL_STATS table.
         Falls back to live counts if global stats are missing/zero (backward compatibility).
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            
-            # Fetch all global stats
-            cursor.execute("SELECT metric_key, metric_value FROM GLOBAL_STATS")
-            rows = cursor.fetchall()
-            stats_map = {row['metric_key']: row['metric_value'] for row in rows}
-            
-            # 1. Total Simulations Run
-            total_sims = stats_map.get('total_simulations_run', 0)
-            if total_sims == 0: # Fallback
-                cursor.execute("SELECT count(*) as count FROM user_simulation_history")
-                row = cursor.fetchone()
-                total_sims = row['count'] if row else 0
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                # Fetch all global stats
+                cursor.execute("SELECT metric_key, metric_value FROM GLOBAL_STATS")
+                rows = cursor.fetchall()
+                stats_map = {row['metric_key']: row['metric_value'] for row in rows}
 
-            # 2. Total Strategies Created
-            total_strategies = stats_map.get('total_strategies_created', 0)
-            if total_strategies == 0: # Fallback
-                cursor.execute("SELECT count(*) as count FROM custom_strategies")
-                row = cursor.fetchone()
-                total_strategies = row['count'] if row else 0
-                
-            # 3. Total Years Simulated (New!)
-            total_years = stats_map.get('total_years_simulated', 0)
+                # 1. Total Simulations Run
+                total_sims = stats_map.get('total_simulations_run', 0)
+                if total_sims == 0: # Fallback
+                    cursor.execute("SELECT count(*) as count FROM user_simulation_history")
+                    row = cursor.fetchone()
+                    total_sims = row['count'] if row else 0
 
-            # 4. Most Popular (by completed runs) - Still calculated live for now, or could cached?
-            # Live calculation is fine for "Top 5 List", but "Global Stats" above are persistent.
-            # Use grouped aggregation handling both standard (strategy key) and custom (custom_strategy_name)
-            cursor.execute("""
-                SELECT 
-                    COALESCE(parameters::jsonb->>'custom_strategy_name', parameters::jsonb->>'strategy') as strategy_identifier,
-                    COUNT(*) as count
-                FROM CACHED_SIMULATIONS 
-                WHERE parameters::jsonb->>'strategy' IS NOT NULL
-                GROUP BY 1
-                ORDER BY count DESC 
-                LIMIT 5
-            """)
-            top_rows = cursor.fetchall()
-            
+                # 2. Total Strategies Created
+                total_strategies = stats_map.get('total_strategies_created', 0)
+                if total_strategies == 0: # Fallback
+                    cursor.execute("SELECT count(*) as count FROM custom_strategies")
+                    row = cursor.fetchone()
+                    total_strategies = row['count'] if row else 0
+
+                # 3. Total Years Simulated (New!)
+                total_years = stats_map.get('total_years_simulated', 0)
+
+                # 4. Most Popular (by completed runs) - Still calculated live for now, or could cached?
+                # Live calculation is fine for "Top 5 List", but "Global Stats" above are persistent.
+                # Use grouped aggregation handling both standard (strategy key) and custom (custom_strategy_name)
+                cursor.execute("""
+                    SELECT
+                        COALESCE(parameters::jsonb->>'custom_strategy_name', parameters::jsonb->>'strategy') as strategy_identifier,
+                        COUNT(*) as count
+                    FROM CACHED_SIMULATIONS
+                    WHERE parameters::jsonb->>'strategy' IS NOT NULL
+                    GROUP BY 1
+                    ORDER BY count DESC
+                    LIMIT 5
+                """)
+                top_rows = cursor.fetchall()
+
             # Map technical keys to friendly names
             friendly_names = {
                 'trinity': 'Trinity Strategy',
@@ -2232,7 +2042,7 @@ class PostgreSQLDatabase:
                 'get_rich_stay_rich': 'Get Rich Stay Rich',
                 'custom': 'Custom Strategy' # Fallback if name missing
             }
-            
+
             top_strategies = []
             for row in top_rows:
                 raw_name = row['strategy_identifier']
@@ -2240,19 +2050,17 @@ class PostgreSQLDatabase:
                 if display_name == raw_name and '_' in display_name:
                      display_name = display_name.replace('_', ' ').title()
                 top_strategies.append({'strategy_name': display_name, 'count': row['count']})
-            
+
             return {
                 'total_simulations': total_sims,
                 'total_strategies': total_strategies,
                 'total_years_simulated': total_years,
                 'top_strategies': top_strategies
             }
-            
+
         except Exception as e:
             logging.error(f"Failed to get community stats: {e}", exc_info=True)
             return {'total_simulations': 0, 'total_strategies': 0, 'top_strategies': [], 'total_years_simulated': 0}
-        finally:
-            self.release_connection(conn)
 
     def cleanup_old_simulations(self, days_to_keep=30):
         """Clean up old simulations (placeholder)."""
@@ -2321,43 +2129,37 @@ class PostgreSQLDatabase:
     @log_db_call
     def get_job_by_id(self, job_id):
         """Get job details by ID."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute("SELECT * FROM BACKGROUND_JOBS WHERE id = %s", (job_id,))
-            job = cursor.fetchone()
-            
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute("SELECT * FROM BACKGROUND_JOBS WHERE id = %s", (job_id,))
+                job = cursor.fetchone()
+
             if job:
                 # Deserialize JSON columns
                 job['payload'] = self.deserialize_json_column(job.get('payload'))
                 job['result'] = self.deserialize_json_column(job.get('result'))
-            
+
             return job
         except Exception as e:
             logging.error(f"Failed to get job {job_id}: {e}", exc_info=True)
             return None
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_job_by_idempotency_key(self, idempotency_key):
         """Get job by idempotency key (for duplicate prevention)."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute("SELECT * FROM BACKGROUND_JOBS WHERE idempotency_key = %s", (idempotency_key,))
-            job = cursor.fetchone()
-            
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute("SELECT * FROM BACKGROUND_JOBS WHERE idempotency_key = %s", (idempotency_key,))
+                job = cursor.fetchone()
+
             if job:
                 job['payload'] = self.deserialize_json_column(job.get('payload'))
                 job['result'] = self.deserialize_json_column(job.get('result'))
-            
+
             return job
         except Exception as e:
             logging.error(f"Failed to get job by idempotency_key: {e}", exc_info=True)
             return None
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def fetch_and_lock_job(self, worker_id):
@@ -2373,45 +2175,41 @@ class PostgreSQLDatabase:
         Returns:
             dict: Job data, or None if no jobs available
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            
-            # CRITICAL: FOR UPDATE SKIP LOCKED is the magic that allows concurrent workers
-            cursor.execute("""
-                UPDATE BACKGROUND_JOBS
-                SET
-                    status = 'PROCESSING',
-                    started_at = CURRENT_TIMESTAMP,
-                    heartbeat_at = CURRENT_TIMESTAMP,
-                    worker_id = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = (
-                    SELECT id FROM BACKGROUND_JOBS
-                    WHERE status = 'PENDING'
-                      AND scheduled_at <= CURRENT_TIMESTAMP
-                    ORDER BY priority DESC, created_at ASC
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT 1
-                )
-                RETURNING *
-            """, (worker_id,))
-            
-            job = cursor.fetchone()
-            conn.commit()
-            
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor) as cursor:
+                # CRITICAL: FOR UPDATE SKIP LOCKED is the magic that allows concurrent workers
+                cursor.execute("""
+                    UPDATE BACKGROUND_JOBS
+                    SET
+                        status = 'PROCESSING',
+                        started_at = CURRENT_TIMESTAMP,
+                        heartbeat_at = CURRENT_TIMESTAMP,
+                        worker_id = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = (
+                        SELECT id FROM BACKGROUND_JOBS
+                        WHERE status = 'PENDING'
+                          AND scheduled_at <= CURRENT_TIMESTAMP
+                        ORDER BY priority DESC, created_at ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                    )
+                    RETURNING *
+                """, (worker_id,))
+
+                job = cursor.fetchone()
+
+            # Post-commit, as before: the claim is durable even if
+            # deserialization/logging below were to fail.
             if job:
                 # Deserialize JSON columns
                 job['payload'] = self.deserialize_json_column(job.get('payload'))
                 logging.info(f"Worker {worker_id} claimed job {job['id']}: {job['job_type']}")
-            
+
             return job
         except Exception as e:
             logging.error(f"Failed to fetch job for worker {worker_id}: {e}", exc_info=True)
-            conn.rollback()
             return None
-        finally:
-            self.release_connection(conn)
     
     # Terminal job transitions are fenced: they only apply while the job is
     # still PROCESSING and (when a worker_id is given) still owned by that
@@ -2434,21 +2232,19 @@ class PostgreSQLDatabase:
         Returns:
             bool: True if the job row was updated (claim still held).
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(f"""
-                UPDATE BACKGROUND_JOBS
-                SET
-                    status = 'COMPLETED',
-                    result = %(result)s,
-                    completed_at = CURRENT_TIMESTAMP,
-                    processing_time_ms = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)) * 1000
-                WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
-            """, {'result': json.dumps(_sanitize_for_json(result)),
-                  'job_id': job_id, 'worker_id': worker_id})
-            updated = cursor.rowcount > 0
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute(f"""
+                    UPDATE BACKGROUND_JOBS
+                    SET
+                        status = 'COMPLETED',
+                        result = %(result)s,
+                        completed_at = CURRENT_TIMESTAMP,
+                        processing_time_ms = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)) * 1000
+                    WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
+                """, {'result': json.dumps(_sanitize_for_json(result)),
+                      'job_id': job_id, 'worker_id': worker_id})
+                updated = cursor.rowcount > 0
             if updated:
                 logging.info(f"Job {job_id} completed successfully")
             else:
@@ -2458,10 +2254,7 @@ class PostgreSQLDatabase:
             return updated
         except Exception as e:
             logging.error(f"Failed to mark job {job_id} as completed: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def fail_job(self, job_id, error_message, worker_id=None):
@@ -2476,19 +2269,17 @@ class PostgreSQLDatabase:
         Returns:
             bool: True if the job row was updated (claim still held).
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(f"""
-                UPDATE BACKGROUND_JOBS
-                SET
-                    status = 'FAILED',
-                    error_message = %(error)s,
-                    completed_at = CURRENT_TIMESTAMP
-                WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
-            """, {'error': error_message, 'job_id': job_id, 'worker_id': worker_id})
-            updated = cursor.rowcount > 0
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute(f"""
+                    UPDATE BACKGROUND_JOBS
+                    SET
+                        status = 'FAILED',
+                        error_message = %(error)s,
+                        completed_at = CURRENT_TIMESTAMP
+                    WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
+                """, {'error': error_message, 'job_id': job_id, 'worker_id': worker_id})
+                updated = cursor.rowcount > 0
             if updated:
                 logging.error(f"Job {job_id} failed permanently: {error_message}")
             else:
@@ -2498,10 +2289,7 @@ class PostgreSQLDatabase:
             return updated
         except Exception as e:
             logging.error(f"Failed to mark job {job_id} as failed: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def drop_all_tables(self):
@@ -2509,23 +2297,18 @@ class PostgreSQLDatabase:
         DANGER: Drops all tables in the public schema.
         Used for system hard reset.
         """
-        conn = self.get_connection()
         try:
-            cursor = conn.cursor()
-            # PostgreSQL specific: Drop schema and recreate it
-            # This is cleaner than dropping individual tables
-            cursor.execute("DROP SCHEMA public CASCADE;")
-            cursor.execute("CREATE SCHEMA public;")
-            cursor.execute("GRANT ALL ON SCHEMA public TO public;")
-            cursor.execute("GRANT ALL ON SCHEMA public TO CURRENT_USER;")
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                # PostgreSQL specific: Drop schema and recreate it
+                # This is cleaner than dropping individual tables
+                cursor.execute("DROP SCHEMA public CASCADE;")
+                cursor.execute("CREATE SCHEMA public;")
+                cursor.execute("GRANT ALL ON SCHEMA public TO public;")
+                cursor.execute("GRANT ALL ON SCHEMA public TO CURRENT_USER;")
             logging.warning("🔥🔥🔥 FULL DATABASE WIPE COMPLETED (DROP SCHEMA public) 🔥🔥🔥")
         except Exception as e:
-            conn.rollback()
             logging.error(f"Failed to wipe database: {e}")
             raise e
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def retry_job(self, job_id, error_message, scheduled_at, worker_id=None):
@@ -2541,24 +2324,22 @@ class PostgreSQLDatabase:
         Returns:
             bool: True if the job row was updated (claim still held).
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute(f"""
-                UPDATE BACKGROUND_JOBS
-                SET
-                    status = 'PENDING',
-                    retry_count = retry_count + 1,
-                    error_message = %(error)s,
-                    scheduled_at = to_timestamp(%(scheduled_at)s),
-                    started_at = NULL,
-                    heartbeat_at = NULL,
-                    worker_id = NULL
-                WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
-            """, {'error': error_message, 'scheduled_at': scheduled_at,
-                  'job_id': job_id, 'worker_id': worker_id})
-            updated = cursor.rowcount > 0
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute(f"""
+                    UPDATE BACKGROUND_JOBS
+                    SET
+                        status = 'PENDING',
+                        retry_count = retry_count + 1,
+                        error_message = %(error)s,
+                        scheduled_at = to_timestamp(%(scheduled_at)s),
+                        started_at = NULL,
+                        heartbeat_at = NULL,
+                        worker_id = NULL
+                    WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
+                """, {'error': error_message, 'scheduled_at': scheduled_at,
+                      'job_id': job_id, 'worker_id': worker_id})
+                updated = cursor.rowcount > 0
             if updated:
                 logging.warning(f"Job {job_id} scheduled for retry: {error_message}")
             else:
@@ -2568,10 +2349,7 @@ class PostgreSQLDatabase:
             return updated
         except Exception as e:
             logging.error(f"Failed to retry job {job_id}: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def heartbeat_job(self, job_id, worker_id):
@@ -2584,23 +2362,18 @@ class PostgreSQLDatabase:
             complete/fail will be fenced out, so the job is effectively
             running for nothing.
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                UPDATE BACKGROUND_JOBS
-                SET heartbeat_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND worker_id = %s AND status = 'PROCESSING'
-            """, (job_id, worker_id))
-            beat = cursor.rowcount > 0
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("""
+                    UPDATE BACKGROUND_JOBS
+                    SET heartbeat_at = CURRENT_TIMESTAMP
+                    WHERE id = %s AND worker_id = %s AND status = 'PROCESSING'
+                """, (job_id, worker_id))
+                beat = cursor.rowcount > 0
             return beat
         except Exception as e:
             logging.error(f"Heartbeat failed for job {job_id}: {e}", exc_info=True)
-            conn.rollback()
             return False
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def update_job_status(self, job_id, status, error_message=None):
@@ -2612,24 +2385,19 @@ class PostgreSQLDatabase:
             status: New status ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')
             error_message: Optional error message (None to clear)
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                UPDATE BACKGROUND_JOBS
-                SET 
-                    status = %s,
-                    error_message = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-            """, (status, error_message, job_id))
-            conn.commit()
+            with self._connection_cursor() as cursor:
+                cursor.execute("""
+                    UPDATE BACKGROUND_JOBS
+                    SET
+                        status = %s,
+                        error_message = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (status, error_message, job_id))
             logging.info(f"Job {job_id} status updated to {status}")
         except Exception as e:
             logging.error(f"Failed to update job {job_id} status: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def reset_stale_jobs(self, heartbeat_timeout_seconds=300):
@@ -2655,31 +2423,29 @@ class PostgreSQLDatabase:
         Returns:
             int: Number of jobs recovered
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                UPDATE BACKGROUND_JOBS
-                SET
-                    status = 'PENDING',
-                    started_at = NULL,
-                    heartbeat_at = NULL,
-                    worker_id = NULL,
-                    error_message = 'Recovered: worker stopped heartbeating'
-                WHERE status = 'PROCESSING'
-                  AND (
-                    (heartbeat_at IS NOT NULL
-                     AND heartbeat_at < CURRENT_TIMESTAMP - make_interval(secs => %s))
-                    OR
-                    (heartbeat_at IS NULL
-                     AND started_at < CURRENT_TIMESTAMP
-                         - make_interval(secs => COALESCE(timeout_seconds, 900)))
-                  )
-                RETURNING id
-            """, (heartbeat_timeout_seconds,))
+            with self._connection_cursor() as cursor:
+                cursor.execute("""
+                    UPDATE BACKGROUND_JOBS
+                    SET
+                        status = 'PENDING',
+                        started_at = NULL,
+                        heartbeat_at = NULL,
+                        worker_id = NULL,
+                        error_message = 'Recovered: worker stopped heartbeating'
+                    WHERE status = 'PROCESSING'
+                      AND (
+                        (heartbeat_at IS NOT NULL
+                         AND heartbeat_at < CURRENT_TIMESTAMP - make_interval(secs => %s))
+                        OR
+                        (heartbeat_at IS NULL
+                         AND started_at < CURRENT_TIMESTAMP
+                             - make_interval(secs => COALESCE(timeout_seconds, 900)))
+                      )
+                    RETURNING id
+                """, (heartbeat_timeout_seconds,))
 
-            recovered_ids = [row[0] for row in cursor.fetchall()]
-            conn.commit()
+                recovered_ids = [row[0] for row in cursor.fetchall()]
 
             if recovered_ids:
                 logging.warning(f"Recovered {len(recovered_ids)} stale jobs: {recovered_ids}")
@@ -2687,10 +2453,7 @@ class PostgreSQLDatabase:
             return len(recovered_ids)
         except Exception as e:
             logging.error(f"Failed to reset stale jobs: {e}", exc_info=True)
-            conn.rollback()
             return 0
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def fail_timed_out_jobs(self, heartbeat_timeout_seconds=300, default_timeout_seconds=900):
@@ -2704,27 +2467,25 @@ class PostgreSQLDatabase:
         Returns:
             int: Number of jobs failed
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-            cursor.execute("""
-                UPDATE BACKGROUND_JOBS
-                SET
-                    status = 'FAILED',
-                    completed_at = CURRENT_TIMESTAMP,
-                    error_message = 'Job exceeded its timeout ('
-                        || COALESCE(timeout_seconds, %s)::text || 's) while still running'
-                WHERE status = 'PROCESSING'
-                  AND started_at < CURRENT_TIMESTAMP
-                      - make_interval(secs => COALESCE(timeout_seconds, %s))
-                  AND COALESCE(heartbeat_at, started_at)
-                      >= CURRENT_TIMESTAMP - make_interval(secs => %s)
-                RETURNING id
-            """, (default_timeout_seconds, default_timeout_seconds,
-                  heartbeat_timeout_seconds))
+            with self._connection_cursor() as cursor:
+                cursor.execute("""
+                    UPDATE BACKGROUND_JOBS
+                    SET
+                        status = 'FAILED',
+                        completed_at = CURRENT_TIMESTAMP,
+                        error_message = 'Job exceeded its timeout ('
+                            || COALESCE(timeout_seconds, %s)::text || 's) while still running'
+                    WHERE status = 'PROCESSING'
+                      AND started_at < CURRENT_TIMESTAMP
+                          - make_interval(secs => COALESCE(timeout_seconds, %s))
+                      AND COALESCE(heartbeat_at, started_at)
+                          >= CURRENT_TIMESTAMP - make_interval(secs => %s)
+                    RETURNING id
+                """, (default_timeout_seconds, default_timeout_seconds,
+                      heartbeat_timeout_seconds))
 
-            failed_ids = [row[0] for row in cursor.fetchall()]
-            conn.commit()
+                failed_ids = [row[0] for row in cursor.fetchall()]
 
             if failed_ids:
                 logging.warning(f"Failed {len(failed_ids)} timed-out jobs: {failed_ids}")
@@ -2732,30 +2493,24 @@ class PostgreSQLDatabase:
             return len(failed_ids)
         except Exception as e:
             logging.error(f"Failed to fail timed-out jobs: {e}", exc_info=True)
-            conn.rollback()
             return 0
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_user_jobs(self, user_id, limit=50):
         """Get recent jobs for a user (for admin/debugging)."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute("""
-                SELECT id, job_type, status, priority, created_at, completed_at, error_message
-                FROM BACKGROUND_JOBS
-                WHERE user_id = %s
-                ORDER BY created_at DESC
-                LIMIT %s
-            """, (user_id, limit))
-            return cursor.fetchall()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute("""
+                    SELECT id, job_type, status, priority, created_at, completed_at, error_message
+                    FROM BACKGROUND_JOBS
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (user_id, limit))
+                return cursor.fetchall()
         except Exception as e:
             logging.error(f"Failed to get user jobs: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def get_jobs(self, job_type=None, status=None, limit=50):
@@ -2770,56 +2525,49 @@ class PostgreSQLDatabase:
         Returns:
             List of job dictionaries
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            
-            query = "SELECT * FROM BACKGROUND_JOBS WHERE 1=1"
-            params = []
-            
-            if job_type:
-                query += " AND job_type = %s"
-                params.append(job_type)
-            
-            if status:
-                query += " AND status = %s"
-                params.append(status)
-                
-            query += " ORDER BY created_at DESC LIMIT %s"
-            params.append(limit)
-            
-            cursor.execute(query, tuple(params))
-            return cursor.fetchall()
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                query = "SELECT * FROM BACKGROUND_JOBS WHERE 1=1"
+                params = []
+
+                if job_type:
+                    query += " AND job_type = %s"
+                    params.append(job_type)
+
+                if status:
+                    query += " AND status = %s"
+                    params.append(status)
+
+                query += " ORDER BY created_at DESC LIMIT %s"
+                params.append(limit)
+
+                cursor.execute(query, tuple(params))
+                return cursor.fetchall()
         except Exception as e:
             logging.error(f"Failed to list jobs: {e}", exc_info=True)
             return []
-        finally:
-            self.release_connection(conn)
 
     @log_db_call
     def get_queue_stats(self):
         """Get job queue statistics (for monitoring)."""
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn, cursor_factory=extras.RealDictCursor)
-            cursor.execute("""
-                SELECT 
-                    status,
-                    COUNT(*) as count,
-                    AVG(CASE WHEN processing_time_ms IS NOT NULL THEN processing_time_ms ELSE NULL END) as avg_processing_ms
-                FROM BACKGROUND_JOBS
-                WHERE created_at > CURRENT_TIMESTAMP -  INTERVAL '24 hours'
-                GROUP BY status
-            """)
-            rows = cursor.fetchall()
-            
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute("""
+                    SELECT
+                        status,
+                        COUNT(*) as count,
+                        AVG(CASE WHEN processing_time_ms IS NOT NULL THEN processing_time_ms ELSE NULL END) as avg_processing_ms
+                    FROM BACKGROUND_JOBS
+                    WHERE created_at > CURRENT_TIMESTAMP -  INTERVAL '24 hours'
+                    GROUP BY status
+                """)
+                rows = cursor.fetchall()
+
             stats = {row['status']: {'count': row['count'], 'avg_ms': row['avg_processing_ms']} for row in rows}
             return stats
         except Exception as e:
             logging.error(f"Failed to get queue stats: {e}", exc_info=True)
             return {}
-        finally:
-            self.release_connection(conn)
     
     @log_db_call
     def update_job_progress(self, job_id, progress_value, progress_message=None, worker_id=None):
@@ -2836,40 +2584,33 @@ class PostgreSQLDatabase:
             progress_message: Optional status message
             worker_id: When given, only applies if this worker still owns the job.
         """
-        conn = self.get_connection()
         try:
-            cursor = self._get_cursor(conn)
-
-            # Update progress in payload JSONB field
-            if progress_message:
-                cursor.execute(f"""
-                    UPDATE BACKGROUND_JOBS
-                    SET payload = jsonb_set(
-                        jsonb_set(payload, '{{progress_value}}', %(value)s::jsonb),
-                        '{{progress_message}}', %(message)s::jsonb
-                    ),
-                    heartbeat_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
-                """, {'value': json.dumps(progress_value),
-                      'message': json.dumps(progress_message),
-                      'job_id': job_id, 'worker_id': worker_id})
-            else:
-                cursor.execute(f"""
-                    UPDATE BACKGROUND_JOBS
-                    SET payload = jsonb_set(payload, '{{progress_value}}', %(value)s::jsonb),
+            with self._connection_cursor() as cursor:
+                # Update progress in payload JSONB field
+                if progress_message:
+                    cursor.execute(f"""
+                        UPDATE BACKGROUND_JOBS
+                        SET payload = jsonb_set(
+                            jsonb_set(payload, '{{progress_value}}', %(value)s::jsonb),
+                            '{{progress_message}}', %(message)s::jsonb
+                        ),
                         heartbeat_at = CURRENT_TIMESTAMP,
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
-                """, {'value': json.dumps(progress_value),
-                      'job_id': job_id, 'worker_id': worker_id})
-            
-            conn.commit()
+                        WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
+                    """, {'value': json.dumps(progress_value),
+                          'message': json.dumps(progress_message),
+                          'job_id': job_id, 'worker_id': worker_id})
+                else:
+                    cursor.execute(f"""
+                        UPDATE BACKGROUND_JOBS
+                        SET payload = jsonb_set(payload, '{{progress_value}}', %(value)s::jsonb),
+                            heartbeat_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %(job_id)s {self._JOB_OWNER_FENCE}
+                    """, {'value': json.dumps(progress_value),
+                          'job_id': job_id, 'worker_id': worker_id})
         except Exception as e:
             logging.error(f"Failed to update job progress: {e}", exc_info=True)
-            conn.rollback()
-        finally:
-            self.release_connection(conn)
 
     def __del__(self):
         """Clean up pool."""
