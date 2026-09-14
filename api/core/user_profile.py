@@ -70,7 +70,7 @@ class UserProfileService:
                 FROM USERS u
                 LEFT JOIN USER_SETTINGS s ON u.id = s.user_id 
                 AND (s.setting_key = 'default_currency' OR s.setting_key IS NULL)
-                WHERE u.id = ?
+                WHERE u.id = %s
                 LIMIT 1
             """
             
@@ -79,7 +79,7 @@ class UserProfileService:
             
             if not row:
                 # Fallback: Just get user data if join failed completely
-                cursor.execute("SELECT name, email, plan_tier FROM USERS WHERE id = ?", (user_id,))
+                cursor.execute("SELECT name, email, plan_tier FROM USERS WHERE id = %s", (user_id,))
                 user_row = cursor.fetchone()
                 if user_row:
                     return {
@@ -140,11 +140,11 @@ class UserProfileService:
             
             # 2. Execute updates for USERS table
             if users_updates:
-                set_clause = ", ".join([f"{col} = ?" for col in users_updates.keys()])
+                set_clause = ", ".join([f"{col} = %s" for col in users_updates.keys()])
                 values = list(users_updates.values())
                 values.append(user_id)
-                
-                sql = f"UPDATE USERS SET {set_clause} WHERE id = ?"
+
+                sql = f"UPDATE USERS SET {set_clause} WHERE id = %s"
                 cursor.execute(sql, values)
                 
             # 3. Execute updates for USER_SETTINGS table (Upsert logic)
@@ -163,8 +163,8 @@ class UserProfileService:
                     currency = settings_updates['default_currency']
                     cursor.execute("""
                         UPDATE USER_SETTINGS 
-                        SET default_currency = ?, setting_value = ?, updated_at = CURRENT_TIMESTAMP 
-                        WHERE user_id = ? AND setting_key = 'default_currency'
+                        SET default_currency = %s, setting_value = %s, updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = %s AND setting_key = 'default_currency'
                     """, (currency, currency, user_id))
                     
                     if cursor.rowcount == 0:
@@ -172,7 +172,7 @@ class UserProfileService:
                         # We also populate default_currency column to maintain hybrid compatibility
                         cursor.execute("""
                             INSERT INTO USER_SETTINGS (user_id, setting_key, setting_value, default_currency, updated_at)
-                            VALUES (?, 'default_currency', ?, ?, CURRENT_TIMESTAMP)
+                            VALUES (%s, 'default_currency', %s, %s, CURRENT_TIMESTAMP)
                         """, (user_id, currency, currency))
 
             conn.commit()

@@ -6,7 +6,6 @@ import json
 import logging
 from datetime import datetime
 from db.postgresql_db import PostgreSQLDatabase
-from db.queries import SQLiteQueries
 import pandas as pd
 import random
 
@@ -208,18 +207,10 @@ class TestPostgreSQLFull:
         # Verify in DB directly (bypass Streamlit cache)
         conn = db.get_connection()
         try:
-            cursor = conn.cursor() # Wrapper returns wrapper
-            # Use internal cursor for raw access or just use wrapper
+            cursor = conn.cursor()  # plain psycopg2 cursor (tuple rows)
             cursor.execute("SELECT is_removed FROM USER_SIMULATION_HISTORY WHERE id = %s", (sim_id,))
             row = cursor.fetchone()
             assert row is not None
-            # row is tuple (is_removed,) or dict? 
-            # Wrapper delegates everything. Default cursor is tuple.
-            # But get_connection usually has default cursor factory? 
-            # get_cursor in db class sets factory.
-            # Here we called conn.cursor(). Default psycopg2 is tuple.
-            # But PostgreSQLConnection.cursor delegates to _conn.cursor.
-            # So it returns tuple.
             assert row[0] is True
         finally:
             db.release_connection(conn)

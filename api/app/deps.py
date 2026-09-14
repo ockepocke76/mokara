@@ -43,7 +43,8 @@ def get_current_user(
     return {'email': x_user_email, 'name': x_user_name, 'id': user_id}
 
 
-def require_user(user: Optional[dict] = None) -> dict:
+def require_user(user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """Auth gate: usable as a Depends() or called directly with a user dict."""
     if user is None:
         raise HTTPException(status_code=401, detail="authentication required")
     return user

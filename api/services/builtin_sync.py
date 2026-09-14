@@ -1,19 +1,17 @@
 """
 Built-in Strategy Synchronization Module
 
-Syncs built-in strategies (Trinity, BBD, GRSR) from Python code to:
-1. CUSTOM_STRATEGIES table (user_id=0)
-2. Git repository (strategies/builtin/* branches)
+Syncs built-in strategies (Trinity, BBD, GRSR) from Python code to the
+CUSTOM_STRATEGIES table (user_id=0), identified by a content-hash SHA
+(stored in the legacy git_commit_sha column).
 
 This enables unified architecture where all strategies use the same
-Git-based lineage tracking and evolution history.
+lineage tracking and evolution history.
 """
 
 import logging
 import inspect
-import json
 from typing import Dict, List, Tuple, Optional
-from datetime import datetime, timezone
 
 from core.strategy import TrinityStrategy, BuyBorrowDieStrategy
 from core.strategy_get_rich_stay_rich import GetRichStayRichStrategy
@@ -63,34 +61,17 @@ def extract_strategy_code(strategy_class) -> str:
     return inspect.getsource(strategy_class)
 
 
-def create_metadata_json(strategy_info: dict, commit_sha: str) -> str:
-    """Create metadata.json content for a built-in strategy."""
-    metadata = {
-        'strategy_name': strategy_info['name'],
-        'strategy_key': strategy_info['key'],
-        'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-        'is_builtin': True,
-        'parent_strategy_id': None,
-        'evolution_history': [],
-        'git_commit_sha': commit_sha,
-        'description': strategy_info['description']
-    }
-    return json.dumps(metadata, indent=2)
-
-
 def sync_builtin_strategy(
     strategy_info: dict,
-    git_service,
     db,
     force_update: bool = False
 ) -> Tuple[str, str, str]:
     """
-    Sync a single built-in strategy to Git and database.
+    Sync a single built-in strategy to the database, identified by a
+    content-hash SHA (the DB is the authoritative store).
 
     Args:
         strategy_info: Dict with 'key', 'name', 'class', 'description'
-        git_service: GitHubService instance, or None to sync DB-only with a
-            local content-hash SHA (mokara runs without the GitHub repo)
         db: Database instance
         force_update: Force update even if code matches
 
@@ -130,47 +111,11 @@ def sync_builtin_strategy(
             if existing_code == code and existing_description == description:
                 return ('skipped', strategy_name, f'Code unchanged (SHA: {existing_sha[:7] if existing_sha else "N/A"})')
         
-        # 4-7. Git branch + commits — or a local content-hash SHA when no
-        # git service is configured (mokara: DB is the source of truth).
-        if git_service is None:
-            from utils.strategy_utils import calculate_strategy_hash
-            branch_name = None
-            commit_sha = calculate_strategy_hash(code, {})
-        else:
-            branch_name = f"strategies/builtin/{strategy_key}"
+        # 4. Local content-hash SHA (the DB is the source of truth)
+        from utils.strategy_utils import calculate_strategy_hash
+        commit_sha = calculate_strategy_hash(code, {})
 
-            try:
-                # Branch from main instead of empty-template
-                branch_info = git_service.create_branch(branch_name, from_branch='main')
-                if branch_info.get('already_exists'):
-                    logging.info(f"Branch exists: {branch_name}")
-                else:
-                    logging.info(f"Created branch: {branch_name}")
-            except Exception as e:
-                logging.warning(f"Branch creation warning: {e}")
-                # Branch might already exist, continue
-
-            # 5. Commit strategy.py to Git
-            commit_sha = git_service.commit_file(
-                branch_name=branch_name,
-                file_path='strategy.py',
-                content=code,
-                message=f"Sync built-in strategy: {strategy_name}"
-            )
-            logging.info(f"Committed strategy.py: {commit_sha[:7]}")
-
-            # 6. Create metadata.json
-            metadata_content = create_metadata_json(strategy_info, commit_sha)
-
-            # 7. Commit metadata.json
-            git_service.commit_file(
-                branch_name=branch_name,
-                file_path='metadata.json',
-                content=metadata_content,
-                message=f"Update metadata for {strategy_name}"
-            )
-
-        # 8. Save to database
+        # 5. Save to database
         conn = db.get_connection()
         try:
             cursor = conn.cursor()
@@ -180,24 +125,23 @@ def sync_builtin_strategy(
                 cursor.execute("""
                     UPDATE CUSTOM_STRATEGIES
                     SET code = %s,
-                        git_branch_name = COALESCE(%s, git_branch_name),
                         git_commit_sha = %s,
                         description = %s,
                         ai_description = %s,
                         validation_status = 'validated',
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
-                """, (code, branch_name, commit_sha, description, description, existing[0]))
+                """, (code, commit_sha, description, description, existing[0]))
                 status = 'updated'
                 message = f'Updated (SHA: {commit_sha[:7]})'
             else:
                 # Insert new
                 cursor.execute("""
-                    INSERT INTO CUSTOM_STRATEGIES 
-                    (user_id, strategy_name, class_name, description, ai_description, code, git_branch_name, git_commit_sha, 
+                    INSERT INTO CUSTOM_STRATEGIES
+                    (user_id, strategy_name, class_name, description, ai_description, code, git_commit_sha,
                      is_public, validation_status, created_at, updated_at)
-                    VALUES (0, %s, %s, %s, %s, %s, %s, %s, TRUE, 'validated', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (strategy_name, strategy_class.__name__, description, description, code, branch_name, commit_sha))
+                    VALUES (0, %s, %s, %s, %s, %s, %s, TRUE, 'validated', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, (strategy_name, strategy_class.__name__, description, description, code, commit_sha))
                 status = 'success'
                 message = f'Created (SHA: {commit_sha[:7]})'
             
@@ -214,15 +158,14 @@ def sync_builtin_strategy(
         return ('error', strategy_name, str(e))
 
 
-def sync_all_builtins(git_service, db, force_update: bool = False) -> List[Tuple[str, str, str]]:
+def sync_all_builtins(db, force_update: bool = False) -> List[Tuple[str, str, str]]:
     """
     Sync all built-in strategies.
-    
+
     Args:
-        git_service: GitHubService instance
         db: Database instance
         force_update: Force update even if code matches
-    
+
     Returns:
         List of (status, strategy_name, message) tuples
     """
@@ -249,7 +192,7 @@ def sync_all_builtins(git_service, db, force_update: bool = False) -> List[Tuple
     # Sync each built-in strategy
     results = []
     for strategy_info in BUILTIN_STRATEGIES:
-        result = sync_builtin_strategy(strategy_info, git_service, db, force_update)
+        result = sync_builtin_strategy(strategy_info, db, force_update)
         results.append(result)
     
     return results

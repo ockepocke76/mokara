@@ -45,16 +45,30 @@ def set_user_context_provider(provider) -> None:
     _user_context_provider = provider
 
 
+def _config_value(path: str, default):
+    """Read a nested config.yml value ('section.key' -> its 'value' field).
+
+    The old code imported the nonexistent core.config_manager and did a
+    dotted-string dict .get — both broken, so every flag silently read as
+    its default. This does what was always intended.
+    """
+    try:
+        from config import CONFIG
+        node = CONFIG
+        for part in path.split('.'):
+            node = node[part]
+        if isinstance(node, dict) and 'value' in node:
+            node = node['value']
+        return node
+    except Exception:
+        return default
+
+
 def _is_perf_enabled():
     """Check if performance logging is enabled via config."""
     global _perf_enabled_cache
     if _perf_enabled_cache is None:
-        try:
-            from core.config_manager import CONFIG
-            _perf_enabled_cache = CONFIG.get('admin.enable_performance_logging', False)
-        except Exception:
-            # Default to disabled if config can't be loaded
-            _perf_enabled_cache = False
+        _perf_enabled_cache = _config_value('admin.enable_performance_logging', False)
     return _perf_enabled_cache
 
 
@@ -62,11 +76,7 @@ def _is_memory_tracking_enabled():
     """Check if memory tracking is enabled."""
     global _memory_tracking_enabled
     if _memory_tracking_enabled is None:
-        try:
-            from core.config_manager import CONFIG
-            _memory_tracking_enabled = CONFIG.get('monitoring.enable_memory_tracking', False)
-        except Exception:
-            _memory_tracking_enabled = False
+        _memory_tracking_enabled = _config_value('monitoring.enable_memory_tracking', False)
     return _memory_tracking_enabled
 
 
@@ -84,15 +94,6 @@ def _get_memory_usage() -> Optional[float]:
     except Exception as e:
         logger.debug(f"Failed to get memory usage: {e}")
         return None
-
-
-def _export_to_cloud_monitoring(metric_type: str, value: float, labels: Optional[Dict[str, str]] = None):
-    """Export metric to Cloud Monitoring if enabled."""
-    try:
-        from monitoring.cloud_monitoring import export_metric
-        export_metric(metric_type, value, labels)
-    except Exception as e:
-        logger.debug(f"Failed to export metric to Cloud Monitoring: {e}")
 
 
 def _get_user_context() -> Dict[str, str]:
@@ -185,12 +186,6 @@ def TimingContext(operation_name: str, log_level: int = logging.INFO, log_start:
         
         logger.log(log_level, log_msg)
         
-        # Export to Cloud Monitoring if requested
-        if export_to_cloud and metric_type:
-            export_labels = labels or {}
-            export_labels['operation'] = operation_name
-            _export_to_cloud_monitoring(metric_type, elapsed_ms, export_labels)
-            
     except Exception as e:
         elapsed = time.time() - start_time
         logger.log(log_level, f"PERF_TIMING: {operation_name}: {elapsed:.3f}s (FAILED: {e})")
@@ -222,11 +217,6 @@ def PageLoadTracker(page_name: str, log_level: int = logging.INFO):
         
         logger.log(log_level, f"PERF_TIMING: PAGE_LOAD: {page_name}: {elapsed:.3f}s")
         
-        # Always export page load metrics to Cloud Monitoring
-        labels = _get_user_context()
-        labels['page'] = page_name
-        _export_to_cloud_monitoring('page_load_time', elapsed_ms, labels)
-        
     except Exception as e:
         elapsed = time.time() - start_time
         logger.log(log_level, f"PERF_TIMING: PAGE_LOAD: {page_name}: {elapsed:.3f}s (FAILED: {e})")
@@ -255,16 +245,9 @@ def DatabaseQueryTracker(operation_name: str, query_type: Optional[str] = None):
         
         logger.info(f"PERF_TIMING: DB_QUERY: {operation_name}: {elapsed:.3f}s")
         
-        # Export to Cloud Monitoring
-        labels = {'operation': operation_name}
-        if query_type:
-            labels['query_type'] = query_type
-        _export_to_cloud_monitoring('db_query_time', elapsed_ms, labels)
-        
         # Log slow queries
         try:
-            from core.config_manager import CONFIG
-            slow_threshold = CONFIG.get('monitoring.slow_query_threshold', 1.0)
+            slow_threshold = _config_value('monitoring.slow_query_threshold', 1.0)
             if elapsed > slow_threshold:
                 logger.warning(f"SLOW_QUERY: {operation_name} took {elapsed:.3f}s (threshold: {slow_threshold}s)")
         except Exception:
@@ -279,14 +262,14 @@ def DatabaseQueryTracker(operation_name: str, query_type: Optional[str] = None):
 @contextmanager
 def ComponentRenderTracker(component_name: str):
     """
-    Specialized tracker for Streamlit component rendering.
-    
+    Tracker for expensive render/build steps (charts, report sections).
+
     Args:
-        component_name: Name of the component being rendered
-    
+        component_name: Name of the component being built
+
     Example:
         with ComponentRenderTracker("simulation_card"):
-            st.plotly_chart(fig)
+            build_preview_figure()
     """
     start_time = time.time()
     
@@ -297,11 +280,6 @@ def ComponentRenderTracker(component_name: str):
         
         if _is_perf_enabled():
             logger.debug(f"PERF_TIMING: COMPONENT: {component_name}: {elapsed:.3f}s")
-        
-        # Export to Cloud Monitoring
-        labels = {'component': component_name}
-        labels.update(_get_user_context())
-        _export_to_cloud_monitoring('component_render_time', elapsed_ms, labels)
         
     except Exception as e:
         elapsed = time.time() - start_time
@@ -344,11 +322,6 @@ class PerformanceTracker:
         
         logger.info(f"PERF_TIMING: {self.operation_name}.{name}: +{elapsed_from_last:.3f}s (total: {total_elapsed:.3f}s)")
         
-        # Optionally export each checkpoint
-        if self.export_checkpoints:
-            labels = {'operation': self.operation_name, 'checkpoint': name}
-            _export_to_cloud_monitoring('component_render_time', elapsed_from_last * 1000, labels)
-    
     def log_summary(self):
         """Log a summary of all checkpoints."""
         total = time.time() - self.start_time

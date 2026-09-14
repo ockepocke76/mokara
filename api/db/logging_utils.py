@@ -65,17 +65,6 @@ def log_db_call(func: Callable) -> Callable:
             _call_counts[method_name] = _call_counts.get(method_name, 0) + 1
             _total_time[method_name] = _total_time.get(method_name, 0) + elapsed_ms
             
-            # Export to Cloud Monitoring
-            try:
-                from monitoring.cloud_monitoring import export_metric
-                labels = {
-                    'operation': method_name,
-                    'query_type': _guess_query_type(method_name)
-                }
-                export_metric('db_query_time', elapsed_ms, labels)
-            except Exception:
-                pass  # Silently fail if Cloud Monitoring unavailable
-            
             # Log completion
             if elapsed_ms > DB_SLOW_QUERY_MS:
                 logging.warning(
@@ -93,22 +82,6 @@ def log_db_call(func: Callable) -> Callable:
             raise
     
     return wrapper
-
-
-def _guess_query_type(method_name: str) -> str:
-    """Guess SQL operation type from method name."""
-    method_lower = method_name.lower()
-    if any(x in method_lower for x in ['get', 'fetch', 'check', 'load', 'retrieve']):
-        return 'SELECT'
-    elif any(x in method_lower for x in ['save', 'add', 'insert', 'create']):
-        return 'INSERT'
-    elif any(x in method_lower for x in ['update', 'modify', 'edit']):
-        return 'UPDATE'
-    elif any(x in method_lower for x in ['delete', 'remove']):
-        return 'DELETE'
-    else:
-        return 'UNKNOWN'
-
 
 
 def _sanitize_args(args: tuple) -> tuple:

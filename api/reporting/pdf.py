@@ -43,53 +43,6 @@ def _create_settings_table(data, title="Settings"):
 """DEPRECATED - code below kept for reference only
 Old implementation replaced by reporting.pdf_tables.create_styled_info_table()
 """
-def _create_settings_table_old(data, title="Settings"):
-    """Helper function to create a styled table for settings with professional formatting."""
-    import logging
-    from reportlab.lib.styles import getSampleStyleSheet
-    
-    styles = getSampleStyleSheet()
-    
-    # Validate data before creating table
-    if not data:
-        logging.warning("Attempted to create settings table with empty data")
-        return Spacer(1, 0)  # Return empty spacer instead of creating table
-    
-    # Ensure all rows have exactly 2 columns and wrap text in Paragraphs for line breaking
-    validated_data = []
-    for i, row in enumerate(data):
-        if not isinstance(row, (list, tuple)) or len(row) != 2:
-            logging.warning(f"Row {i} has invalid format: {row}")
-            continue
-        # Wrap each cell in a Paragraph for proper text wrapping
-        # Use <b> tag for first column to make it bold
-        label = Paragraph(f'<b>{str(row[0])}</b>', styles['Normal'])
-        value = Paragraph(str(row[1]), styles['Normal'])
-        validated_data.append([label, value])
-    
-    if not validated_data:
-        logging.warning("No valid rows after validation")
-        return Spacer(1, 0)
-    
-    # Add title header row with white text
-    title_para = Paragraph(f'<b><font color="white">{title}</font></b>', styles['Normal'])
-    table_data = [[title_para, ""]] + validated_data
-    
-    table = Table(table_data, colWidths=[3.0 * inch, 2.8 * inch])
-    style = TableStyle([
-        ('SPAN', (0, 0), (1, 0)),  # Span the title across two columns
-        ('BACKGROUND', (0, 0), (1, 0), DARK_BLUE),
-        ('TEXTCOLOR', (0, 0), (1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),  # Align to top for multi-line cells
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),  # Bold for the first column (title)
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-    ])
-    table.setStyle(style)
-    return table
-
 def _create_summary_table(data, title):
     """Legacy function - redirects to generalized table creator."""
     from reporting.pdf_tables import create_styled_info_table
@@ -690,7 +643,7 @@ def generate_pdf_report(params, input_plot_buffers, output_plot_buffers, output_
         canvas.saveState()
         canvas.setFont(body_font, 9)
         canvas.setFillColor(DARK_GRAY)
-        canvas.drawString(inch, 0.75 * inch, f"MyMonteCarlo - Financial Simulation & Strategy Report | Page {doc.page}")
+        canvas.drawString(inch, 0.75 * inch, f"Mokara - Financial Simulation & Strategy Report | Page {doc.page}")
         canvas.drawRightString(doc.width + doc.leftMargin, 0.75 * inch, "Strictly Private and Confidential")
         canvas.setStrokeColor(DARK_BLUE)
         canvas.setLineWidth(2)
