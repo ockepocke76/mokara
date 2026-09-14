@@ -27,6 +27,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { usePdfDownload } from "@/hooks/use-pdf-download";
 
 export type HistoryItem = {
   history_id: number;
@@ -45,52 +46,20 @@ export type HistoryItem = {
   median_final_net_worth?: number | null;
 };
 
-type PdfState = "idle" | "working" | "ready" | "error";
-
 export function SimulationCard({ item }: { item: HistoryItem }) {
   const router = useRouter();
-  const [pdf, setPdf] = useState<PdfState>("idle");
   const [deleting, setDeleting] = useState(false);
   const [preview, setPreview] = useState<SimPreview | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
 
   const hash = item.simulation_hash;
+  const { status: pdf, start: generatePdf } = usePdfDownload(hash);
 
   async function loadPreview() {
     if (preview || previewFailed) return;
     const res = await fetch(`/api/bff/simulations/${hash}/preview`);
     if (res.ok) setPreview(await res.json());
     else setPreviewFailed(true);
-  }
-
-  async function generatePdf() {
-    setPdf("working");
-    const res = await fetch(`/api/bff/simulations/${hash}/pdf`, {
-      method: "POST",
-    });
-    if (!res.ok) {
-      setPdf("error");
-      return;
-    }
-    for (let i = 0; i < 120; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      const s = await fetch(`/api/bff/simulations/${hash}/pdf/status`);
-      if (!s.ok) continue;
-      const body = await s.json();
-      if (body.pdf_status === "ready") {
-        setPdf("ready");
-        const a = document.createElement("a");
-        a.href = `/api/bff/simulations/${hash}/pdf`;
-        a.download = "";
-        a.click();
-        return;
-      }
-      if (body.pdf_status === "failed") {
-        setPdf("error");
-        return;
-      }
-    }
-    setPdf("error");
   }
 
   async function remove() {
