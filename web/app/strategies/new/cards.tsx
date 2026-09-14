@@ -404,21 +404,38 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
   const taxes = num(s.backtest_total_taxes);
   const fees = num(s.backtest_total_fees);
   const costs = taxes !== null || fees !== null ? (taxes ?? 0) + (fees ?? 0) : null;
-  const peakDebt = num(s.max_debt_across_paths);
-  const flowTiles = [
+  // Highest debt across every shipped path, backtest included — the summary
+  // stat covers random paths only, which would contradict the debt chart.
+  const pathPeakDebt = paths
+    .flatMap((p) => p.debt ?? [])
+    .reduce<number | null>((m, v) => (typeof v === "number" && (m === null || v > m) ? v : m), null);
+  const peakDebt = pathPeakDebt ?? num(s.max_debt_across_paths);
+  // A zero tile is noise, not a finding — every tile requires a positive value.
+  const backtestTiles = [
     contributed !== null && contributed > 0
       ? { label: "Total contributed", value: fmtCompact.format(contributed) }
       : null,
     withdrawn !== null && withdrawn > 0
       ? { label: "Total withdrawn", value: fmtCompact.format(withdrawn) }
       : null,
-    costs !== null
+    costs !== null && costs > 0
       ? { label: "Taxes & fees paid", value: fmtCompact.format(costs) }
       : null,
-    peakDebt !== null
-      ? { label: "Peak debt", value: fmtCompact.format(peakDebt) }
+  ].filter((t) => t !== null);
+  const flowTiles = [
+    ...backtestTiles,
+    ...(peakDebt !== null && peakDebt > 0
+      ? [{ label: "Peak debt", value: fmtCompact.format(peakDebt) }]
+      : []),
+  ];
+  const flowCaption = [
+    backtestTiles.length ? "Cash totals are from the historical backtest." : null,
+    peakDebt !== null && peakDebt > 0
+      ? "Peak debt is the highest debt reached across all test paths."
       : null,
-  ].filter((t): t is { label: string; value: string } => t !== null);
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const cashFlowBars = backtest
     ? [
@@ -480,10 +497,7 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
                 <StatTile key={t.label} label={t.label} value={t.value} />
               ))}
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Cash totals are from the historical backtest; peak debt is the
-              highest debt reached across all test paths.
-            </p>
+            <p className="mt-1 text-xs text-muted-foreground">{flowCaption}</p>
           </div>
         )}
         {!hasExtras ? (
@@ -510,8 +524,8 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
                 backtestColor="rgb(255,127,14)"
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                Thin lines are the simulated markets; the thick line is the
-                historical backtest.
+                Thin lines are the simulated markets
+                {backtest ? "; the thick line is the historical backtest" : ""}.
               </p>
             </TabsContent>
             <TabsContent value="balance" className="mt-2">
@@ -561,13 +575,19 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
                 </>
               ) : (
                 <p className="py-6 text-center text-xs text-muted-foreground">
-                  No contributions or withdrawals occurred on the backtest path.
+                  {backtest
+                    ? "No contributions or withdrawals occurred on the backtest path."
+                    : "This run produced no historical backtest path to chart cash flows from."}
                 </p>
               )}
             </TabsContent>
           </Tabs>
         )}
-        {hasExtras && !!paths.length && <YearByYearTable paths={paths} />}
+        {hasExtras && !!paths.length && (
+          // Re-key on the path list shape so a re-run with a different path
+          // count (e.g. a missing backtest) resets the stale selection.
+          <YearByYearTable key={paths.length} paths={paths} />
+        )}
         {baseline && (
           <p className="text-xs text-muted-foreground">
             On the exact same {test.num_paths ?? 10} markets,{" "}

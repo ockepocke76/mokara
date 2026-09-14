@@ -55,9 +55,15 @@ def test_happy_path_to_review_then_save():
     backtests = [p for p in artifact['paths'] if p.get('is_backtest')]
     assert len(random_paths) == 10
     assert len(backtests) == 1
-    for series in ('net_worth', 'asset_value', 'debt', 'cash',
-                   'contributed', 'withdrawn'):
-        assert len(artifact['paths'][0][series]) == len(artifact['paths'][0]['years'])
+    for path in (artifact['paths'][0], backtests[0]):
+        for series in ('net_worth', 'asset_value', 'debt', 'cash',
+                       'contributed', 'withdrawn'):
+            values = path[series]
+            assert len(values) == len(path['years'])
+            # An engine column rename would yield all-None series of the right
+            # length — require real numbers, not just the right shape.
+            if series in ('net_worth', 'asset_value'):
+                assert any(v is not None for v in values)
 
     runner.resume_run(run_id, {'kind': 'review', 'action': 'save'})
     run = sg.get_run(run_id)

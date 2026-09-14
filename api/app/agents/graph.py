@@ -256,7 +256,8 @@ def _round_finite(v):
     # loop entirely. Map non-finite to None instead.
     try:
         return round(v) if math.isfinite(v) else None
-    except TypeError:
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: math.isfinite raises on ints too large for a float.
         return None
 
 
@@ -359,14 +360,16 @@ def test_sim(state: GenState, config) -> dict:
                 'rework_reason': 'the strategy crashed during the test simulation',
                 'rework_feedback': f"The test simulation failed at runtime:\n{result.get('error')}"}
 
+    # The condensed per-path series go only into the emitted artifact (the
+    # UI's copy) — keeping them out of graph state avoids re-checkpointing
+    # ~20 KB nothing downstream reads on every later superstep.
     test_result = {'summary_stats': _sanitize(result['summary_stats']),
-                   'paths': _sanitize(_condense_paths(result)),
                    'num_paths': TEST_PATHS, 'num_years': TEST_YEARS,
                    'test_capital': capital['initial_investment'],
                    'worst_path_trace': _worst_path_trace(result)}
     _emit(state, 'stage_completed', stage='test_flight',
           artifact={'summary_stats': test_result['summary_stats'],
-                    'paths': test_result['paths'],
+                    'paths': _sanitize(_condense_paths(result)),
                     'baseline': baseline or None,
                     'num_paths': TEST_PATHS, 'num_years': TEST_YEARS})
     return {'test_result': test_result, 'baseline_result': baseline}
