@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { apiFetch, getViewer } from "@/lib/api";
+import { apiFetch, getViewer, assertViewerFresh } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,6 +31,7 @@ type ActiveRun = {
 
 export default async function StrategiesPage() {
   const viewer = await getViewer();
+  assertViewerFresh(viewer);
 
   if (!viewer.authenticated) {
     return (

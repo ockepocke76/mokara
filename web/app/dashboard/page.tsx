@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 
-import { apiFetch, getViewer } from "@/lib/api";
+import { apiFetch, getViewer, assertViewerFresh } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Accordion,
@@ -48,6 +48,7 @@ async function fetchPreviews(
 
 export default async function DashboardPage() {
   const [viewer, homeRes] = await Promise.all([getViewer(), apiFetch("/home")]);
+  assertViewerFresh(viewer);
   const home: HomeData = await homeRes.json();
   const previews = await fetchPreviews(home.recent_simulations);
 

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
-import { apiFetch, getViewer } from "@/lib/api";
+import { apiFetch, getViewer, assertViewerFresh } from "@/lib/api";
 import { SignInGate } from "@/components/sign-in-gate";
 
 import { StrategyDetail } from "./strategy-detail";
@@ -18,6 +18,7 @@ export default async function StrategyPage({
   const { id } = await params;
   const { evaluate } = await searchParams;
   const viewer = await getViewer();
+  assertViewerFresh(viewer);
 
   if (!viewer.authenticated) {
     return <SignInGate message="Sign in to view strategies." />;

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { apiFetch, getViewer } from "@/lib/api";
+import { apiFetch, getViewer, assertViewerFresh } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { InfoBox } from "@/components/info-box";
 import { SignInGate } from "@/components/sign-in-gate";
@@ -11,6 +11,7 @@ export const metadata: Metadata = { title: "My Simulations" };
 
 export default async function SimulationsPage() {
   const viewer = await getViewer();
+  assertViewerFresh(viewer);
 
   if (!viewer.authenticated) {
     return (

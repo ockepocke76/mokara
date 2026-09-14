@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { apiFetch, getViewer } from "@/lib/api";
+import { apiFetch, getViewer, assertViewerFresh } from "@/lib/api";
 import { SignInGate } from "@/components/sign-in-gate";
 
 import { Designer } from "./designer";
@@ -14,6 +14,7 @@ export default async function NewStrategyPage({
 }) {
   const { seed, run } = await searchParams;
   const viewer = await getViewer();
+  assertViewerFresh(viewer);
 
   if (!viewer.authenticated) {
     return (

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { getViewer } from "@/lib/api";
+import { getViewer, assertViewerFresh } from "@/lib/api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   Card,
@@ -17,6 +17,7 @@ export const metadata: Metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
   const viewer = await getViewer();
+  assertViewerFresh(viewer);
 
   if (!viewer.authenticated) {
     return <SignInGate title="⚙️ Settings & Profile" />;

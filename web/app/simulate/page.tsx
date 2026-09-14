@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { apiFetch, getViewer } from "@/lib/api";
+import { apiFetch, getViewer, assertViewerFresh } from "@/lib/api";
 import type { ParamSchema } from "@/lib/param-types";
 import { SignInGate } from "@/components/sign-in-gate";
 import { SimulateForm } from "./simulate-form";
@@ -13,6 +13,7 @@ export default async function SimulatePage() {
     apiFetch("/config/params"),
   ]);
   const schema: ParamSchema = await schemaRes.json();
+  assertViewerFresh(viewer);
 
   if (!viewer.authenticated) {
     return (
