@@ -358,6 +358,8 @@ def strategy_history(strategy_id: int,
             })
         genesis = next((r['request'] for r in runs if r['kind'] == 'create'), None)
 
+    # previous_code snapshots stay server-side (revert material, not UI) —
+    # the DB strips them unless include_code=True is asked for.
     history = db.get_strategy_evolution_history(strategy_id) or []
     return {
         'history': [_stringify_dates(dict(h)) for h in history],
@@ -473,6 +475,7 @@ def generate_strategy(body: GenerateRequest,
         if not seed.get('code'):
             raise HTTPException(status_code=422, detail="Seed strategy has no code")
         seed_strategy = {'id': seed['id'], 'strategy_name': seed['strategy_name'],
+                         'class_name': seed.get('class_name'),
                          'description': seed.get('description'),
                          'ai_description': seed.get('ai_description'),
                          'code': seed['code']}

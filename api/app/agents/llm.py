@@ -136,7 +136,48 @@ def fake_llm_call(prompt: str, tier: str = 'fast', json_mode: bool = False) -> s
                             "options": ["3%", "4%", "5%"]}] if wants_clarify else []),
         })
     if task == 'revise_spec':
+        if '"change_scope"' in prompt:
+            return fake_llm_call("TASK: evolve_spec\n(no ???)", tier, json_mode)
         return fake_llm_call("TASK: extract_spec\n(no ???)", tier, json_mode)
+    if task == 'evolve_spec':
+        wants_clarify = '???' in prompt
+        # 'completely' in the request marks a structural rebuild in tests.
+        structural = 'completely' in prompt
+        return json.dumps({
+            "summary": "Change the withdrawal rate default from 4% to 5%.",
+            "category": "WITHDRAWAL_ONLY",
+            "changes": ["default of withdrawal_rate: 0.04 -> 0.05"],
+            "change_scope": "structural" if structural else "parameter_only",
+            "mechanics": ["Invest everything at the start.",
+                          "Withdraw a fixed percentage of the initial portfolio each year.",
+                          "Adjust the withdrawal for inflation every year."],
+            "assumptions": [],
+            "constraints": [],
+            "proposed_parameters": [{"name": "withdrawal_rate", "default": 0.05,
+                                     "description": "Annual withdrawal rate"}],
+            "needs_clarification": wants_clarify,
+            "questions": ([{"question": "Which default do you want?",
+                            "options": ["0.05", "0.045"]}] if wants_clarify else []),
+        })
+    if task == 'evolve_plan':
+        return json.dumps({
+            "edits": [{"target": "parameters",
+                       "change": "change the withdrawal_rate default from 0.04 to 0.05"}],
+            "rules": ["Invest 100% of the starting cash into the asset in year 0.",
+                      "Each year, withdraw the initial portfolio value times the withdrawal rate, adjusted for inflation.",
+                      "Fund withdrawals by selling assets; never borrow."],
+            "parameters": [{"name": "withdrawal_rate", "default": 0.05, "min": 0.01,
+                            "max": 0.10, "description": "Annual withdrawal rate"}],
+            "test_initial_investment": 1000000,
+            "self_check": "The single edit covers the single requested change."})
+    if task == 'evolve_generate':
+        # A faithful minimal edit: the seed code (the prompt's first python
+        # fence) with only the default changed.
+        seed = prompt.split("```python", 1)[1].split("```", 1)[0]
+        edited = seed.replace("'default': 0.04", "'default': 0.05").strip()
+        return ("<description>Withdraws a fixed, inflation-adjusted 5% of the "
+                "initial portfolio every year, funded by selling assets.</description>\n"
+                f"```python\n{edited}\n```")
     if task == 'plan':
         return json.dumps({
             "rules": ["Invest 100% of the starting cash into the asset in year 0.",

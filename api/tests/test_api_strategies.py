@@ -272,7 +272,10 @@ def test_history_records_evolution():
     r = client.get(f"/strategies/{strategy_id}/history", headers=headers)
     body = r.json()
     assert len(body["history"]) == 1
-    assert body["history"][0]["request"] == "make the withdrawal rate 5%"
+    # An evolve refine folds the follow-up into the recorded request, so the
+    # timeline carries the full ask, not just the opening message.
+    assert body["history"][0]["request"].startswith("make the withdrawal rate 5%")
+    assert "round the withdrawal to whole dollars" in body["history"][0]["request"]
     assert body["history"][0]["timestamp"]
     runs = body["runs"]
     assert [x["kind"] for x in runs] == ["create", "evolve"]

@@ -142,6 +142,7 @@ def start_run(user_id: int, user_request: str, strategy_name: str | None = None,
             'seed_description': (seed_strategy.get('ai_description')
                                  or seed_strategy.get('description')),
             'seed_code': seed_strategy.get('code'),
+            'seed_class_name': seed_strategy.get('class_name'),
         })
         # Evolve keeps the seed's name — save updates that strategy in place.
         if not initial_state['strategy_name']:
