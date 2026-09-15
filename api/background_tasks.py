@@ -454,6 +454,11 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
     
     Works with both multiprocessing (process_key) and threading (thread_key).
     """
+    # Figures from several reporting modules run in this pipeline; make
+    # sure the config-driven default template is installed first (it used
+    # to be an import side effect of interactive_plotting).
+    from reporting.interactive_plotting import ensure_plotly_template
+    ensure_plotly_template()
     # Import pandas at top of function to avoid UnboundLocalError
     import pandas as pd
     import os
@@ -1175,6 +1180,11 @@ def _generate_pdf_for_simulation(simulation_hash):
     Returns:
         BytesIO buffer containing the PDF
     """
+    # Figures from several reporting modules run in this pipeline; make
+    # sure the config-driven default template is installed first (it used
+    # to be an import side effect of interactive_plotting).
+    from reporting.interactive_plotting import ensure_plotly_template
+    ensure_plotly_template()
     from reporting.pdf import generate_pdf_report
     from reporting.content import INPUT_DATA_PLOT_ORDER, SIMULATION_PLOT_ORDER
     from reporting.components import prepare_example_path_table
