@@ -7,6 +7,7 @@
  */
 import "server-only";
 
+import { cache } from "react";
 import { headers } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
 import { NextResponse } from "next/server";
@@ -101,8 +102,11 @@ export function assertViewerFresh(viewer: Viewer): void {
  * anonymous viewer shape instead of throwing, so public pages render
  * logged-out during an API outage. Pages that require auth still gate
  * correctly, since the fallback is unauthenticated (and not admin/allowed).
+ *
+ * Wrapped in React cache() so the root layout and page components share one
+ * /me fetch (and one session lookup) per request instead of repeating it.
  */
-export async function getViewer(): Promise<Viewer> {
+export const getViewer = cache(async (): Promise<Viewer> => {
   try {
     const res = await apiFetch("/me");
     if (!res.ok) return anonymousViewer();
@@ -114,4 +118,4 @@ export async function getViewer(): Promise<Viewer> {
     unstable_rethrow(e);
     return anonymousViewer();
   }
-}
+});

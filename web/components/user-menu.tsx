@@ -17,18 +17,20 @@ export function UserMenu({
   name,
   email,
   isAdmin = false,
+  className,
 }: {
   name: string;
   email: string;
   isAdmin?: boolean;
+  className?: string;
 }) {
   const router = useRouter();
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm">
-          {name}
+        <Button variant="outline" size="sm" className={className}>
+          <span className="truncate">{name}</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
