@@ -81,15 +81,7 @@ def _spec_schema() -> str:
 }"""
 
 
-def spec_prompt(user_request: str, seed_name: str | None = None,
-                seed_description: str | None = None, seed_code: str | None = None) -> str:
-    seed_block = ""
-    if seed_code:
-        seed_block = (f"\nThe user is EVOLVING an existing strategy named "
-                      f"'{seed_name}'. Its description: {seed_description}\n"
-                      f"Its current code:\n```python\n{seed_code}\n```\n"
-                      "Interpret the request as a change to this strategy; carry over its "
-                      "mechanics except where the request changes them.\n")
+def spec_prompt(user_request: str) -> str:
     return f"""TASK: extract_spec
 You turn a user's free-text request for a portfolio simulation strategy into a
 structured spec. Be faithful to what they wrote; do not invent goals.
@@ -98,12 +90,61 @@ Set needs_clarification=true ONLY if the request is genuinely ambiguous on a
 point that changes the strategy's structure (at most 3 questions, each with
 concrete options). A merely underspecified detail gets a sensible default
 recorded under assumptions instead.
-{seed_block}
+
 User request:
 \"\"\"{user_request}\"\"\"
 
 Respond with JSON matching:
 {_spec_schema()}"""
+
+
+def _evolve_spec_schema() -> str:
+    return """{
+  "summary": "one-sentence restatement of the requested CHANGE",
+  "category": "WITHDRAWAL_ONLY | CONTRIBUTION_ONLY | HYBRID — the current code's evaluation_category() unless a change alters it",
+  "changes": ["each specific requested modification, atomic and precise (e.g. 'default of starting_assets: 100 -> 50')"],
+  "change_scope": "parameter_only | behavioral | structural",
+  "mechanics": ["the strategy's mechanics AFTER the change — read from the current code, altered only where a change applies"],
+  "assumptions": ["anything you had to assume because the request did not say"],
+  "constraints": ["hard constraints visible in the current code plus any new ones the request states"],
+  "proposed_parameters": [{"name": "snake_case_name", "default": 0.0, "description": "the existing parameters with only the requested changes applied"}],
+  "needs_clarification": false,
+  "questions": [{"question": "...", "options": ["...", "..."]}]
+}"""
+
+
+def evolve_spec_prompt(user_request: str, seed_name: str | None,
+                       seed_description: str | None, seed_code: str) -> str:
+    return f"""TASK: evolve_spec
+An existing, validated strategy is being EVOLVED: the user asked for a
+specific change to it, NOT for a new strategy. Extract exactly WHAT changes;
+everything else stays as it is in the current code.
+
+The strategy: '{seed_name}'. Its description: {seed_description}
+Its current code (the ground truth for mechanics and parameters):
+```python
+{seed_code}
+```
+
+change_scope definitions — pick the NARROWEST scope that honors the request:
+- parameter_only: only values/defaults/ranges of EXISTING parameters change;
+  no logic changes, no parameters added, removed, or renamed.
+- behavioral: logic changes (rules, triggers, formulas), possibly adding or
+  removing a parameter — but the strategy's core approach survives.
+- structural: the request replaces the core approach; the strategy will be
+  redesigned from scratch.
+
+Do not invent improvements the user did not ask for. In proposed_parameters,
+list the current code's parameters verbatim except where a change applies.
+
+Set needs_clarification=true ONLY if the requested change is genuinely
+ambiguous (at most 3 questions, each with concrete options).
+
+User request:
+\"\"\"{user_request}\"\"\"
+
+Respond with JSON matching:
+{_evolve_spec_schema()}"""
 
 
 def revise_spec_prompt(spec: dict, questions: list, answers: dict) -> str:
@@ -118,8 +159,8 @@ Current spec:
 Questions asked: {json.dumps(questions)}
 User answers: {json.dumps(answers)}
 
-Respond with JSON matching:
-{_spec_schema()}"""
+Respond with the full updated spec as a JSON object with exactly the same
+fields as the current spec."""
 
 
 def plan_prompt(spec: dict, examples_block: str) -> str:
@@ -146,6 +187,80 @@ Respond with JSON:
   "test_initial_investment": 1000000,
   "self_check": "one sentence confirming every spec mechanic maps to a rule, or naming what is missing"
 }}"""
+
+
+def evolve_plan_prompt(spec: dict, seed_code: str) -> str:
+    return f"""TASK: evolve_plan
+Plan the edits for evolving an existing, validated strategy. The outcome of
+this plan is a MINIMAL modification of the current code — not a new design.
+Never rename, add, or remove a parameter, and never touch a mechanic, unless
+a requested change explicitly calls for it.
+
+Requested changes:
+{json.dumps(spec.get('changes', []), indent=2)}
+
+Current code (the ground truth being edited):
+```python
+{seed_code}
+```
+{ENGINE_MECHANICS}
+The engine rules above are context for the edits — NEVER a reason to
+restructure existing validated code beyond the requested changes.
+
+Also choose test_initial_investment: the starting capital the 30-year smoke
+test should run with so the CHANGED behavior can actually be observed (an
+accumulation-from-income strategy needs a small start, a withdrawal strategy
+a funded portfolio).
+
+Respond with JSON:
+{{
+  "edits": ["each precise edit: name the method or property and exactly what changes in it"],
+  "rules": ["the strategy's full blueprint AFTER the edits: numbered plain-language rules restating the CURRENT code's behavior, altered only where an edit applies — the final code is reviewed against these"],
+  "parameters": [{{"name": "...", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "description": "the current code's parameters verbatim except where an edit changes them"}}],
+  "test_initial_investment": 1000000,
+  "self_check": "one sentence confirming the edits cover every requested change and nothing else"
+}}"""
+
+
+def evolve_generate_prompt(spec: dict, plan: dict, seed_code: str, class_name: str,
+                           feedback: str | None = None,
+                           prior_code: str | None = None) -> str:
+    feedback_block = ""
+    if feedback:
+        feedback_block = (f"\n## Fix this previous attempt\n"
+                          f"The previous edit attempt produced:\n"
+                          f"```python\n{prior_code}\n```\n"
+                          f"What went wrong:\n{feedback}\n"
+                          "Correct it with the SAME minimal-edit discipline: the result must\n"
+                          "still be the original code plus only the planned edits. Produce the\n"
+                          "complete corrected class (not a diff).\n")
+    return f"""TASK: evolve_generate
+You are EDITING an existing, working strategy class — not writing a new one.
+Apply ONLY the planned edits to the current code below. Every line the edits
+do not touch must be preserved verbatim: same class name ('{class_name}'),
+same parameter names and defaults, same logic, same helper methods, same
+comments. Do not restructure, rename, reformat, or "improve" anything the
+edits do not require. Return the complete modified class.
+
+Current code (the base you are editing):
+```python
+{seed_code}
+```
+
+Planned edits:
+{json.dumps(plan.get('edits', []), indent=2)}
+
+Requested changes (for context):
+{json.dumps(spec.get('changes', []), indent=2)}
+
+{strategy_api_docs()}
+{ENGINE_MECHANICS}
+The engine rules above are context for the edits — NEVER a reason to change
+existing validated code beyond the planned edits.
+{SANDBOX_RULES}
+{COMMON_MISTAKES}
+{feedback_block}
+{OUTPUT_FORMAT}"""
 
 
 def generate_prompt(spec: dict, plan: dict, examples_block: str, class_name: str,
@@ -178,13 +293,22 @@ Spec (for context):
 {OUTPUT_FORMAT}"""
 
 
-def static_review_prompt(code: str, plan: dict, spec: dict) -> str:
+def static_review_prompt(code: str, plan: dict, spec: dict,
+                         seed_code: str | None = None) -> str:
+    evolution_block = ""
+    if seed_code:
+        evolution_block = (f"\nThis code is an EVOLUTION of an existing strategy. "
+                           f"Requested changes:\n{json.dumps(spec.get('changes', []), indent=2)}\n"
+                           f"Original code before the change:\n```python\n{seed_code}\n```\n"
+                           "Additionally flag as issues any UNREQUESTED differences: original "
+                           "mechanics, parameters, or defaults that were dropped or altered "
+                           "with no requested change calling for it.\n")
     return f"""TASK: static_review
 Review this strategy code against its blueprint. For each rule, decide whether
 the code actually implements it (not whether it compiles — a separate check
 handles that). Also flag spec constraints the code violates and parameters
 declared but never read.
-{ENGINE_MECHANICS}
+{evolution_block}{ENGINE_MECHANICS}
 Judge blueprint rules THROUGH the engine's division of labor: a rule about
 paying interest, fees, or taxes is implemented by borrowing/holding assets at
 all — the engine charges those costs. Never fail a rule because the code does
@@ -211,11 +335,24 @@ Respond with JSON:
 def analyze_prompt(spec: dict, plan: dict, summary_stats: dict,
                    baseline_stats: dict | None, baseline_name: str | None,
                    worst_path_trace: list[dict],
-                   test_capital: float | None = None) -> str:
+                   test_capital: float | None = None,
+                   evolution: dict | None = None) -> str:
     baseline_block = "No baseline comparison was run."
     if baseline_stats:
         baseline_block = (f"Baseline ('{baseline_name}', same market paths): "
                           f"{json.dumps(baseline_stats)}")
+    evolution_block = ""
+    if evolution:
+        evolution_block = (
+            f"\nThis run EVOLVED the existing strategy '{evolution.get('seed_name')}'. "
+            f"Requested changes:\n{json.dumps(evolution.get('changes', []), indent=2)}\n"
+            "The baseline above IS the pre-change version of this strategy, run on "
+            "identical market paths. Judge conformance as: (1) the requested change "
+            "is reflected in the observed behavior where these test conditions can "
+            "show it; (2) behavior the change does not touch tracks the pre-change "
+            "baseline — a large divergence the requested change cannot explain is a "
+            "mismatch. The explanation you write describes the strategy as it now "
+            "is, not the change.\n")
     capital_block = ""
     if test_capital is not None:
         capital_block = (f"\nTest conditions: every path starts with "
@@ -226,7 +363,7 @@ def analyze_prompt(spec: dict, plan: dict, summary_stats: dict,
                          f"correctly, not prematurely.\n")
     return f"""TASK: analyze
 A quick smoke test (10 simulated markets) ran for a newly generated strategy.
-{capital_block}
+{capital_block}{evolution_block}
 Judge ONE thing: does the observed behavior match the spec and blueprint?
 Performance is NOT your verdict — a faithful strategy with poor numbers still
 conforms; report the numbers neutrally and let the user decide. Never use

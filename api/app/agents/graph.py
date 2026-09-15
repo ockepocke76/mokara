@@ -7,6 +7,13 @@ One graph serves create AND evolve (evolve = seed_* fields set). Shape:
       -> static_review -> test_sim -> analyze -> review -> save
   with any failed rung routing through rework (bounded) back to generate.
 
+Evolve runs the same shape through evolve-specific prompts: the spec is a
+CHANGE spec (changes + change_scope), plan produces an edit list against the
+seed code, generate edits the seed class in place (same class name), validate
+adds a deterministic minimal-diff check, and the test flight's paired baseline
+is the seed itself. A change the spec judges 'structural' falls back to the
+create prompts (still saved into the seed row).
+
 Hard rules from the design doc:
 - The rework loop triggers on SPEC MISMATCH or broken code only. Faithful-but-
   underperforming results go to the user at review — never silent stat-chasing.
@@ -54,6 +61,7 @@ class GenState(TypedDict, total=False):
     seed_name: Optional[str]
     seed_description: Optional[str]
     seed_code: Optional[str]
+    seed_class_name: Optional[str]
     seed: int  # RNG seed for the paired test sims
 
     spec: dict
@@ -117,12 +125,23 @@ def _sanitize(value):
 
 # --- Nodes -----------------------------------------------------------------
 
+def _minimal_evolution(state: GenState) -> bool:
+    """Evolve runs edit the seed code in place — except when the spec judged
+    the request structural (a redesign), which falls back to the full create
+    pipeline (still saved into the seed row)."""
+    return bool(state.get('seed_code')) and \
+        (state.get('spec') or {}).get('change_scope') != 'structural'
+
+
 def extract_spec(state: GenState, config) -> dict:
     _emit(state, 'stage_started', stage='understanding')
-    spec, calls = _llm(state, config, prompts.spec_prompt(
-        state['user_request'], seed_name=state.get('seed_name'),
-        seed_description=state.get('seed_description'),
-        seed_code=state.get('seed_code')), tier='fast')
+    if state.get('seed_code'):
+        prompt = prompts.evolve_spec_prompt(
+            state['user_request'], state.get('seed_name'),
+            state.get('seed_description'), state['seed_code'])
+    else:
+        prompt = prompts.spec_prompt(state['user_request'])
+    spec, calls = _llm(state, config, prompt, tier='fast')
     name = state.get('strategy_name') or spec.get('suggested_name') or 'Custom Strategy'
     update = {'spec': spec, 'llm_calls': calls, 'strategy_name': name,
               'clarify_questions': spec.get('questions') or []}
@@ -165,21 +184,38 @@ def _fetch_examples(state: GenState) -> list[dict]:
 
 def retrieve(state: GenState, config) -> dict:
     _emit(state, 'stage_started', stage='examples')
-    meta = [{'name': e['name'], 'source': e['source'], 'score': e.get('score')}
-            for e in _fetch_examples(state)]
+    if _minimal_evolution(state):
+        # An edit's only reference is the seed itself — other strategies' code
+        # would pull the generator toward their style and away from a minimal
+        # diff.
+        meta = [{'name': state.get('seed_name') or 'Current version',
+                 'source': 'seed', 'score': None}]
+    else:
+        meta = [{'name': e['name'], 'source': e['source'], 'score': e.get('score')}
+                for e in _fetch_examples(state)]
     _emit(state, 'stage_completed', stage='examples', artifact={'examples': meta})
     return {'examples_meta': meta}
 
 
 def plan(state: GenState, config) -> dict:
     _emit(state, 'stage_started', stage='blueprint')
-    examples_block = prompts.format_examples_block(_fetch_examples(state))
-    plan_obj, calls = _llm(state, config,
-                           prompts.plan_prompt(state['spec'], examples_block),
-                           tier='strong')
+    if _minimal_evolution(state):
+        prompt = prompts.evolve_plan_prompt(state['spec'], state['seed_code'])
+    else:
+        examples_block = prompts.format_examples_block(_fetch_examples(state))
+        prompt = prompts.plan_prompt(state['spec'], examples_block)
+    plan_obj, calls = _llm(state, config, prompt, tier='strong')
     sg.update_run(state['run_id'], llm_calls=calls)
     _emit(state, 'stage_completed', stage='blueprint', artifact={'plan': plan_obj})
     return {'plan': plan_obj, 'llm_calls': calls}
+
+
+def _evolution_diff(seed_code: str, code: str) -> str:
+    import difflib
+
+    return '\n'.join(difflib.unified_diff(
+        seed_code.splitlines(), code.splitlines(),
+        fromfile='before', tofile='after', lineterm=''))
 
 
 def generate(state: GenState, config) -> dict:
@@ -188,23 +224,68 @@ def generate(state: GenState, config) -> dict:
     attempt = state.get('attempts', 0) + state.get('revisions', 0)
     if attempt == 0:
         _emit(state, 'stage_started', stage='code')
-    class_name = _slugify_to_classname(state['strategy_name']) or 'CustomStrategy'
-    if not class_name.isidentifier():
-        class_name = 'S' + class_name  # slugs can start with a digit ("4% Rule" -> "4Rule")
-    examples_block = prompts.format_examples_block(_fetch_examples(state))
-    text, calls = _llm(state, config, prompts.generate_prompt(
-        state['spec'], state['plan'], examples_block, class_name,
-        feedback=state.get('rework_feedback'), prior_code=state.get('code')),
-        tier='strong', json_mode=False)
+    evolving = _minimal_evolution(state)
+    # An edit keeps the seed's class name — re-slugifying would alone force a
+    # "new" class out of an unchanged strategy.
+    class_name = (state.get('seed_class_name') or '') if evolving else ''
+    if not class_name or not class_name.isidentifier():
+        class_name = _slugify_to_classname(state['strategy_name']) or 'CustomStrategy'
+        if not class_name.isidentifier():
+            class_name = 'S' + class_name  # slugs can start with a digit ("4% Rule" -> "4Rule")
+    if evolving:
+        prompt = prompts.evolve_generate_prompt(
+            state['spec'], state['plan'], state['seed_code'], class_name,
+            feedback=state.get('rework_feedback'), prior_code=state.get('code'))
+    else:
+        examples_block = prompts.format_examples_block(_fetch_examples(state))
+        prompt = prompts.generate_prompt(
+            state['spec'], state['plan'], examples_block, class_name,
+            feedback=state.get('rework_feedback'), prior_code=state.get('code'))
+    text, calls = _llm(state, config, prompt, tier='strong', json_mode=False)
     description, code = extract_description_and_code(text)
     sg.update_run(state['run_id'], llm_calls=calls)
-    _emit(state, 'stage_completed', stage='code',
-          artifact={'code': code, 'description': description, 'class_name': class_name,
-                    'is_evolution': bool(state.get('seed_code'))})
+    artifact = {'code': code, 'description': description, 'class_name': class_name,
+                'is_evolution': bool(state.get('seed_code'))}
+    if state.get('seed_code'):
+        artifact['diff'] = _evolution_diff(state['seed_code'], code)
+    _emit(state, 'stage_completed', stage='code', artifact=artifact)
     return {'code': code, 'description': description, 'class_name': class_name,
             'llm_calls': calls, 'rework_feedback': None,
             'static_review': {}, 'test_result': {},
             'baseline_result': {}, 'analyze': {}}
+
+
+def _evolution_fidelity(state: GenState, parameters: dict) -> Optional[str]:
+    """Deterministic minimal-edit backstop for evolve runs: the prompts insist
+    on editing the seed, this catches the model rewriting anyway. Returns the
+    problem description, or None when the edit looks faithful."""
+    import difflib
+
+    from core.ast_parser import safe_parse_strategy_parameters
+
+    scope = state['spec'].get('change_scope')
+    seed_code, code = state['seed_code'], state['code']
+    drift = 1.0 - difflib.SequenceMatcher(None, seed_code, code).ratio()
+    # A default tweak barely moves the ratio; even a multi-rule behavioral
+    # edit leaves most lines intact. A from-scratch rewrite lands near 1.0.
+    limit = 0.30 if scope == 'parameter_only' else 0.70
+    problems = []
+    if drift > limit:
+        problems.append(
+            f"about {drift:.0%} of the code differs from the original — that is a "
+            f"rewrite, not the requested {scope} edit")
+    if scope == 'parameter_only':
+        try:
+            seed_params = safe_parse_strategy_parameters(
+                seed_code, state.get('seed_class_name') or state['class_name']) or {}
+        except Exception:
+            seed_params = {}
+        if seed_params and set(parameters) != set(seed_params):
+            problems.append(
+                f"the parameter set changed (before: {sorted(seed_params)}, "
+                f"after: {sorted(parameters)}) — a parameter_only change keeps "
+                f"every existing parameter name")
+    return "; ".join(problems) or None
 
 
 def validate(state: GenState, config) -> dict:
@@ -226,12 +307,26 @@ def validate(state: GenState, config) -> dict:
         parameters = safe_parse_strategy_parameters(state['code'], state['class_name']) or {}
     except Exception:
         logging.exception("parameter AST parse failed (non-fatal)")
+    if _minimal_evolution(state):
+        problem = _evolution_fidelity(state, parameters)
+        _emit(state, 'stage_progress', stage='checks', check='minimal_change',
+              passed=problem is None, message=(problem or '')[:500] or None)
+        if problem:
+            return {'parameters': parameters,
+                    'rework_stage': 'validate',
+                    'rework_reason': 'the edit changed more than the request asked for',
+                    'rework_feedback':
+                        f"The modified class strayed from the original: {problem}.\n"
+                        f"Start again from the ORIGINAL code and apply only the "
+                        f"planned edits, preserving everything else verbatim."}
     return {'parameters': parameters}
 
 
 def static_review(state: GenState, config) -> dict:
     review, calls = _llm(state, config, prompts.static_review_prompt(
-        state['code'], state['plan'], state['spec']), tier='fast')
+        state['code'], state['plan'], state['spec'],
+        seed_code=(state.get('seed_code') if _minimal_evolution(state) else None)),
+        tier='fast')
     sg.update_run(state['run_id'], llm_calls=calls)
     passed = bool(review.get('implements_blueprint'))
     _emit(state, 'stage_progress', stage='checks', check='blueprint_conformance',
@@ -305,14 +400,21 @@ def test_sim(state: GenState, config) -> dict:
                    'num_random_paths': TEST_PATHS, **capital,
                    'strategy_params': {p: (v.get('default') if isinstance(v, dict) else v)
                                        for p, v in (state.get('parameters') or {}).items()}}
-    baseline_key, baseline_class, baseline_source = retrieval.baseline_for_category(category)
+    if _minimal_evolution(state):
+        # An evolve run's fairest comparison is the strategy BEFORE the change
+        # on identical markets — the delta shows the edit itself.
+        baseline_class = state.get('seed_class_name') or state['class_name']
+        baseline_source = state['seed_code']
+        baseline_display = f"{state.get('seed_name') or 'This strategy'} (before this change)"
+    else:
+        _key, baseline_class, baseline_source = retrieval.baseline_for_category(category)
+        baseline_display = baseline_class
     baseline = {}
     with _test_sim_lock:
         result = run_sandbox_test(state['code'], state['class_name'],
                                   dict(test_params), seed=seed)
         if result.get('success'):
-            # Paired baseline: same category builtin, same seed
-            # => identical market paths.
+            # Paired baseline: same seed => identical market paths.
             try:
                 baseline_run = run_sandbox_test(baseline_source, baseline_class,
                                                 {'num_years': TEST_YEARS,
@@ -320,7 +422,7 @@ def test_sim(state: GenState, config) -> dict:
                                                  'num_random_paths': TEST_PATHS,
                                                  **capital}, seed=seed)
                 if baseline_run.get('success'):
-                    baseline = {'name': baseline_class,
+                    baseline = {'name': baseline_display,
                                 'summary_stats': _sanitize(baseline_run['summary_stats'])}
             except Exception:
                 logging.exception("baseline test sim failed (non-fatal)")
@@ -375,12 +477,17 @@ def _worst_path_trace(result: dict) -> list[dict]:
 def analyze(state: GenState, config) -> dict:
     _emit(state, 'stage_started', stage='behavior')
     baseline = state.get('baseline_result') or {}
+    evolution = None
+    if _minimal_evolution(state):
+        evolution = {'seed_name': state.get('seed_name'),
+                     'changes': state['spec'].get('changes', [])}
     verdict, calls = _llm(state, config, prompts.analyze_prompt(
         state['spec'], state['plan'],
         state['test_result']['summary_stats'],
         baseline.get('summary_stats'), baseline.get('name'),
         state['test_result']['worst_path_trace'],
-        test_capital=state['test_result'].get('test_capital')), tier='strong')
+        test_capital=state['test_result'].get('test_capital'),
+        evolution=evolution), tier='strong')
     sg.update_run(state['run_id'], llm_calls=calls)
     conforms = bool(verdict.get('conforms_to_spec'))
     _emit(state, 'stage_completed', stage='behavior',

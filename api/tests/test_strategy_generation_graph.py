@@ -138,6 +138,168 @@ def test_broken_codegen_exhausts_attempts_and_saves_draft(monkeypatch):
     assert '(draft ' in draft['strategy_name']
 
 
+def _seed_strategy(user_id: int, name: str = "Seed FIRE"):
+    """A validated strategy row to evolve, built from the canned code template."""
+    from app.agents.llm import _FAKE_CODE_TEMPLATE
+
+    code = _FAKE_CODE_TEMPLATE.format(class_name="SeedFireStrategy").strip()
+    sid = db.save_custom_strategy(
+        user_id=user_id, strategy_name=name, class_name="SeedFireStrategy",
+        description="A 4% rule strategy", ai_description="Withdraws 4% a year.",
+        code=code, parameters_json={"withdrawal_rate": {"default": 0.04}},
+        validation_status="validated")
+    assert sid
+    return sid, code
+
+
+def _start_evolve(user_id: int, sid: int, request: str) -> str:
+    seed = db.get_custom_strategy(sid)
+    return runner.start_run(user_id, request, seed_strategy={
+        'id': sid, 'strategy_name': seed['strategy_name'],
+        'class_name': seed['class_name'], 'description': seed.get('description'),
+        'ai_description': seed.get('ai_description'), 'code': seed['code']})
+
+
+def test_evolve_parameter_change_is_minimal_edit():
+    user_id = _new_user()
+    sid, seed_code = _seed_strategy(user_id)
+    request = "change the default withdrawal rate to 5%"
+    run_id = _start_evolve(user_id, sid, request)
+
+    assert sg.get_run(run_id)['status'] == 'needs_input'  # paused at review
+    events = sg.list_events(run_id)
+
+    # The spec is a change spec, not a fresh strategy spec
+    spec_event = [e for e in events if e['type'] == 'stage_completed'
+                  and e['payload'].get('stage') == 'understanding'][0]
+    spec = spec_event['payload']['artifact']['spec']
+    assert spec['change_scope'] == 'parameter_only'
+    assert spec['changes']
+
+    # No outside examples: the seed itself is the only reference
+    examples_event = [e for e in events if e['type'] == 'stage_completed'
+                      and e['payload'].get('stage') == 'examples'][0]
+    assert examples_event['payload']['artifact']['examples'] == [
+        {'name': 'Seed FIRE', 'source': 'seed', 'score': None}]
+
+    # Code artifact: same class, marked as evolution, carries a diff
+    code_event = [e for e in events if e['type'] == 'stage_completed'
+                  and e['payload'].get('stage') == 'code'][0]
+    artifact = code_event['payload']['artifact']
+    assert artifact['is_evolution'] is True
+    assert artifact['class_name'] == 'SeedFireStrategy'
+    assert artifact['diff'] and '-' in artifact['diff']
+
+    # The deterministic minimal-change check passed
+    checks = [e for e in events if e['type'] == 'stage_progress'
+              and e['payload'].get('check') == 'minimal_change']
+    assert checks and checks[-1]['payload']['passed'] is True
+
+    # The paired baseline is the strategy BEFORE the change
+    test_event = [e for e in events if e['type'] == 'stage_completed'
+                  and e['payload'].get('stage') == 'test_flight'][0]
+    baseline = test_event['payload']['artifact']['baseline']
+    assert baseline and baseline['name'] == 'Seed FIRE (before this change)'
+
+    runner.resume_run(run_id, {'kind': 'review', 'action': 'save'})
+    run = sg.get_run(run_id)
+    assert run['status'] == 'completed'
+    assert run['final_strategy_id'] == sid  # updated in place, not a new row
+
+    saved = db.get_custom_strategy(sid)
+    assert saved['class_name'] == 'SeedFireStrategy'
+    # Exactly the requested default changed; every other line survived verbatim
+    assert saved['code'] == seed_code.replace("'default': 0.04", "'default': 0.05")
+
+    history = db.get_strategy_evolution_history(sid)
+    assert history and history[-1]['request'] == request
+    # The pre-change code is snapshotted, so a bad evolve is recoverable
+    assert history[-1]['previous_code'] == seed_code
+
+
+def test_evolve_structural_request_falls_back_to_rebuild():
+    user_id = _new_user()
+    sid, seed_code = _seed_strategy(user_id, name="Rebuild Me")
+    # 'completely' makes the canned evolve_spec judge the change structural
+    run_id = _start_evolve(user_id, sid,
+                           "completely change the approach: borrow instead of selling")
+
+    assert sg.get_run(run_id)['status'] == 'needs_input'
+    events = sg.list_events(run_id)
+    code_event = [e for e in events if e['type'] == 'stage_completed'
+                  and e['payload'].get('stage') == 'code'][0]
+    # Structural = full create pipeline (no diff), still an evolution save-wise
+    assert 'diff' in code_event['payload']['artifact']
+    # No minimal-change guard on a deliberate rebuild
+    assert not [e for e in events if e['type'] == 'stage_progress'
+                and e['payload'].get('check') == 'minimal_change']
+
+    runner.resume_run(run_id, {'kind': 'review', 'action': 'save'})
+    run = sg.get_run(run_id)
+    assert run['status'] == 'completed'
+    assert run['final_strategy_id'] == sid  # still saved into the seed row
+
+
+_REWRITE_CODE = '''
+class SeedFireStrategy(BaseStrategy):
+    @property
+    def parameters(self):
+        return {'spend_rate': {'description': 'Annual spend rate',
+                               'default': 0.03, 'min': 0.01, 'max': 0.08, 'step': 0.005}}
+
+    @property
+    def shortfall_funding_policy(self):
+        return ['USE_CASH', 'SELL_ASSETS']
+
+    def initialize_portfolio(self, initial_portfolio_state, market_data_at_start):
+        return {'action': 'BUY_ASSET', 'cash_amount': initial_portfolio_state.get('cash', 0)}
+
+    def get_annual_drawdown(self, year, portfolio_state, portfolio_history):
+        rate = self.params.get('spend_rate', 0.03)
+        return portfolio_state.get('net_worth', 0) * rate
+
+    def execute_strategy_for_year(self, year, portfolio_state, portfolio_history, desired_drawdown, mandatory_costs):
+        need = desired_drawdown + mandatory_costs
+        return {'amount_sold': need, 'amount_bought': 0.0,
+                'debt_increase': 0.0, 'debt_repayment': 0.0, 'amount_contributed': 0.0}
+
+    def evaluation_category(self):
+        return 'WITHDRAWAL_ONLY'
+'''
+
+
+def test_evolve_rewrite_is_caught_by_minimal_change_guard(monkeypatch):
+    """A generator that rewrites the strategy instead of editing it must trip
+    the deterministic fidelity check, exhaust rework, and leave the seed
+    strategy untouched."""
+    def rewriting_llm(prompt, tier='fast', json_mode=False):
+        if prompt.startswith('TASK: evolve_generate'):
+            return ("<description>rewritten</description>\n"
+                    f"```python\n{_REWRITE_CODE.strip()}\n```")
+        return fake_llm_call(prompt, tier=tier, json_mode=json_mode)
+
+    monkeypatch.setattr('app.agents.runner.get_llm_call', lambda: rewriting_llm)
+
+    user_id = _new_user()
+    sid, seed_code = _seed_strategy(user_id, name="Guarded FIRE")
+    run_id = _start_evolve(user_id, sid, "set the default withdrawal rate to 5%")
+
+    run = sg.get_run(run_id)
+    assert run['status'] == 'failed'
+    checks = [e for e in sg.list_events(run_id) if e['type'] == 'stage_progress'
+              and e['payload'].get('check') == 'minimal_change']
+    assert checks and all(c['payload']['passed'] is False for c in checks)
+
+    # The seed strategy survives untouched; the broken draft went elsewhere
+    saved = db.get_custom_strategy(sid)
+    assert saved['code'] == seed_code
+    assert saved['validation_status'] == 'validated'
+    draft_id = [e for e in sg.list_events(run_id)
+                if e['type'] == 'run_failed'][0]['payload'].get('draft_id')
+    assert draft_id and draft_id != sid
+    assert '(draft ' in db.get_custom_strategy(draft_id)['strategy_name']
+
+
 def test_blueprint_test_capital_clamped():
     from app.agents.graph import _test_capital
 

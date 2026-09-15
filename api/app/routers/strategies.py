@@ -473,6 +473,7 @@ def generate_strategy(body: GenerateRequest,
         if not seed.get('code'):
             raise HTTPException(status_code=422, detail="Seed strategy has no code")
         seed_strategy = {'id': seed['id'], 'strategy_name': seed['strategy_name'],
+                         'class_name': seed.get('class_name'),
                          'description': seed.get('description'),
                          'ai_description': seed.get('ai_description'),
                          'code': seed['code']}
