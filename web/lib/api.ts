@@ -8,6 +8,7 @@
 import "server-only";
 
 import { headers } from "next/headers";
+import { unstable_rethrow } from "next/navigation";
 import { NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
@@ -54,6 +55,8 @@ export async function proxyJson(
 
 export type Viewer = {
   authenticated: boolean;
+  /** True when this is the outage fallback, not a real /me answer. */
+  degraded?: boolean;
   id?: number;
   email?: string;
   name?: string | null;
@@ -70,11 +73,45 @@ export type Viewer = {
   };
 };
 
-/** The acting viewer's profile from the API (anonymous-safe). */
-export async function getViewer(): Promise<Viewer> {
-  const res = await apiFetch("/me");
-  if (!res.ok) {
-    throw new Error(`GET /me failed: ${res.status}`);
+/** What /me returns for anonymous viewers — also our fallback when it fails. */
+function anonymousViewer(): Viewer {
+  return {
+    authenticated: false,
+    degraded: true,
+    beta: { current_users: 0, max_users: 0, is_full: false, percent_full: 0 },
+  };
+}
+
+/**
+ * Guard for pages that BRANCH on auth state: a degraded (outage-fallback)
+ * viewer must fail loud into the error boundary — silently treating a
+ * logged-in user as a guest (or an admin as a 404) is worse than a
+ * retryable error page.
+ */
+export function assertViewerFresh(viewer: Viewer): void {
+  if (viewer.degraded) {
+    throw new Error("Could not reach the backend to resolve your session.");
   }
-  return res.json();
+}
+
+/**
+ * The acting viewer's profile from the API (anonymous-safe).
+ *
+ * Degrades gracefully: if /me fails (API down or non-OK), returns the
+ * anonymous viewer shape instead of throwing, so public pages render
+ * logged-out during an API outage. Pages that require auth still gate
+ * correctly, since the fallback is unauthenticated (and not admin/allowed).
+ */
+export async function getViewer(): Promise<Viewer> {
+  try {
+    const res = await apiFetch("/me");
+    if (!res.ok) return anonymousViewer();
+    return await res.json();
+  } catch (e) {
+    // Never swallow Next's control-flow signals (dynamic-rendering
+    // postpone, redirect, notFound) — doing so would let pages prerender
+    // statically as logged-out at build time.
+    unstable_rethrow(e);
+    return anonymousViewer();
+  }
 }

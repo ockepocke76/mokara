@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 
-import { apiFetch, getViewer } from "@/lib/api";
+import { apiFetch, getViewer, assertViewerFresh } from "@/lib/api";
 import type { ParamSchema } from "@/lib/param-types";
-import { Button } from "@/components/ui/button";
+import { SignInGate } from "@/components/sign-in-gate";
 import { SimulateForm } from "./simulate-form";
 
 export const metadata: Metadata = { title: "Simulate" };
@@ -14,37 +13,19 @@ export default async function SimulatePage() {
     apiFetch("/config/params"),
   ]);
   const schema: ParamSchema = await schemaRes.json();
+  assertViewerFresh(viewer);
 
   if (!viewer.authenticated) {
     return (
-      <Gate>
-        <p className="text-muted-foreground">
-          Sign in to run Monte Carlo simulations.
-        </p>
-        <Button asChild>
-          <Link href="/login">Sign in</Link>
-        </Button>
-      </Gate>
+      <SignInGate
+        title="Run a simulation"
+        message="Sign in to run Monte Carlo simulations."
+      />
     );
   }
 
   if (!viewer.allowed) {
-    return (
-      <Gate>
-        <p className="max-w-md text-muted-foreground">
-          Early access is currently full. We&apos;ll notify you when new spots
-          open — meanwhile, explore the{" "}
-          <Link href="/leaderboard" className="underline">
-            leaderboard
-          </Link>{" "}
-          and{" "}
-          <Link href="/docs/methodology" className="underline">
-            methodology
-          </Link>
-          .
-        </p>
-      </Gate>
-    );
+    return <SignInGate title="Run a simulation" variant="beta-full" />;
   }
 
   return (
@@ -56,17 +37,6 @@ export default async function SimulatePage() {
         Configure and run a simulation for your financial strategy.
       </p>
       <SimulateForm schema={schema} currency={viewer.currency} />
-    </main>
-  );
-}
-
-function Gate({ children }: { children: React.ReactNode }) {
-  return (
-    <main className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
-      <h1 className="text-3xl font-semibold tracking-tight">
-        Run a simulation
-      </h1>
-      {children}
     </main>
   );
 }

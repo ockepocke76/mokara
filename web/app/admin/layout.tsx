@@ -1,7 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { getViewer } from "@/lib/api";
+import { getViewer, assertViewerFresh } from "@/lib/api";
+
+// Session-gated on every request; never prerendered (the build has no API
+// to resolve a viewer against, and assertViewerFresh would throw).
+export const dynamic = "force-dynamic";
 
 const ADMIN_NAV = [
   { href: "/admin/users", label: "Users" },
@@ -15,6 +19,7 @@ export default async function AdminLayout({
   children: React.ReactNode;
 }) {
   const viewer = await getViewer();
+  assertViewerFresh(viewer);
   if (!viewer.is_admin) notFound();
 
   return (

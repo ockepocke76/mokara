@@ -1,29 +1,24 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { apiFetch, getViewer } from "@/lib/api";
+import { apiFetch, getViewer, assertViewerFresh } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { InfoBox } from "@/components/info-box";
+import { SignInGate } from "@/components/sign-in-gate";
 import { SimulationCard, type HistoryItem } from "./simulation-card";
 
 export const metadata: Metadata = { title: "My Simulations" };
 
 export default async function SimulationsPage() {
   const viewer = await getViewer();
+  assertViewerFresh(viewer);
 
   if (!viewer.authenticated) {
     return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
-        <h1 className="text-3xl font-bold tracking-tight">
-          📊 My Simulations
-        </h1>
-        <p className="text-muted-foreground">
-          Sign in to see your simulation history.
-        </p>
-        <Button asChild>
-          <Link href="/login">Sign in</Link>
-        </Button>
-      </main>
+      <SignInGate
+        title="📊 My Simulations"
+        message="Sign in to see your simulation history."
+      />
     );
   }
 
