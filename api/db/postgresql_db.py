@@ -1171,12 +1171,14 @@ class PostgreSQLDatabase:
                 
             cursor = self._get_cursor(conn)
 
-            # Check for existence
+            # Check for existence (code fetched too: an evolve snapshots the
+            # pre-change code into evolution_history before overwriting it)
             if strategy_id:
-                cursor.execute("SELECT id FROM CUSTOM_STRATEGIES WHERE id = %s", (strategy_id,))
+                cursor.execute("SELECT id, code FROM CUSTOM_STRATEGIES WHERE id = %s", (strategy_id,))
             else:
-                cursor.execute("SELECT id FROM CUSTOM_STRATEGIES WHERE user_id = %s AND strategy_name = %s", (user_id, strategy_name))
+                cursor.execute("SELECT id, code FROM CUSTOM_STRATEGIES WHERE user_id = %s AND strategy_name = %s", (user_id, strategy_name))
             row = cursor.fetchone()
+            previous_code = row[1] if row else None
 
             if row:
                 # === UPDATE EXISTING STRATEGY ===
@@ -1245,6 +1247,9 @@ class PostgreSQLDatabase:
                         'request': evolution_request,
                         'user_id': user_id,
                         'commit_sha': git_commit_sha,
+                        # Snapshot of the code this evolve replaced — the only
+                        # way back after an in-place update.
+                        'previous_code': previous_code,
                     }
                     cursor.execute("SAVEPOINT evolution_append")
                     try:
