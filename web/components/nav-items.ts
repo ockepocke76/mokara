@@ -4,6 +4,7 @@ import {
   Home,
   NotebookPen,
   Rocket,
+  Settings,
   Trophy,
   type LucideIcon,
 } from "lucide-react";
@@ -43,6 +44,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/strategies", label: "Strategies", short: "Strategies", icon: NotebookPen, primary: true },
   { href: "/leaderboard", label: "Leaderboard", short: "Board", icon: Trophy, primary: true },
   { href: "/docs", label: "Docs", short: "Docs", icon: BookOpen, children: DOCS_NAV },
+  { href: "/settings", label: "Settings", short: "Settings", icon: Settings },
 ];
 
 /** The primary destinations shown as tabs in the mobile bottom bar. */
