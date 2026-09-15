@@ -9,6 +9,22 @@ import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Chart } from "@/components/chart";
 
 import {
@@ -17,6 +33,7 @@ import {
   RunModel,
   Spec,
   TestArtifact,
+  TestPath,
   fmtCompact,
   fmtPercent,
 } from "../model";
@@ -233,24 +250,224 @@ function StatTile({ label, value }: { label: string; value: string }) {
   );
 }
 
+type SeriesKey = "net_worth" | "asset_value" | "debt" | "cash" | "contributed" | "withdrawn";
+
+/** Thin lines for the random paths, one thick highlighted line for the
+ * historical backtest — the same visual grammar as the old app's test UI. */
+function seriesTraces(
+  paths: TestPath[],
+  key: SeriesKey,
+  color: string,
+  backtestColor: string,
+) {
+  const traces = [];
+  let firstRandom = true;
+  for (const p of paths) {
+    const y = p[key];
+    if (!y || !y.length) continue;
+    if (p.is_backtest) {
+      traces.push({
+        x: p.years,
+        y,
+        type: "scatter" as const,
+        mode: "lines" as const,
+        line: { width: 3, color: backtestColor },
+        name: p.label || "Historical backtest",
+      });
+    } else {
+      traces.push({
+        x: p.years,
+        y,
+        type: "scatter" as const,
+        mode: "lines" as const,
+        line: { width: 1, color },
+        name: "Test paths",
+        showlegend: firstRandom,
+        hoverinfo: "skip" as const,
+      });
+      firstRandom = false;
+    }
+  }
+  return traces;
+}
+
+function SeriesChart({
+  paths,
+  seriesKey,
+  title,
+  color,
+  backtestColor,
+  className = "h-64",
+}: {
+  paths: TestPath[];
+  seriesKey: SeriesKey;
+  title: string;
+  color: string;
+  backtestColor: string;
+  className?: string;
+}) {
+  const traces = seriesTraces(paths, seriesKey, color, backtestColor);
+  if (!traces.length) return null;
+  return (
+    <Chart
+      className={className}
+      data={traces}
+      layout={{
+        yaxis: { tickformat: ".3s", title: { text: title } },
+        xaxis: { title: { text: "Year" } },
+        showlegend: false,
+      }}
+    />
+  );
+}
+
+const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+const fmtOrDash = (v: number | null | undefined) =>
+  typeof v === "number" ? fmtCompact.format(v) : "—";
+
+const TABLE_COLUMNS: { key: SeriesKey; label: string }[] = [
+  { key: "net_worth", label: "Net worth" },
+  { key: "asset_value", label: "Assets" },
+  { key: "cash", label: "Cash" },
+  { key: "debt", label: "Debt" },
+  { key: "contributed", label: "Contributed" },
+  { key: "withdrawn", label: "Withdrawn" },
+];
+
+function YearByYearTable({ paths }: { paths: TestPath[] }) {
+  const backtestIdx = paths.findIndex((p) => p.is_backtest);
+  const [selected, setSelected] = useState(
+    String(backtestIdx >= 0 ? backtestIdx : 0),
+  );
+  const path = paths[Number(selected)] ?? paths[0];
+  const columns = TABLE_COLUMNS.filter((c) => path[c.key]?.length);
+  return (
+    <details className="text-sm">
+      <summary className="cursor-pointer text-xs text-muted-foreground underline underline-offset-2">
+        Year-by-year detail
+      </summary>
+      <div className="mt-3 space-y-2">
+        <Select value={selected} onValueChange={setSelected}>
+          <SelectTrigger className="w-56">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {paths.map((p, i) => (
+              <SelectItem key={i} value={String(i)}>
+                {p.label || `Path ${i + 1}`}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <div className="max-h-80 overflow-auto rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Year</TableHead>
+                {columns.map((c) => (
+                  <TableHead key={c.key} className="text-right">
+                    {c.label}
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {path.years.map((year, i) => (
+                <TableRow key={year}>
+                  <TableCell>{year}</TableCell>
+                  {columns.map((c) => (
+                    <TableCell key={c.key} className="text-right tabular-nums">
+                      {fmtOrDash(path[c.key]?.[i])}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 export function TestFlightCard({ test }: { test: TestArtifact }) {
   const s = test.summary_stats ?? {};
   const baseline = test.baseline;
-  const traces = (test.paths ?? []).map((p, i) => ({
-    x: p.years,
-    y: p.net_worth,
-    type: "scatter" as const,
-    mode: "lines" as const,
-    line: { width: 1, color: "rgba(100,150,200,0.4)" },
-    name: "Test paths",
-    showlegend: i === 0,
-    hoverinfo: "skip" as const,
-  }));
+  const paths = test.paths ?? [];
+  // Older persisted runs condensed only net worth; hide the extra views then.
+  const hasExtras = paths.some((p) => p.asset_value?.length);
+  const backtest = paths.find((p) => p.is_backtest);
+
+  const category = typeof s.strategy_category === "string" ? s.strategy_category : null;
+  const contributed = num(s.backtest_total_contributed);
+  const withdrawn = num(s.backtest_total_withdrawn);
+  const taxes = num(s.backtest_total_taxes);
+  const fees = num(s.backtest_total_fees);
+  const costs = taxes !== null || fees !== null ? (taxes ?? 0) + (fees ?? 0) : null;
+  // Highest debt across every shipped path, backtest included — the summary
+  // stat covers random paths only, which would contradict the debt chart.
+  const pathPeakDebt = paths
+    .flatMap((p) => p.debt ?? [])
+    .reduce<number | null>((m, v) => (typeof v === "number" && (m === null || v > m) ? v : m), null);
+  const peakDebt = pathPeakDebt ?? num(s.max_debt_across_paths);
+  // A zero tile is noise, not a finding — every tile requires a positive value.
+  const backtestTiles = [
+    contributed !== null && contributed > 0
+      ? { label: "Total contributed", value: fmtCompact.format(contributed) }
+      : null,
+    withdrawn !== null && withdrawn > 0
+      ? { label: "Total withdrawn", value: fmtCompact.format(withdrawn) }
+      : null,
+    costs !== null && costs > 0
+      ? { label: "Taxes & fees paid", value: fmtCompact.format(costs) }
+      : null,
+  ].filter((t) => t !== null);
+  const flowTiles = [
+    ...backtestTiles,
+    ...(peakDebt !== null && peakDebt > 0
+      ? [{ label: "Peak debt", value: fmtCompact.format(peakDebt) }]
+      : []),
+  ];
+  const flowCaption = [
+    backtestTiles.length ? "Cash totals are from the historical backtest." : null,
+    peakDebt !== null && peakDebt > 0
+      ? "Peak debt is the highest debt reached across all test paths."
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const cashFlowBars = backtest
+    ? [
+        backtest.contributed?.some((v) => (v ?? 0) !== 0)
+          ? {
+              x: backtest.years,
+              y: backtest.contributed,
+              type: "bar" as const,
+              name: "Contributed",
+              marker: { color: "rgba(44,160,44,0.7)" },
+            }
+          : null,
+        backtest.withdrawn?.some((v) => (v ?? 0) !== 0)
+          ? {
+              x: backtest.years,
+              y: backtest.withdrawn,
+              type: "bar" as const,
+              name: "Withdrawn",
+              marker: { color: "rgba(214,39,40,0.7)" },
+            }
+          : null,
+      ].filter((t) => t !== null)
+    : [];
+
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="flex flex-wrap items-center gap-2 text-base">
           Test flight
+          {category && CATEGORY_LABELS[category] && (
+            <Badge variant="secondary">{CATEGORY_LABELS[category]}</Badge>
+          )}
           <Badge variant="outline">
             {test.num_paths ?? 10} markets × {test.num_years ?? 30} years — checks
             behavior, not performance
@@ -262,35 +479,114 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
           <StatTile label="Success rate" value={fmtPercent(s.success_rate)} />
           <StatTile
             label="Median final net worth"
-            value={
-              typeof s.median_final_net_worth === "number"
-                ? fmtCompact.format(s.median_final_net_worth)
-                : "—"
-            }
+            value={fmtOrDash(num(s.median_final_net_worth))}
           />
           <StatTile
             label="Worst path final"
-            value={
-              typeof s.worst_final_nw === "number"
-                ? fmtCompact.format(s.worst_final_nw)
-                : "—"
-            }
+            value={fmtOrDash(num(s.worst_final_nw))}
           />
           <StatTile
             label="Backtest max drawdown"
             value={fmtPercent(s.backtest_max_drawdown)}
           />
         </div>
-        {!!traces.length && (
-          <Chart
-            className="h-64"
-            data={traces}
-            layout={{
-              yaxis: { tickformat: ".3s", title: { text: "Net worth" } },
-              xaxis: { title: { text: "Year" } },
-              showlegend: false,
-            }}
+        {!!flowTiles.length && (
+          <div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {flowTiles.map((t) => (
+                <StatTile key={t.label} label={t.label} value={t.value} />
+              ))}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">{flowCaption}</p>
+          </div>
+        )}
+        {!hasExtras ? (
+          <SeriesChart
+            paths={paths}
+            seriesKey="net_worth"
+            title="Net worth"
+            color="rgba(100,150,200,0.4)"
+            backtestColor="rgb(255,127,14)"
           />
+        ) : (
+          <Tabs defaultValue="net_worth">
+            <TabsList>
+              <TabsTrigger value="net_worth">Net worth</TabsTrigger>
+              <TabsTrigger value="balance">Assets, cash &amp; debt</TabsTrigger>
+              <TabsTrigger value="flows">Cash flows</TabsTrigger>
+            </TabsList>
+            <TabsContent value="net_worth" className="mt-2">
+              <SeriesChart
+                paths={paths}
+                seriesKey="net_worth"
+                title="Net worth"
+                color="rgba(100,150,200,0.4)"
+                backtestColor="rgb(255,127,14)"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Thin lines are the simulated markets
+                {backtest ? "; the thick line is the historical backtest" : ""}.
+              </p>
+            </TabsContent>
+            <TabsContent value="balance" className="mt-2">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <SeriesChart
+                  className="h-48"
+                  paths={paths}
+                  seriesKey="asset_value"
+                  title="Asset value"
+                  color="rgba(50,200,100,0.35)"
+                  backtestColor="rgb(44,160,44)"
+                />
+                <SeriesChart
+                  className="h-48"
+                  paths={paths}
+                  seriesKey="cash"
+                  title="Cash balance"
+                  color="rgba(150,120,220,0.35)"
+                  backtestColor="rgb(110,70,200)"
+                />
+                <SeriesChart
+                  className="h-48"
+                  paths={paths}
+                  seriesKey="debt"
+                  title="Debt"
+                  color="rgba(200,50,50,0.35)"
+                  backtestColor="rgb(214,39,40)"
+                />
+              </div>
+            </TabsContent>
+            <TabsContent value="flows" className="mt-2">
+              {cashFlowBars.length ? (
+                <>
+                  <Chart
+                    className="h-64"
+                    data={cashFlowBars}
+                    layout={{
+                      barmode: "group",
+                      yaxis: { tickformat: ".3s", title: { text: "Annual amount" } },
+                      xaxis: { title: { text: "Year" } },
+                    }}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Annual contributions and withdrawals along the historical
+                    backtest path.
+                  </p>
+                </>
+              ) : (
+                <p className="py-6 text-center text-xs text-muted-foreground">
+                  {backtest
+                    ? "No contributions or withdrawals occurred on the backtest path."
+                    : "This run produced no historical backtest path to chart cash flows from."}
+                </p>
+              )}
+            </TabsContent>
+          </Tabs>
+        )}
+        {hasExtras && !!paths.length && (
+          // Re-key on the path list shape so a re-run with a different path
+          // count (e.g. a missing backtest) resets the stale selection.
+          <YearByYearTable key={paths.length} paths={paths} />
         )}
         {baseline && (
           <p className="text-xs text-muted-foreground">

@@ -81,7 +81,17 @@ def test_full_generation_flow_and_crud():
     body = r.json()
     assert body["success"] is True
     assert body["summary_stats"]["success_rate"] is not None
-    assert len(body["paths"]) == body["num_paths"]
+    # num_paths random markets, plus the flagged historical backtest when
+    # market data provides one
+    random_paths = [p for p in body["paths"] if not p.get("is_backtest")]
+    assert len(random_paths) == body["num_paths"]
+    assert len(body["paths"]) - len(random_paths) <= 1
+    # Every path carries the full yearly series with real values, not just
+    # net worth (and not all-None arrays from a renamed engine column).
+    for series in ("net_worth", "asset_value", "debt", "cash",
+                   "contributed", "withdrawn"):
+        assert len(body["paths"][0][series]) == len(body["paths"][0]["years"])
+    assert any(v is not None for v in body["paths"][0]["net_worth"])
 
     # Evaluate queues a job
     r = client.post(f"/strategies/{strategy_id}/evaluate", headers=headers)

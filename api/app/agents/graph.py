@@ -250,13 +250,42 @@ def static_review(state: GenState, config) -> dict:
     return update
 
 
+def _round_finite(v):
+    # LLM strategies can produce NaN/inf (e.g. 0.0/0.0 on numpy floats);
+    # round() raises on those, and a crash here would bypass the rework
+    # loop entirely. Map non-finite to None instead.
+    try:
+        return round(v) if math.isfinite(v) else None
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: math.isfinite raises on ints too large for a float.
+        return None
+
+
+# Yearly-snapshot columns shipped to the test-flight UI, keyed by the
+# engine's Title Case names from Portfolio.record_yearly_snapshot.
+_PATH_SERIES = {'net_worth': 'Net Worth', 'asset_value': 'Asset Value',
+                'debt': 'Debt', 'cash': 'Cash',
+                'contributed': 'Amount Contributed',
+                'withdrawn': 'Consumption Delivered'}
+
+
 def _condense_paths(result: dict) -> list[dict]:
+    """Per-path yearly series for the test-flight charts, rounded to whole
+    currency units. The backtest path (when present) comes last, flagged so
+    the UI can draw it as the highlighted trace."""
+    entries = [(p, False) for p in result.get('random_paths', [])]
+    if result.get('backtest_path'):
+        entries.append((result['backtest_path'], True))
     paths = []
-    for p in result.get('random_paths', []):
+    for p, is_backtest in entries:
         yearly = p.get('yearly_results', [])
-        paths.append({'label': p.get('path_label', ''),
-                      'years': [y['Year'] for y in yearly],
-                      'net_worth': [y['Net Worth'] for y in yearly]})
+        path = {'label': p.get('path_label', ''),
+                'years': [y['Year'] for y in yearly]}
+        for key, column in _PATH_SERIES.items():
+            path[key] = [_round_finite(y.get(column)) for y in yearly]
+        if is_backtest:
+            path['is_backtest'] = True
+        paths.append(path)
     return paths
 
 
@@ -331,14 +360,16 @@ def test_sim(state: GenState, config) -> dict:
                 'rework_reason': 'the strategy crashed during the test simulation',
                 'rework_feedback': f"The test simulation failed at runtime:\n{result.get('error')}"}
 
+    # The condensed per-path series go only into the emitted artifact (the
+    # UI's copy) — keeping them out of graph state avoids re-checkpointing
+    # ~20 KB nothing downstream reads on every later superstep.
     test_result = {'summary_stats': _sanitize(result['summary_stats']),
-                   'paths': _sanitize(_condense_paths(result)),
                    'num_paths': TEST_PATHS, 'num_years': TEST_YEARS,
                    'test_capital': capital['initial_investment'],
                    'worst_path_trace': _worst_path_trace(result)}
     _emit(state, 'stage_completed', stage='test_flight',
           artifact={'summary_stats': test_result['summary_stats'],
-                    'paths': test_result['paths'],
+                    'paths': _sanitize(_condense_paths(result)),
                     'baseline': baseline or None,
                     'num_paths': TEST_PATHS, 'num_years': TEST_YEARS})
     return {'test_result': test_result, 'baseline_result': baseline}
@@ -356,14 +387,7 @@ def _worst_path_trace(result: dict) -> list[dict]:
             worst_final, worst = final, yearly
     if not worst:
         return []
-    def _r(v):
-        # LLM strategies can produce NaN/inf (e.g. 0.0/0.0 on numpy floats);
-        # round() raises on those, and a crash here would bypass the rework
-        # loop entirely. Map non-finite to None instead.
-        try:
-            return round(v) if math.isfinite(v) else None
-        except TypeError:
-            return None
+    _r = _round_finite
     return _sanitize([
         {'year': y['Year'], 'net_worth': _r(y['Net Worth']),
          'withdrawal': _r(y['Consumption Delivered']),
