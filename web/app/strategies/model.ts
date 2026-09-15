@@ -43,6 +43,9 @@ export type Spec = {
   assumptions?: string[];
   constraints?: string[];
   proposed_parameters?: { name: string; default?: number; description?: string }[];
+  // Evolve runs: the change spec
+  changes?: string[];
+  change_scope?: "parameter_only" | "behavioral" | "structural" | string;
 };
 
 export type TestArtifact = {
@@ -78,6 +81,7 @@ export type RunModel = {
   plan?: { rules?: string[]; parameters?: { name: string; default?: number; description?: string }[] };
   code?: string;
   codeDescription?: string;
+  codeDiff?: string;
   className?: string;
   isEvolution?: boolean;
   checks: CheckItem[];
@@ -138,6 +142,7 @@ export function buildModel(events: RunEvent[]): RunModel {
         } else if (stage === "code") {
           model.code = artifact.code;
           model.codeDescription = artifact.description;
+          model.codeDiff = artifact.diff;
           model.className = artifact.class_name;
           model.isEvolution = artifact.is_evolution;
           // A fresh code round resets everything downstream of it.

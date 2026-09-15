@@ -377,6 +377,7 @@ function BuildLog({
           code={model.code}
           description={model.codeDescription}
           isEvolution={model.isEvolution}
+          diff={model.codeDiff}
         />
       )}
       {(model.checks.length > 0 || attemptNote) && (

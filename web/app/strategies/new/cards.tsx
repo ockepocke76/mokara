@@ -47,6 +47,28 @@ export function SpecCard({ spec, strategyName }: { spec: Spec; strategyName?: st
           </p>
         )}
         {spec.summary && <p>{spec.summary}</p>}
+        {!!spec.changes?.length && (
+          <div className="rounded-md border p-3">
+            <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">
+              What will change
+              {spec.change_scope === "parameter_only"
+                ? " — parameter values only"
+                : spec.change_scope === "structural"
+                  ? " — a full redesign"
+                  : ""}
+            </p>
+            <ul className="list-disc space-y-1 pl-5">
+              {spec.changes.map((c, i) => (
+                <li key={i}>{c}</li>
+              ))}
+            </ul>
+            {spec.change_scope !== "structural" && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Everything else stays exactly as it is.
+              </p>
+            )}
+          </div>
+        )}
         {!!spec.mechanics?.length && (
           <ul className="list-disc space-y-1 pl-5">
             {spec.mechanics.map((m, i) => (
@@ -85,13 +107,16 @@ export function SpecCard({ spec, strategyName }: { spec: Spec; strategyName?: st
 }
 
 export function ExamplesCard({ examples }: { examples: NonNullable<RunModel["examples"]> }) {
+  const seedOnly = examples.length === 1 && examples[0].source === "seed";
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-base">
-          {examples.length
-            ? `Drawing on ${examples.length} reference ${examples.length === 1 ? "strategy" : "strategies"}`
-            : "No close matches — building from the base playbook"}
+          {seedOnly
+            ? "Working from the current version — no outside examples"
+            : examples.length
+              ? `Drawing on ${examples.length} reference ${examples.length === 1 ? "strategy" : "strategies"}`
+              : "No close matches — building from the base playbook"}
         </CardTitle>
       </CardHeader>
       {!!examples.length && (
@@ -100,7 +125,12 @@ export function ExamplesCard({ examples }: { examples: NonNullable<RunModel["exa
             <Badge key={e.name} variant="outline" className="gap-1">
               {e.name}
               <span className="text-muted-foreground">
-                · {e.source === "builtin" ? "built-in" : "community"}
+                ·{" "}
+                {e.source === "seed"
+                  ? "the strategy being evolved"
+                  : e.source === "builtin"
+                    ? "built-in"
+                    : "community"}
               </span>
             </Badge>
           ))}
@@ -135,17 +165,61 @@ export function BlueprintCard({ plan }: { plan: NonNullable<RunModel["plan"]> })
   );
 }
 
+function DiffView({ diff }: { diff: string }) {
+  return (
+    <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs leading-5">
+      {diff.split("\n").map((line, i) => {
+        const kind = line.startsWith("+++") || line.startsWith("---")
+          ? "meta"
+          : line.startsWith("+")
+            ? "add"
+            : line.startsWith("-")
+              ? "del"
+              : line.startsWith("@@")
+                ? "hunk"
+                : "ctx";
+        const cls =
+          kind === "add"
+            ? "block bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+            : kind === "del"
+              ? "block bg-red-500/15 text-red-700 dark:text-red-400"
+              : kind === "hunk" || kind === "meta"
+                ? "block text-muted-foreground"
+                : "block";
+        return (
+          <code key={i} className={cls}>
+            {line || " "}
+          </code>
+        );
+      })}
+    </pre>
+  );
+}
+
 export function CodeCard({
   code,
   description,
   isEvolution,
+  diff,
 }: {
   code: string;
   description?: string;
   isEvolution?: boolean;
+  diff?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
   const lines = code.split("\n").length;
+  const changedLines = diff
+    ? diff
+        .split("\n")
+        .filter(
+          (l) =>
+            (l.startsWith("+") || l.startsWith("-")) &&
+            !l.startsWith("+++") &&
+            !l.startsWith("---"),
+        ).length
+    : 0;
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -155,13 +229,29 @@ export function CodeCard({
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         {description && <p>{description}</p>}
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="text-xs text-muted-foreground underline underline-offset-2"
-        >
-          {open ? "Hide the Python" : `View the Python — ${lines} lines`}
-        </button>
+        <div className="flex flex-wrap gap-4">
+          {isEvolution && diff && (
+            <button
+              type="button"
+              onClick={() => setDiffOpen((v) => !v)}
+              className="text-xs text-muted-foreground underline underline-offset-2"
+            >
+              {diffOpen
+                ? "Hide the changes"
+                : changedLines
+                  ? `View the changes — ${changedLines} line${changedLines === 1 ? "" : "s"}`
+                  : "No lines changed"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="text-xs text-muted-foreground underline underline-offset-2"
+          >
+            {open ? "Hide the Python" : `View the Python — ${lines} lines`}
+          </button>
+        </div>
+        {diffOpen && diff && <DiffView diff={diff} />}
         {open && (
           <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs leading-5">
             <code>{code}</code>
@@ -175,6 +265,7 @@ export function CodeCard({
 const CHECK_LABELS: Record<string, string> = {
   sandbox: "Compiles and dry-runs in the sandbox (untrusted-code jail)",
   blueprint_conformance: "Code implements the blueprint",
+  minimal_change: "Only the requested change was made",
 };
 
 export function ChecksCard({
