@@ -14,7 +14,12 @@ export function BottomNav() {
       aria-label="Primary"
       className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
     >
-      <div className="grid h-tabbar grid-cols-5">
+      <div
+        className="grid h-tabbar"
+        style={{
+          gridTemplateColumns: `repeat(${BOTTOM_NAV_ITEMS.length}, minmax(0, 1fr))`,
+        }}
+      >
         {BOTTOM_NAV_ITEMS.map((item) => {
           const active = isActivePath(pathname, item.href);
           return (
