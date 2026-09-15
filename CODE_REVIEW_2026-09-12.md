@@ -298,39 +298,50 @@ scaffolding) implements; remaining deltas are the open items below.
 
 ## R5 — Architecture refactors
 
+> **Status 2026-09-15:** R5.2a, R5.3-R5.8 merged to main (five reviewed
+> branches; browser-verified on an integration build). Review catches
+> fixed pre-merge: getViewer was swallowing Next's dynamic-rendering
+> signal (static logged-out prerender risk); degraded /me fallbacks now
+> fail loud on auth-branching pages; job-poll failure cutoff widened to
+> ~60s with backoff. Note: the cn package swap turned out to be pure
+> supply-chain hygiene — the old package already had merge semantics.
+> Remaining in R5: R5.2b (postgresql_db domain split — needs its own
+> design pass), R5.9 (chart-theme single source), R5.10 (engine
+> relocations + the **=/// = regex rewriter).
+
 - [x] **R5.1 🔴 `save_custom_strategy` layering inversion** — closed by R4's git excision (plain transactional upsert; fork count inlined on the same cursor)
       (`postgresql_db.py:1243-1556`, 314 lines): db→services import, GitHub
       network I/O inside an open transaction, nested pool checkout via
       `increment_fork_count` (:1516) = pool-exhaustion deadlock pattern.
       Mostly dissolves with R4's git_service removal; the remainder becomes
       a plain transactional upsert. Do first — it's the concurrency risk.
-- [ ] **R5.2 🟡 `postgresql_db.py` (3,028 lines) split** — two stages:
+- [x] **R5.2 🟡 `postgresql_db.py` (3,028 lines) split** — two stages:
       (a) a `@contextmanager` for connection/cursor/commit-rollback
       (~70 copies of the boilerplate, ~1,000 lines removed mechanically);
       (b) split into per-domain modules (users / simulations / strategies /
       jobs / leaderboard) sharing the pool. Let exceptions propagate —
       today failures collapse to `None`/`[]`/`False` (e.g. `:417-420`,
       `:1075-1076`) so callers can't tell "empty" from "DB down".
-- [ ] **R5.3 🟡 Restore real `cn`**: `web/lib/utils.ts:1` re-exports the
+- [x] **R5.3 🟡 Restore real `cn`**: `web/lib/utils.ts:1` re-exports the
       8-year-old npm package `cn` (no tailwind-merge → conflicting utility
       classes resolve by CSS source order; unvetted micro-dep). Restore
       `clsx` + `tailwind-merge`; drop `cn`, move `shadcn` CLI out of
       runtime deps (`package.json`).
-- [ ] **R5.4 🟡 Shared evaluation-results component**: radar + score grid
+- [x] **R5.4 🟡 Shared evaluation-results component**: radar + score grid
       + scenario table duplicated (`leaderboard/entry-card.tsx:176-252` vs
       `strategies/[id]/evaluation-tab.tsx:183-245`); `categoryLabel` ×4.
-- [ ] **R5.5 🟡 One `usePdfDownload` hook**: the 120×2s generate-and-poll
+- [x] **R5.5 🟡 One `usePdfDownload` hook**: the 120×2s generate-and-poll
       loop is duplicated character-for-character
       (`pdf-button.tsx:10-38`, `simulation-card.tsx:66-94`).
-- [ ] **R5.6 🟡 One `useJobPolling` hook** (or adopt TanStack Query):
+- [x] **R5.6 🟡 One `useJobPolling` hook** (or adopt TanStack Query):
       four hand-rolled polling patterns; model on evaluation-tab's
       teardown-safe one; fixes R2.5's leak.
-- [ ] **R5.7 🟡 Error/loading story**: no `error.tsx`/`loading.tsx`
+- [x] **R5.7 🟡 Error/loading story**: no `error.tsx`/`loading.tsx`
       anywhere; `getViewer()` throws site-wide when the API is down
       (`web/lib/api.ts:76-78`) — even the guest landing crashes. Root
       `error.tsx`, `loading.tsx` for the serial-fetch dashboard, degrade
       `getViewer` to anonymous for public pages.
-- [ ] **R5.8 🟢** Shared `<SignInGate>` (five bespoke copies, already
+- [x] **R5.8 🟢** Shared `<SignInGate>` (five bespoke copies, already
       drifting); standardize all BFF routes on `proxyJson` (12 hand-rolled
       copies throw 500 on upstream non-JSON); type `Strategy` in
       `strategies/model.ts` instead of `Record<string, any>`
