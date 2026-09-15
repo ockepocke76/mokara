@@ -35,8 +35,9 @@ from db import strategy_generation as sg
 
 MAX_ATTEMPTS = 3        # automatic rework rounds (validate/static/analyze failures)
 MAX_REVISIONS = 3       # user-requested "refine" rounds at review
-MAX_LLM_CALLS = 24      # per-run backstop; must cover clarify (1) + full
-                        # rework budget (3x3) + full revision budget (3x3)
+MAX_LLM_CALLS = 30      # per-run backstop; must cover clarify (1) + full
+                        # rework budget (3x3) + full revision budget (3x3,
+                        # where an evolve refine re-runs spec+plan too: 3x5)
                         # on top of the base 5-call pass, with margin.
 
 class GenerationNeedsDecision(Exception):
@@ -80,6 +81,7 @@ class GenState(TypedDict, total=False):
 
     attempts: int
     revisions: int
+    respec: bool            # a review refine on an evolve run re-enters at extract_spec
     llm_calls: int
     rework_reason: str      # human-readable, for attempt_started events
     rework_feedback: str    # detailed, goes into the generate prompt
@@ -125,12 +127,27 @@ def _sanitize(value):
 
 # --- Nodes -----------------------------------------------------------------
 
+def _normalize_change_scope(spec: dict) -> None:
+    """Pin the free-text scope label to the three values the router compares
+    against — a mis-cased or reworded label must never reroute a run."""
+    raw = str(spec.get('change_scope') or '').lower()
+    if 'structural' in raw:
+        spec['change_scope'] = 'structural'
+    elif 'parameter' in raw:
+        spec['change_scope'] = 'parameter_only'
+    else:
+        spec['change_scope'] = 'behavioral'
+
+
 def _minimal_evolution(state: GenState) -> bool:
     """Evolve runs edit the seed code in place — except when the spec judged
     the request structural (a redesign), which falls back to the full create
-    pipeline (still saved into the seed row)."""
-    return bool(state.get('seed_code')) and \
-        (state.get('spec') or {}).get('change_scope') != 'structural'
+    pipeline (still saved into the seed row). A spec with no change list
+    (e.g. a run checkpointed before the change-spec existed) also falls back:
+    the edit prompts would otherwise run with nothing to apply."""
+    spec = state.get('spec') or {}
+    return bool(state.get('seed_code')) and bool(spec.get('changes')) and \
+        spec.get('change_scope') != 'structural'
 
 
 def extract_spec(state: GenState, config) -> dict:
@@ -142,8 +159,11 @@ def extract_spec(state: GenState, config) -> dict:
     else:
         prompt = prompts.spec_prompt(state['user_request'])
     spec, calls = _llm(state, config, prompt, tier='fast')
+    if state.get('seed_code'):
+        _normalize_change_scope(spec)
     name = state.get('strategy_name') or spec.get('suggested_name') or 'Custom Strategy'
     update = {'spec': spec, 'llm_calls': calls, 'strategy_name': name,
+              'respec': False,  # a refine re-entry is consumed here
               'clarify_questions': spec.get('questions') or []}
     sg.update_run(state['run_id'], spec=spec, strategy_name=name, llm_calls=calls)
     if not spec.get('needs_clarification'):
@@ -164,6 +184,8 @@ def clarify(state: GenState, config) -> dict:
             state['spec'], state.get('clarify_questions', []), answers['answers']),
             tier='fast')
         spec['needs_clarification'] = False
+        if state.get('seed_code'):
+            _normalize_change_scope(spec)
         update = {'spec': spec, 'llm_calls': calls}
         sg.update_run(state['run_id'], spec=spec, llm_calls=calls)
     else:
@@ -246,7 +268,9 @@ def generate(state: GenState, config) -> dict:
     sg.update_run(state['run_id'], llm_calls=calls)
     artifact = {'code': code, 'description': description, 'class_name': class_name,
                 'is_evolution': bool(state.get('seed_code'))}
-    if state.get('seed_code'):
+    # A structural rebuild's "diff" would just be both files interleaved —
+    # only a minimal edit gets the before/after view.
+    if evolving:
         artifact['diff'] = _evolution_diff(state['seed_code'], code)
     _emit(state, 'stage_completed', stage='code', artifact=artifact)
     return {'code': code, 'description': description, 'class_name': class_name,
@@ -255,26 +279,53 @@ def generate(state: GenState, config) -> dict:
             'baseline_result': {}, 'analyze': {}}
 
 
+def _strategy_method_dumps(code: str) -> Optional[dict]:
+    """{method name: normalized AST dump} for the strategy class in `code` —
+    the BaseStrategy subclass, else the last class defined. AST dumps are
+    formatting-immune, so a requote or re-indent never reads as a change."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    classes = [n for n in tree.body if isinstance(n, ast.ClassDef)]
+    cls = next((c for c in classes
+                if any(getattr(b, 'id', None) == 'BaseStrategy' for b in c.bases)),
+               classes[-1] if classes else None)
+    if cls is None:
+        return None
+    return {n.name: ast.dump(n) for n in cls.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
 def _evolution_fidelity(state: GenState, parameters: dict) -> Optional[str]:
     """Deterministic minimal-edit backstop for evolve runs: the prompts insist
-    on editing the seed, this catches the model rewriting anyway. Returns the
-    problem description, or None when the edit looks faithful."""
-    import difflib
-
+    on editing the seed, this catches the model straying anyway. Compares the
+    two versions method-by-method at the AST level (a size heuristic cannot
+    tell an edit from a rewrite on this corpus — BaseStrategy subclasses share
+    most of their text). Returns the problem, or None when the edit is
+    faithful."""
     from core.ast_parser import safe_parse_strategy_parameters
 
     scope = state['spec'].get('change_scope')
     seed_code, code = state['seed_code'], state['code']
-    drift = 1.0 - difflib.SequenceMatcher(None, seed_code, code).ratio()
-    # A default tweak barely moves the ratio; even a multi-rule behavioral
-    # edit leaves most lines intact. A from-scratch rewrite lands near 1.0.
-    limit = 0.30 if scope == 'parameter_only' else 0.70
+    if seed_code.strip() == code.strip():
+        return ("the code is identical to the original — the requested change "
+                "was never applied")
+    seed_methods = _strategy_method_dumps(seed_code)
+    new_methods = _strategy_method_dumps(code)
+    if seed_methods is None or new_methods is None:
+        return None  # unparseable (the sandbox gate already ran); LLM review still guards
+    changed = sorted(name for name in set(seed_methods) | set(new_methods)
+                     if seed_methods.get(name) != new_methods.get(name))
     problems = []
-    if drift > limit:
-        problems.append(
-            f"about {drift:.0%} of the code differs from the original — that is a "
-            f"rewrite, not the requested {scope} edit")
     if scope == 'parameter_only':
+        extra = [name for name in changed if name != 'parameters']
+        if extra:
+            problems.append(
+                f"a parameter_only change may only touch the `parameters` "
+                f"property, but these methods changed: {extra}")
         try:
             seed_params = safe_parse_strategy_parameters(
                 seed_code, state.get('seed_class_name') or state['class_name']) or {}
@@ -285,6 +336,17 @@ def _evolution_fidelity(state: GenState, parameters: dict) -> Optional[str]:
                 f"the parameter set changed (before: {sorted(seed_params)}, "
                 f"after: {sorted(parameters)}) — a parameter_only change keeps "
                 f"every existing parameter name")
+    else:  # behavioral: edits must stay within the methods the plan declared
+        targets = {str(e.get('target')).strip()
+                   for e in (state.get('plan') or {}).get('edits', [])
+                   if isinstance(e, dict) and e.get('target')}
+        if targets:
+            extra = [name for name in changed
+                     if name not in targets and name != 'parameters']
+            if extra:
+                problems.append(
+                    f"methods changed that no planned edit targets: {extra} "
+                    f"(planned targets: {sorted(targets)})")
     return "; ".join(problems) or None
 
 
@@ -480,7 +542,8 @@ def analyze(state: GenState, config) -> dict:
     evolution = None
     if _minimal_evolution(state):
         evolution = {'seed_name': state.get('seed_name'),
-                     'changes': state['spec'].get('changes', [])}
+                     'changes': state['spec'].get('changes', []),
+                     'baseline_ran': bool(baseline)}
     verdict, calls = _llm(state, config, prompts.analyze_prompt(
         state['spec'], state['plan'],
         state['test_result']['summary_stats'],
@@ -531,13 +594,29 @@ def review(state: GenState, config) -> dict:
         revisions += 1
         _emit(state, 'attempt_started', stage='code', attempt=revisions,
               max=MAX_REVISIONS, reason='you asked for changes')
-        return {'revisions': revisions,
-                'attempts': 0,  # a fresh user-requested round gets the full automatic-rework budget
-                'rework_stage': 'review',
-                'rework_reason': 'user requested changes',
-                'rework_feedback': f"The user reviewed the working strategy and asked for changes:\n"
-                                   f"{decision['feedback']}\n"
-                                   f"Keep everything else as is."}
+        update = {'revisions': revisions,
+                  'attempts': 0,  # a fresh user-requested round gets the full automatic-rework budget
+                  'rework_stage': 'review',
+                  'rework_reason': 'user requested changes'}
+        if _minimal_evolution(state):
+            # A refine on an evolve is a NEW evolution request: re-derive the
+            # change spec and edit plan against the seed with the feedback
+            # folded in. Feeding feedback straight into evolve_generate would
+            # pit it against the frozen change_scope/edits — the fidelity
+            # guard would then reject exactly what the user asked for.
+            update.update({
+                'respec': True,
+                'rework_feedback': None,
+                'user_request': (f"{state['user_request']}\n\n"
+                                 f"Follow-up change requested at review:\n"
+                                 f"{decision['feedback']}"),
+            })
+        else:
+            update['rework_feedback'] = (
+                f"The user reviewed the working strategy and asked for changes:\n"
+                f"{decision['feedback']}\n"
+                f"Keep everything else as is.")
+        return update
     return {'outcome': 'save'}
 
 
@@ -644,8 +723,11 @@ def _route_after_review(state: GenState) -> str:
     outcome = state.get('outcome')
     if outcome == 'discarded':
         return 'discard'
-    if state.get('rework_stage') == 'review' and state.get('rework_feedback'):
-        return 'generate'
+    if state.get('rework_stage') == 'review':
+        if state.get('respec'):
+            return 'extract_spec'
+        if state.get('rework_feedback'):
+            return 'generate'
     return 'save'
 
 
@@ -670,7 +752,8 @@ def build_graph(checkpointer=None):
     g.add_conditional_edges('test_sim', _rework_or('analyze'), ['rework', 'analyze'])
     g.add_conditional_edges('analyze', _rework_or('review'), ['rework', 'review'])
     g.add_conditional_edges('rework', _route_after_rework, ['fail', 'generate'])
-    g.add_conditional_edges('review', _route_after_review, ['discard', 'generate', 'save'])
+    g.add_conditional_edges('review', _route_after_review,
+                            ['discard', 'generate', 'save', 'extract_spec'])
     g.add_edge('save', END)
     g.add_edge('discard', END)
     g.add_edge('fail', END)

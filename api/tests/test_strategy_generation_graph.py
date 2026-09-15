@@ -211,7 +211,7 @@ def test_evolve_parameter_change_is_minimal_edit():
     # Exactly the requested default changed; every other line survived verbatim
     assert saved['code'] == seed_code.replace("'default': 0.04", "'default': 0.05")
 
-    history = db.get_strategy_evolution_history(sid)
+    history = db.get_strategy_evolution_history(sid, include_code=True)
     assert history and history[-1]['request'] == request
     # The pre-change code is snapshotted, so a bad evolve is recoverable
     assert history[-1]['previous_code'] == seed_code
@@ -228,8 +228,8 @@ def test_evolve_structural_request_falls_back_to_rebuild():
     events = sg.list_events(run_id)
     code_event = [e for e in events if e['type'] == 'stage_completed'
                   and e['payload'].get('stage') == 'code'][0]
-    # Structural = full create pipeline (no diff), still an evolution save-wise
-    assert 'diff' in code_event['payload']['artifact']
+    # Structural = full create pipeline: a rebuild gets no before/after diff
+    assert 'diff' not in code_event['payload']['artifact']
     # No minimal-change guard on a deliberate rebuild
     assert not [e for e in events if e['type'] == 'stage_progress'
                 and e['payload'].get('check') == 'minimal_change']
@@ -298,6 +298,100 @@ def test_evolve_rewrite_is_caught_by_minimal_change_guard(monkeypatch):
                 if e['type'] == 'run_failed'][0]['payload'].get('draft_id')
     assert draft_id and draft_id != sid
     assert '(draft ' in db.get_custom_strategy(draft_id)['strategy_name']
+
+
+def test_evolve_refine_respecs_against_seed():
+    """A review refine on an evolve run must re-derive the change spec (the
+    frozen original scope would otherwise reject feedback that widens it)."""
+    user_id = _new_user()
+    sid, _seed_code = _seed_strategy(user_id, name="Refine FIRE")
+    run_id = _start_evolve(user_id, sid, "change the default withdrawal rate to 5%")
+
+    runner.resume_run(run_id, {'kind': 'review', 'action': 'refine',
+                               'feedback': 'and round the rate to whole percents'})
+    run = sg.get_run(run_id)
+    assert run['status'] == 'needs_input'  # back at review after the refine round
+    # understanding ran twice: the refine re-specs instead of blindly
+    # regenerating against the stale plan
+    assert _stages_completed(run_id).count('understanding') == 2
+    assert _stages_completed(run_id).count('code') == 2
+
+    runner.resume_run(run_id, {'kind': 'review', 'action': 'save'})
+    run = sg.get_run(run_id)
+    assert run['status'] == 'completed'
+    assert run['final_strategy_id'] == sid
+
+
+def test_evolve_verbatim_seed_output_is_rejected(monkeypatch):
+    """A generator that returns the seed unchanged must fail the fidelity
+    check ('change never applied'), not save a no-op evolve."""
+    def parrot_llm(prompt, tier='fast', json_mode=False):
+        if prompt.startswith('TASK: evolve_generate'):
+            seed = prompt.split("```python", 1)[1].split("```", 1)[0].strip()
+            return f"<description>unchanged</description>\n```python\n{seed}\n```"
+        return fake_llm_call(prompt, tier=tier, json_mode=json_mode)
+
+    monkeypatch.setattr('app.agents.runner.get_llm_call', lambda: parrot_llm)
+
+    user_id = _new_user()
+    sid, seed_code = _seed_strategy(user_id, name="Parrot FIRE")
+    run_id = _start_evolve(user_id, sid, "set the default withdrawal rate to 5%")
+
+    run = sg.get_run(run_id)
+    assert run['status'] == 'failed'
+    checks = [e for e in sg.list_events(run_id) if e['type'] == 'stage_progress'
+              and e['payload'].get('check') == 'minimal_change']
+    assert checks and all(c['payload']['passed'] is False for c in checks)
+    assert 'never applied' in checks[-1]['payload']['message']
+    assert db.get_custom_strategy(sid)['code'] == seed_code  # seed untouched
+
+
+def test_evolve_clone_snapshots_parent_code():
+    """The previous_code snapshot must COALESCE from the parent for a
+    pure-reference clone (whose own code column is NULL)."""
+    user_id = _new_user()
+    parent_id, parent_code = _seed_strategy(user_id, name="Clone Parent")
+    clone_id = db.save_custom_strategy(
+        user_id=user_id, strategy_name="My Clone", class_name="SeedFireStrategy",
+        description='', ai_description='', code=None, parameters_json={},
+        validation_status='validated', parent_strategy_id=parent_id)
+    assert clone_id and clone_id != parent_id
+
+    run_id = _start_evolve(user_id, clone_id, "change the default withdrawal rate to 5%")
+    runner.resume_run(run_id, {'kind': 'review', 'action': 'save'})
+    assert sg.get_run(run_id)['status'] == 'completed'
+
+    history = db.get_strategy_evolution_history(clone_id, include_code=True)
+    assert history and history[-1]['previous_code'] == parent_code
+    # the default listing strips the snapshots in SQL
+    stripped = db.get_strategy_evolution_history(clone_id)
+    assert stripped and 'previous_code' not in stripped[-1]
+    # the parent's own row is untouched
+    assert db.get_custom_strategy(parent_id)['code'] == parent_code
+
+
+def test_change_scope_normalization_and_legacy_guard():
+    from app.agents.graph import _minimal_evolution, _normalize_change_scope
+
+    spec = {'change_scope': 'Structural Redesign'}
+    _normalize_change_scope(spec)
+    assert spec['change_scope'] == 'structural'
+    spec = {'change_scope': 'Parameter_Only'}
+    _normalize_change_scope(spec)
+    assert spec['change_scope'] == 'parameter_only'
+    spec = {}
+    _normalize_change_scope(spec)
+    assert spec['change_scope'] == 'behavioral'
+    # a checkpointed pre-change-spec run (no 'changes') falls back to the
+    # create pipeline instead of editing with an empty change list
+    assert not _minimal_evolution({'seed_code': 'x',
+                                   'spec': {'change_scope': 'behavioral'}})
+    assert _minimal_evolution({'seed_code': 'x',
+                               'spec': {'change_scope': 'behavioral',
+                                        'changes': ['a']}})
+    assert not _minimal_evolution({'seed_code': 'x',
+                                   'spec': {'change_scope': 'structural',
+                                            'changes': ['a']}})
 
 
 def test_blueprint_test_capital_clamped():

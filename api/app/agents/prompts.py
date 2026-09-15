@@ -148,6 +148,9 @@ Respond with JSON matching:
 
 
 def revise_spec_prompt(spec: dict, questions: list, answers: dict) -> str:
+    # An evolve spec (carries change_scope) must round-trip its own schema —
+    # a dropped change_scope/changes would silently reroute the run.
+    schema = _evolve_spec_schema() if 'change_scope' in spec else _spec_schema()
     return f"""TASK: revise_spec
 Update this strategy spec with the user's clarification answers. Remove
 resolved assumptions/questions, set needs_clarification=false, keep everything
@@ -159,8 +162,8 @@ Current spec:
 Questions asked: {json.dumps(questions)}
 User answers: {json.dumps(answers)}
 
-Respond with the full updated spec as a JSON object with exactly the same
-fields as the current spec."""
+Respond with JSON matching:
+{schema}"""
 
 
 def plan_prompt(spec: dict, examples_block: str) -> str:
@@ -214,7 +217,7 @@ a funded portfolio).
 
 Respond with JSON:
 {{
-  "edits": ["each precise edit: name the method or property and exactly what changes in it"],
+  "edits": [{{"target": "the exact method or property name the edit touches (one entry per touched method, including any NEW method or property an edit adds)", "change": "exactly what changes in it"}}],
   "rules": ["the strategy's full blueprint AFTER the edits: numbered plain-language rules restating the CURRENT code's behavior, altered only where an edit applies — the final code is reviewed against these"],
   "parameters": [{{"name": "...", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "description": "the current code's parameters verbatim except where an edit changes them"}}],
   "test_initial_investment": 1000000,
@@ -343,16 +346,25 @@ def analyze_prompt(spec: dict, plan: dict, summary_stats: dict,
                           f"{json.dumps(baseline_stats)}")
     evolution_block = ""
     if evolution:
+        if evolution.get('baseline_ran'):
+            comparison = (
+                "The baseline in this prompt IS the pre-change version of this "
+                "strategy, run on identical market paths. Judge conformance as: "
+                "(1) the requested change is reflected in the observed behavior "
+                "where these test conditions can show it; (2) behavior the change "
+                "does not touch tracks the pre-change baseline — a large divergence "
+                "the requested change cannot explain is a mismatch.")
+        else:
+            comparison = (
+                "No pre-change baseline comparison was available for this test. "
+                "Judge only whether the requested change is reflected in the "
+                "observed behavior where these test conditions can show it; do "
+                "not invent a before/after comparison.")
         evolution_block = (
             f"\nThis run EVOLVED the existing strategy '{evolution.get('seed_name')}'. "
             f"Requested changes:\n{json.dumps(evolution.get('changes', []), indent=2)}\n"
-            "The baseline above IS the pre-change version of this strategy, run on "
-            "identical market paths. Judge conformance as: (1) the requested change "
-            "is reflected in the observed behavior where these test conditions can "
-            "show it; (2) behavior the change does not touch tracks the pre-change "
-            "baseline — a large divergence the requested change cannot explain is a "
-            "mismatch. The explanation you write describes the strategy as it now "
-            "is, not the change.\n")
+            f"{comparison} The explanation you write describes the strategy as it "
+            "now is, not the change.\n")
     capital_block = ""
     if test_capital is not None:
         capital_block = (f"\nTest conditions: every path starts with "

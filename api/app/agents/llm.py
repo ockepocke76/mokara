@@ -161,8 +161,8 @@ def fake_llm_call(prompt: str, tier: str = 'fast', json_mode: bool = False) -> s
         })
     if task == 'evolve_plan':
         return json.dumps({
-            "edits": ["In the parameters property, change the withdrawal_rate "
-                      "default from 0.04 to 0.05."],
+            "edits": [{"target": "parameters",
+                       "change": "change the withdrawal_rate default from 0.04 to 0.05"}],
             "rules": ["Invest 100% of the starting cash into the asset in year 0.",
                       "Each year, withdraw the initial portfolio value times the withdrawal rate, adjusted for inflation.",
                       "Fund withdrawals by selling assets; never borrow."],
