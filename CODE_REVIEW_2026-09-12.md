@@ -305,9 +305,11 @@ scaffolding) implements; remaining deltas are the open items below.
 > fail loud on auth-branching pages; job-poll failure cutoff widened to
 > ~60s with backoff. Note: the cn package swap turned out to be pure
 > supply-chain hygiene — the old package already had merge semantics.
-> Remaining in R5: R5.2b (postgresql_db domain split — needs its own
-> design pass), R5.9 (chart-theme single source), R5.10 (engine
-> relocations + the **=/// = regex rewriter).
+> R5.2b merged 2026-09-15: PostgreSQLDatabase split into domain mixins
+> under db/postgresql/ (81 methods AST-verified byte-identical; facade
+> and every call site unchanged). Remaining in R5: R5.9 (chart-theme
+> single source), R5.10 (engine relocations + the **=/// = regex
+> rewriter).
 
 - [x] **R5.1 🔴 `save_custom_strategy` layering inversion** — closed by R4's git excision (plain transactional upsert; fork count inlined on the same cursor)
       (`postgresql_db.py:1243-1556`, 314 lines): db→services import, GitHub
