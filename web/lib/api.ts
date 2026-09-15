@@ -7,6 +7,7 @@
  */
 import "server-only";
 
+import { cache } from "react";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 
@@ -70,11 +71,15 @@ export type Viewer = {
   };
 };
 
-/** The acting viewer's profile from the API (anonymous-safe). */
-export async function getViewer(): Promise<Viewer> {
+/**
+ * The acting viewer's profile from the API (anonymous-safe).
+ * Wrapped in React cache() so the root layout and page components share one
+ * /me fetch (and one session lookup) per request instead of repeating it.
+ */
+export const getViewer = cache(async (): Promise<Viewer> => {
   const res = await apiFetch("/me");
   if (!res.ok) {
     throw new Error(`GET /me failed: ${res.status}`);
   }
   return res.json();
-}
+});

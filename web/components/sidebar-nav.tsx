@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChevronDown } from "lucide-react";
@@ -30,7 +30,11 @@ function DocsGroup({ item, pathname }: { item: NavItem; pathname: string }) {
   const inDocs = isActivePath(pathname, item.href);
   // null = follow the route; a chevron click overrides until the next navigation
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
-  useEffect(() => setManualOpen(null), [pathname]);
+  const [prevPathname, setPrevPathname] = useState(pathname);
+  if (prevPathname !== pathname) {
+    setPrevPathname(pathname);
+    setManualOpen(null);
+  }
   const open = manualOpen ?? inDocs;
 
   return (

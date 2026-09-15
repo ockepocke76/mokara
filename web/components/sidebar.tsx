@@ -34,6 +34,7 @@ export function Sidebar({ viewer }: { viewer: Viewer | null }) {
             name={viewer.name ?? viewer.email ?? "Account"}
             email={viewer.email ?? ""}
             isAdmin={viewer.is_admin ?? false}
+            className="w-full"
           />
         ) : (
           <Button asChild size="sm" className="w-full">

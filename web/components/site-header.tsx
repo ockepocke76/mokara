@@ -17,7 +17,6 @@ export function SiteHeader({ viewer }: { viewer: Viewer | null }) {
             width={32}
             height={32}
             className="rounded-md"
-            priority
           />
           <span className="truncate text-lg font-semibold tracking-tight">
             mokara.ai
