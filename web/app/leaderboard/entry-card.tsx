@@ -15,17 +15,12 @@ import {
 } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Markdown } from "@/components/markdown";
-import { Chart } from "@/components/chart";
+import {
+  EvaluationRadarScores,
+  ScenarioTable,
+} from "@/components/evaluation-results";
+import { categoryLabel } from "@/lib/strategy-format";
 import type { Entry } from "./types";
 
 const MEDALS: Record<number, string> = { 1: "🥇", 2: "🥈", 3: "🥉" };
@@ -34,14 +29,6 @@ const MEDAL_COLORS: Record<number, string> = {
   2: "#C0C0C0",
   3: "#CD7F32",
 };
-
-export function categoryLabel(category: string | null): string {
-  if (!category) return "—";
-  return category
-    .split("_")
-    .map((w) => w[0] + w.slice(1).toLowerCase())
-    .join(" ");
-}
 
 function hexToRgba(hex: string, alpha: number): string {
   const n = parseInt(hex.slice(1), 16);
@@ -173,81 +160,18 @@ export function EntryCard({
                 </div>
               )}
 
-              <div className="grid gap-6 md:grid-cols-2">
-                <div>
-                  {radar ? (
-                    <Chart
-                      className="h-80"
-                      data={radar.data}
-                      layout={{
-                        ...radar.layout,
-                        autosize: true,
-                        width: undefined,
-                      }}
-                    />
-                  ) : (
-                    <Skeleton className="h-80 w-full" />
-                  )}
-                </div>
-                <div>
-                  <p className="mb-2 text-sm font-semibold">
-                    🎯 Component Scores
-                  </p>
-                  <div className="grid grid-cols-2 gap-3">
-                    {entry.metric_grid.map((m) => (
-                      <div key={m.key} className="leading-tight">
-                        <p className="text-xs text-muted-foreground">
-                          {m.name}
-                        </p>
-                        <p className="text-lg font-bold tabular-nums">
-                          {m.score.toFixed(0)}
-                        </p>
-                        <p className="text-[11px] text-muted-foreground">
-                          {m.weight > 0
-                            ? `${(m.weight * 100).toFixed(0)}% Weight (${profileName})`
-                            : "Informational"}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
+              <EvaluationRadarScores
+                radar={radar}
+                metricGrid={entry.metric_grid}
+                profileName={profileName}
+              />
 
               {entry.scenario_results.length > 0 && (
                 <div className="mt-4 border-t pt-4">
-                  <p className="mb-2 text-sm font-semibold">
-                    Performance by Scenario:
-                  </p>
-                  <div className="overflow-hidden rounded-lg border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Scenario</TableHead>
-                          <TableHead className="text-right">
-                            Sortino Ratio
-                          </TableHead>
-                          <TableHead className="text-right">
-                            Success Rate
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {entry.scenario_results.map((s) => (
-                          <TableRow key={s.name}>
-                            <TableCell className="text-sm">{s.name}</TableCell>
-                            <TableCell className="text-right text-sm tabular-nums">
-                              {s.sortino_ratio?.toFixed(2) ?? "—"}
-                            </TableCell>
-                            <TableCell className="text-right text-sm tabular-nums">
-                              {s.success_rate !== null
-                                ? `${(s.success_rate * 100).toFixed(1)}%`
-                                : "—"}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                  <ScenarioTable
+                    scenarios={entry.scenario_results}
+                    title="Performance by Scenario:"
+                  />
                 </div>
               )}
 
