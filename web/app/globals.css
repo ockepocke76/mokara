@@ -5,6 +5,15 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Fixed-chrome heights: the single source for every offset that must match
+ * a bar's height (h-topbar/top-topbar, h-tabbar and the safe-area calcs).
+ */
+@theme {
+  --spacing-topbar: 3.5rem; /* mobile top bar (site-header) */
+  --spacing-tabbar: 3.5rem; /* mobile bottom tab bar (bottom-nav) */
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

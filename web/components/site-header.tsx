@@ -9,7 +9,7 @@ import { UserMenu } from "@/components/user-menu";
 export function SiteHeader({ viewer }: { viewer: Viewer | null }) {
   return (
     <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur md:hidden">
-      <div className="flex h-14 items-center gap-3 px-4">
+      <div className="flex h-topbar items-center gap-3 px-4">
         <Link href="/" className="flex min-w-0 flex-1 items-center gap-2.5">
           <Image
             src="/mokara-mark.jpg"
