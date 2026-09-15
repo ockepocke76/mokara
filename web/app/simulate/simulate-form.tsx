@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ParamField } from "@/components/param-field";
+import { useJobPolling } from "@/hooks/use-job-polling";
 import {
   defaultsFor,
   isVisible,
@@ -97,29 +98,33 @@ export function SimulateForm({
     setValues((prev) => ({ ...defaultsFor(params), ...prev }));
   }
 
-  async function poll(jobId: string, hash: string) {
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const res = await fetch(`/api/bff/jobs/${jobId}`);
-      if (!res.ok) continue;
-      const job = await res.json();
-      if (job.status === "COMPLETED") {
-        router.push(`/simulations/${hash}`);
-        return;
+  // Polling runs while (and only while) the phase machine is in "polling";
+  // the hook stops on terminal job states, bounded consecutive failures,
+  // navigation away (unmount), and phase changes. Phase transitions driven
+  // by poll results are render-time state adjustments (guarded so they
+  // converge); only navigation stays in an effect.
+  const pollingPhase = phase.kind === "polling" ? phase : null;
+  const { job, error: jobError } = useJobPolling(pollingPhase?.jobId ?? null);
+
+  if (pollingPhase) {
+    if (jobError) {
+      setPhase({ kind: "error", message: jobError });
+    } else if (job?.status === "FAILED") {
+      setPhase({ kind: "error", message: job.error ?? "Simulation failed" });
+    } else if (job && job.status !== "COMPLETED") {
+      const message = job.progress_message ?? job.status;
+      const value = job.progress_value ?? undefined;
+      if (message !== pollingPhase.message || value !== pollingPhase.value) {
+        setPhase({ ...pollingPhase, message, value });
       }
-      if (job.status === "FAILED") {
-        setPhase({ kind: "error", message: job.error ?? "Simulation failed" });
-        return;
-      }
-      setPhase({
-        kind: "polling",
-        jobId,
-        hash,
-        message: job.progress_message ?? job.status,
-        value: job.progress_value ?? undefined,
-      });
     }
   }
+
+  useEffect(() => {
+    if (pollingPhase && job?.status === "COMPLETED") {
+      router.push(`/simulations/${pollingPhase.hash}`);
+    }
+  }, [job, pollingPhase, router]);
 
   function buildParams(): Record<string, unknown> {
     const params: Record<string, unknown> = {
@@ -178,7 +183,6 @@ export function SimulateForm({
       hash: body.simulation_hash,
       message: "Queued…",
     });
-    void poll(body.job_id, body.simulation_hash);
   }
 
   const busy = phase.kind === "submitting" || phase.kind === "polling";

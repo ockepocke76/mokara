@@ -1,47 +1,16 @@
 "use client";
 
-import { useState } from "react";
-
 import { Button } from "@/components/ui/button";
+import { usePdfDownload } from "@/hooks/use-pdf-download";
 
 export function PdfButton({ hash }: { hash: string }) {
-  const [state, setState] = useState<"idle" | "working" | "error">("idle");
-
-  async function generate() {
-    setState("working");
-    const res = await fetch(`/api/bff/simulations/${hash}/pdf`, {
-      method: "POST",
-    });
-    if (!res.ok) {
-      setState("error");
-      return;
-    }
-    for (let i = 0; i < 120; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      const s = await fetch(`/api/bff/simulations/${hash}/pdf/status`);
-      if (!s.ok) continue;
-      const body = await s.json();
-      if (body.pdf_status === "ready") {
-        const a = document.createElement("a");
-        a.href = `/api/bff/simulations/${hash}/pdf`;
-        a.download = "";
-        a.click();
-        setState("idle");
-        return;
-      }
-      if (body.pdf_status === "failed") {
-        setState("error");
-        return;
-      }
-    }
-    setState("error");
-  }
+  const { status, start } = usePdfDownload(hash);
 
   return (
-    <Button variant="outline" onClick={generate} disabled={state === "working"}>
-      {state === "working"
+    <Button variant="outline" onClick={start} disabled={status === "working"}>
+      {status === "working"
         ? "Generating PDF…"
-        : state === "error"
+        : status === "error"
           ? "PDF failed — retry"
           : "📄 Download PDF"}
     </Button>
