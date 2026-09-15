@@ -1172,11 +1172,23 @@ class PostgreSQLDatabase:
             cursor = self._get_cursor(conn)
 
             # Check for existence (code fetched too: an evolve snapshots the
-            # pre-change code into evolution_history before overwriting it)
+            # pre-change code into evolution_history before overwriting it).
+            # COALESCE from the parent: a pure-reference clone's own code is
+            # NULL but its effective pre-change code is the parent's.
             if strategy_id:
-                cursor.execute("SELECT id, code FROM CUSTOM_STRATEGIES WHERE id = %s", (strategy_id,))
+                cursor.execute("""
+                    SELECT cs.id, COALESCE(cs.code, p.code)
+                    FROM CUSTOM_STRATEGIES cs
+                    LEFT JOIN CUSTOM_STRATEGIES p ON p.id = cs.parent_strategy_id
+                    WHERE cs.id = %s
+                """, (strategy_id,))
             else:
-                cursor.execute("SELECT id, code FROM CUSTOM_STRATEGIES WHERE user_id = %s AND strategy_name = %s", (user_id, strategy_name))
+                cursor.execute("""
+                    SELECT cs.id, COALESCE(cs.code, p.code)
+                    FROM CUSTOM_STRATEGIES cs
+                    LEFT JOIN CUSTOM_STRATEGIES p ON p.id = cs.parent_strategy_id
+                    WHERE cs.user_id = %s AND cs.strategy_name = %s
+                """, (user_id, strategy_name))
             row = cursor.fetchone()
             previous_code = row[1] if row else None
 
@@ -1537,24 +1549,39 @@ class PostgreSQLDatabase:
             self.release_connection(conn)
 
     @log_db_call
-    def get_strategy_evolution_history(self, strategy_id):
+    def get_strategy_evolution_history(self, strategy_id, include_code=False):
         """
         Fetch evolution history from the DB (V37 evolution_history column).
 
         Args:
             strategy_id: Strategy ID
+            include_code: also return each entry's previous_code snapshot.
+                Default False strips them in SQL — the snapshots grow with
+                every evolve and the history timeline never renders code.
 
         Returns:
             List of evolution entries with timestamp, request, commit_sha, user_id
+            (plus previous_code when include_code=True)
         """
         conn = self.get_connection()
         try:
             cursor = self._get_cursor(conn)
-            cursor.execute("""
-                SELECT evolution_history
-                FROM CUSTOM_STRATEGIES
-                WHERE id = %s
-            """, (strategy_id,))
+            if include_code:
+                cursor.execute("""
+                    SELECT evolution_history
+                    FROM CUSTOM_STRATEGIES
+                    WHERE id = %s
+                """, (strategy_id,))
+            else:
+                cursor.execute("""
+                    SELECT COALESCE(
+                        (SELECT jsonb_agg(entry - 'previous_code' ORDER BY ord)
+                         FROM jsonb_array_elements(cs.evolution_history)
+                              WITH ORDINALITY AS t(entry, ord)),
+                        '[]'::jsonb)
+                    FROM CUSTOM_STRATEGIES cs
+                    WHERE cs.id = %s
+                """, (strategy_id,))
 
             row = cursor.fetchone()
             if not row:

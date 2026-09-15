@@ -358,11 +358,11 @@ def strategy_history(strategy_id: int,
             })
         genesis = next((r['request'] for r in runs if r['kind'] == 'create'), None)
 
+    # previous_code snapshots stay server-side (revert material, not UI) —
+    # the DB strips them unless include_code=True is asked for.
     history = db.get_strategy_evolution_history(strategy_id) or []
     return {
-        # previous_code snapshots stay server-side (revert material, not UI)
-        'history': [_stringify_dates({k: v for k, v in dict(h).items()
-                                      if k != 'previous_code'}) for h in history],
+        'history': [_stringify_dates(dict(h)) for h in history],
         'runs': runs,
         'genesis': genesis or strategy.get('description'),
         'created_at': str(strategy.get('created_at') or '') or None,
