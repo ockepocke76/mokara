@@ -62,11 +62,15 @@ export function SpecCard({ spec, strategyName }: { spec: Spec; strategyName?: st
                 <li key={i}>{c}</li>
               ))}
             </ul>
-            {spec.change_scope !== "structural" && (
+            {spec.change_scope === "parameter_only" ? (
               <p className="mt-1 text-xs text-muted-foreground">
                 Everything else stays exactly as it is.
               </p>
-            )}
+            ) : spec.change_scope !== "structural" ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Only what these changes require will be touched.
+              </p>
+            ) : null}
           </div>
         )}
         {!!spec.mechanics?.length && (
@@ -238,9 +242,7 @@ export function CodeCard({
             >
               {diffOpen
                 ? "Hide the changes"
-                : changedLines
-                  ? `View the changes — ${changedLines} line${changedLines === 1 ? "" : "s"}`
-                  : "No lines changed"}
+                : `View the changes — ${changedLines} line${changedLines === 1 ? "" : "s"}`}
             </button>
           )}
           <button
@@ -265,7 +267,7 @@ export function CodeCard({
 const CHECK_LABELS: Record<string, string> = {
   sandbox: "Compiles and dry-runs in the sandbox (untrusted-code jail)",
   blueprint_conformance: "Code implements the blueprint",
-  minimal_change: "Only the requested change was made",
+  minimal_change: "Changes stayed within the requested scope",
 };
 
 export function ChecksCard({
