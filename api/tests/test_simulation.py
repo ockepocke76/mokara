@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 import pandas as pd
-from simulation import run_simulation
+from core.simulation import run_simulation
 from core.shared_logic import prepare_results_dataframe
 from core.stats import calculate_final_statistics
 from core.strategy import BuyBorrowDieStrategy, TrinityStrategy

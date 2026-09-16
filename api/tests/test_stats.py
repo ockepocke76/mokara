@@ -556,7 +556,7 @@ def test_sp500_historical_sharpe_ratio(base_params):
     of the S&P 500 data used in the bootstrap model. It serves as a real-world
     sanity check on the input data.
     """
-    from simulation import run_simulation
+    from core.simulation import run_simulation
     from core.shared_logic import assemble_params, prepare_results_dataframe
 
     ui_params = {
@@ -614,7 +614,7 @@ def test_sp500_historical_sortino_ratio(base_params):
     This is an integration-style test to validate the historical Sortino Ratio
     of the S&P 500 data, complementing the Sharpe Ratio test.
     """
-    from simulation import run_simulation
+    from core.simulation import run_simulation
     from core.shared_logic import assemble_params, prepare_results_dataframe
 
     ui_params = {
@@ -669,7 +669,7 @@ def test_strategy_sharpe_includes_costs_trinity(base_params):
     It runs two identical simulations: one with zero costs and one with high costs.
     The Sharpe ratio for the high-cost scenario must be lower.
     """
-    from simulation import run_simulation
+    from core.simulation import run_simulation
     from core.shared_logic import assemble_params, prepare_results_dataframe
 
     # --- Arrange: Scenario 1 (No Costs) ---
@@ -713,7 +713,7 @@ def _recalculate_bbd_with_costs(original_sims, params):
     by applying new cost parameters. This isolates the impact of costs from asset growth randomness
     by using the exact same annual returns from the original simulations.
     """
-    from simulation import SimulationResult
+    from core.simulation import SimulationResult
     from core.shared_logic import prepare_results_dataframe
 
     recalculated_sims = []
@@ -777,7 +777,7 @@ def test_strategy_sharpe_includes_costs_bbd(base_params):
     It runs two identical simulations: one with zero costs and one with high costs.
     The Sharpe ratio for the high-cost scenario must be lower.
     """
-    from simulation import run_simulation
+    from core.simulation import run_simulation
     from core.shared_logic import assemble_params, prepare_results_dataframe
 
     # --- Arrange: Scenario 1 (No Costs) ---
