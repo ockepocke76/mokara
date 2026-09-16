@@ -57,7 +57,7 @@ def test_happy_path_to_review_then_save():
     assert len(backtests) == 1
     for path in (artifact['paths'][0], backtests[0]):
         for series in ('net_worth', 'asset_value', 'debt', 'cash',
-                       'contributed', 'withdrawn'):
+                       'contributed', 'withdrawn', 'borrowed', 'sold'):
             values = path[series]
             assert len(values) == len(path['years'])
             # An engine column rename would yield all-None series of the right

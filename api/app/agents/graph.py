@@ -266,7 +266,11 @@ def _round_finite(v):
 _PATH_SERIES = {'net_worth': 'Net Worth', 'asset_value': 'Asset Value',
                 'debt': 'Debt', 'cash': 'Cash',
                 'contributed': 'Amount Contributed',
-                'withdrawn': 'Consumption Delivered'}
+                'withdrawn': 'Consumption Delivered',
+                # Debt-funded strategies (e.g. Buy Borrow Die) record zero
+                # 'Consumption Delivered' — the real cash flow is here, same
+                # keys _worst_path_trace already ships.
+                'borrowed': 'Debt Change', 'sold': 'Amount Sold'}
 
 
 def _condense_paths(result: dict) -> list[dict]:

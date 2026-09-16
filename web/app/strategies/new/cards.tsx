@@ -250,7 +250,15 @@ function StatTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-type SeriesKey = "net_worth" | "asset_value" | "debt" | "cash" | "contributed" | "withdrawn";
+type SeriesKey =
+  | "net_worth"
+  | "asset_value"
+  | "debt"
+  | "cash"
+  | "contributed"
+  | "withdrawn"
+  | "borrowed"
+  | "sold";
 
 /** Thin lines for the random paths, one thick highlighted line for the
  * historical backtest — the same visual grammar as the old app's test UI. */
@@ -332,6 +340,8 @@ const TABLE_COLUMNS: { key: SeriesKey; label: string }[] = [
   { key: "debt", label: "Debt" },
   { key: "contributed", label: "Contributed" },
   { key: "withdrawn", label: "Withdrawn" },
+  { key: "borrowed", label: "Borrowed" },
+  { key: "sold", label: "Sold" },
 ];
 
 function YearByYearTable({ paths }: { paths: TestPath[] }) {
@@ -457,6 +467,26 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
               marker: { color: "rgba(214,39,40,0.7)" },
             }
           : null,
+        // Debt-funded strategies (e.g. Buy Borrow Die) show zero withdrawn —
+        // spending shows up here instead.
+        backtest.borrowed?.some((v) => (v ?? 0) !== 0)
+          ? {
+              x: backtest.years,
+              y: backtest.borrowed,
+              type: "bar" as const,
+              name: "Borrowed",
+              marker: { color: "rgba(255,127,14,0.7)" },
+            }
+          : null,
+        backtest.sold?.some((v) => (v ?? 0) !== 0)
+          ? {
+              x: backtest.years,
+              y: backtest.sold,
+              type: "bar" as const,
+              name: "Sold",
+              marker: { color: "rgba(148,103,189,0.7)" },
+            }
+          : null,
       ].filter((t) => t !== null)
     : [];
 
@@ -569,14 +599,14 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
                     }}
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Annual contributions and withdrawals along the historical
-                    backtest path.
+                    Annual contributions, withdrawals, borrowing, and asset
+                    sales along the historical backtest path.
                   </p>
                 </>
               ) : (
                 <p className="py-6 text-center text-xs text-muted-foreground">
                   {backtest
-                    ? "No contributions or withdrawals occurred on the backtest path."
+                    ? "No contributions, withdrawals, borrowing, or asset sales occurred on the backtest path."
                     : "This run produced no historical backtest path to chart cash flows from."}
                 </p>
               )}
