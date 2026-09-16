@@ -298,3 +298,46 @@ def test_history_records_evolution():
     r = client.get(f"/strategies/{strategy_id}/history", headers=other)
     assert r.status_code == 200
     assert r.json()["runs"] == []
+
+
+def test_versions_endpoint_and_revert_flow():
+    headers = _auth()
+    _, strategy_id = _generate_and_save(headers)
+
+    # Evolve once so there is something to revert to
+    r = client.post("/strategies/generate", headers=headers,
+                    json={"request": "make the withdrawal rate 5%",
+                          "seed_strategy_id": strategy_id})
+    run_id = r.json()["run_id"]
+    r = client.post(f"/strategies/generate/{run_id}/resume", headers=headers,
+                    json={"kind": "review", "action": "save"})
+    assert r.status_code == 200
+
+    r = client.get(f"/strategies/{strategy_id}/versions", headers=headers)
+    assert r.status_code == 200
+    versions = r.json()["versions"]
+    assert [v["source"] for v in versions] == ["evolve", "create"]
+    assert versions[0]["is_head"] and versions[0]["short_hash"]
+    # Version metadata never carries code
+    assert "code" not in versions[0]
+
+    # Another user gets a 404, not someone else's lineage
+    other = _auth()
+    assert client.get(f"/strategies/{strategy_id}/versions",
+                      headers=other).status_code == 404
+    assert client.post(f"/strategies/{strategy_id}/revert", headers=other,
+                       json={"version_id": versions[1]["id"]}).status_code == 404
+
+    # Restore the original: append-only — three versions, head content = v1
+    r = client.post(f"/strategies/{strategy_id}/revert", headers=headers,
+                    json={"version_id": versions[1]["id"]})
+    assert r.status_code == 200, r.text
+    r = client.get(f"/strategies/{strategy_id}/versions", headers=headers)
+    versions = r.json()["versions"]
+    assert [v["source"] for v in versions] == ["revert", "evolve", "create"]
+    assert versions[0]["short_hash"] == versions[2]["short_hash"]
+
+    # Reverting to the current head is refused
+    r = client.post(f"/strategies/{strategy_id}/revert", headers=headers,
+                    json={"version_id": versions[0]["id"]})
+    assert r.status_code == 422
