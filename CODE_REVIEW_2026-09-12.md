@@ -307,9 +307,11 @@ scaffolding) implements; remaining deltas are the open items below.
 > supply-chain hygiene — the old package already had merge semantics.
 > R5.2b merged 2026-09-15: PostgreSQLDatabase split into domain mixins
 > under db/postgresql/ (81 methods AST-verified byte-identical; facade
-> and every call site unchanged). Remaining in R5: R5.9 (chart-theme
-> single source), R5.10 (engine relocations + the **=/// = regex
-> rewriter).
+> and every call site unchanged). R5.9 merged 2026-09-16: the drifted, importer-less web palette mirror
+> deleted (color_scheme.py is the single source; figures arrive fully
+> styled), plotly template now installed lazily instead of as an import
+> side effect. Remaining in R5: R5.10 (engine relocations + the
+> **=/// = regex rewriter).
 
 - [x] **R5.1 🔴 `save_custom_strategy` layering inversion** — closed by R4's git excision (plain transactional upsert; fork count inlined on the same cursor)
       (`postgresql_db.py:1243-1556`, 314 lines): db→services import, GitHub
@@ -348,7 +350,7 @@ scaffolding) implements; remaining deltas are the open items below.
       copies throw 500 on upstream non-JSON); type `Strategy` in
       `strategies/model.ts` instead of `Record<string, any>`
       (`strategy-detail.tsx:37-38`).
-- [ ] **R5.9 🟢 Single source of truth for chart theme**: web mirrors
+- [x] **R5.9 🟢 Single source of truth for chart theme**: web mirrors
       `color_scheme.py` hex-by-hex (`web/lib/chart-theme.ts:7-20`), which
       itself encodes light/dark four parallel times; two conflicting plotly
       base layouts. Serve palette from `/config` or codegen the TS.
