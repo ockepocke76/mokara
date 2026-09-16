@@ -62,7 +62,7 @@ def test_happy_path_to_review_then_save():
             assert len(values) == len(path['years'])
             # An engine column rename would yield all-None series of the right
             # length — require real numbers, not just the right shape.
-            if series in ('net_worth', 'asset_value'):
+            if series in ('net_worth', 'asset_value', 'borrowed', 'sold'):
                 assert any(v is not None for v in values)
 
     runner.resume_run(run_id, {'kind': 'review', 'action': 'save'})

@@ -340,7 +340,10 @@ const TABLE_COLUMNS: { key: SeriesKey; label: string }[] = [
   { key: "debt", label: "Debt" },
   { key: "contributed", label: "Contributed" },
   { key: "withdrawn", label: "Withdrawn" },
-  { key: "borrowed", label: "Borrowed" },
+  // Raw signed engine value (draws minus repayments) — "Debt change" reads
+  // correctly whichever way it goes; the chart below splits it into two
+  // always-nonnegative bars instead.
+  { key: "borrowed", label: "Debt change" },
   { key: "sold", label: "Sold" },
 ];
 
@@ -447,48 +450,48 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
     .filter(Boolean)
     .join(" ");
 
-  const cashFlowBars = backtest
-    ? [
-        backtest.contributed?.some((v) => (v ?? 0) !== 0)
-          ? {
-              x: backtest.years,
-              y: backtest.contributed,
-              type: "bar" as const,
-              name: "Contributed",
-              marker: { color: "rgba(44,160,44,0.7)" },
-            }
-          : null,
-        backtest.withdrawn?.some((v) => (v ?? 0) !== 0)
-          ? {
-              x: backtest.years,
-              y: backtest.withdrawn,
-              type: "bar" as const,
-              name: "Withdrawn",
-              marker: { color: "rgba(214,39,40,0.7)" },
-            }
-          : null,
-        // Debt-funded strategies (e.g. Buy Borrow Die) show zero withdrawn —
-        // spending shows up here instead.
-        backtest.borrowed?.some((v) => (v ?? 0) !== 0)
-          ? {
-              x: backtest.years,
-              y: backtest.borrowed,
-              type: "bar" as const,
-              name: "Borrowed",
-              marker: { color: "rgba(255,127,14,0.7)" },
-            }
-          : null,
-        backtest.sold?.some((v) => (v ?? 0) !== 0)
-          ? {
-              x: backtest.years,
-              y: backtest.sold,
-              type: "bar" as const,
-              name: "Sold",
-              marker: { color: "rgba(148,103,189,0.7)" },
-            }
-          : null,
-      ].filter((t) => t !== null)
+  // Debt-funded strategies (e.g. Buy Borrow Die) show zero withdrawn —
+  // spending shows up as borrowing/asset sales instead. 'borrowed' is the
+  // engine's signed net debt change (draws minus repayments), so it's split
+  // into two always-nonnegative bars here rather than plotting a value that
+  // can go negative under a one-directional "Borrowed" label/color.
+  const FLOW_SERIES = backtest
+    ? (
+        [
+          { name: "Contributed", captionLabel: "contributions", color: "rgba(44,160,44,0.7)", values: backtest.contributed },
+          { name: "Withdrawn", captionLabel: "withdrawals", color: "rgba(214,39,40,0.7)", values: backtest.withdrawn },
+          {
+            name: "Borrowed",
+            captionLabel: "borrowing",
+            color: "rgba(255,127,14,0.7)",
+            values: backtest.borrowed?.map((v) => ((v ?? 0) > 0 ? v : 0)),
+          },
+          {
+            name: "Debt repaid",
+            captionLabel: "debt repayment",
+            color: "rgba(31,119,180,0.7)",
+            values: backtest.borrowed?.map((v) => ((v ?? 0) < 0 ? -(v ?? 0) : 0)),
+          },
+          { name: "Sold", captionLabel: "asset sales", color: "rgba(148,103,189,0.7)", values: backtest.sold },
+        ] satisfies { name: string; captionLabel: string; color: string; values: (number | null)[] | undefined }[]
+      ).filter((s) => s.values?.some((v) => (v ?? 0) !== 0))
     : [];
+
+  const cashFlowBars = backtest
+    ? FLOW_SERIES.map((s) => ({
+        x: backtest.years,
+        y: s.values,
+        type: "bar" as const,
+        name: s.name,
+        marker: { color: s.color },
+      }))
+    : [];
+
+  const flowCaptionText = FLOW_SERIES.length
+    ? `Annual ${new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(
+        FLOW_SERIES.map((s) => s.captionLabel),
+      )} along the historical backtest path.`
+    : "";
 
   return (
     <Card>
@@ -598,15 +601,12 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
                       xaxis: { title: { text: "Year" } },
                     }}
                   />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Annual contributions, withdrawals, borrowing, and asset
-                    sales along the historical backtest path.
-                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">{flowCaptionText}</p>
                 </>
               ) : (
                 <p className="py-6 text-center text-xs text-muted-foreground">
                   {backtest
-                    ? "No contributions, withdrawals, borrowing, or asset sales occurred on the backtest path."
+                    ? "No contributions, withdrawals, borrowing, debt repayment, or asset sales occurred on the backtest path."
                     : "This run produced no historical backtest path to chart cash flows from."}
                 </p>
               )}

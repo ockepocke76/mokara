@@ -91,7 +91,8 @@ def test_full_generation_flow_and_crud():
     for series in ("net_worth", "asset_value", "debt", "cash",
                    "contributed", "withdrawn", "borrowed", "sold"):
         assert len(body["paths"][0][series]) == len(body["paths"][0]["years"])
-    assert any(v is not None for v in body["paths"][0]["net_worth"])
+    for series in ("net_worth", "borrowed", "sold"):
+        assert any(v is not None for v in body["paths"][0][series])
 
     # Evaluate queues a job
     r = client.post(f"/strategies/{strategy_id}/evaluate", headers=headers)
