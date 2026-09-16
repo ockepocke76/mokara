@@ -90,6 +90,7 @@ type VersionEntry = {
   request?: string | null;
   created_at?: string | null;
   is_head?: boolean;
+  inherited?: boolean;
   from_strategy_id?: number | null;
 };
 
@@ -156,7 +157,8 @@ function VersionsSection({ strategyId }: { strategyId: number }) {
     <div className="space-y-3">
       <p className="text-sm font-semibold">Versions</p>
       <p className="text-sm text-muted-foreground">
-        Every saved state of the code, newest first. Restoring never deletes
+        This strategy&apos;s line of saved code states, newest first (saves
+        that changed nothing aren&apos;t repeated). Restoring never deletes
         anything — the restored state becomes a new version.
       </p>
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -172,8 +174,16 @@ function VersionsSection({ strategyId }: { strategyId: number }) {
             <Badge variant={v.is_head ? "secondary" : "outline"}>
               {v.is_head ? "current" : VERSION_SOURCE_LABELS[v.source ?? ""] ?? v.source}
             </Badge>
+            {v.inherited && (
+              <Badge variant="outline" title="Saved on the strategy this one was cloned from">
+                from the original
+              </Badge>
+            )}
             {v.short_hash && (
-              <span className="font-mono text-xs text-muted-foreground">
+              <span
+                className="font-mono text-xs text-muted-foreground"
+                title="Content fingerprint — two versions with the same code and parameters share it"
+              >
                 {v.short_hash}
               </span>
             )}
@@ -187,11 +197,10 @@ function VersionsSection({ strategyId }: { strategyId: number }) {
               (confirmId === v.id ? (
                 <Button
                   size="sm"
-                  variant="destructive"
                   disabled={busyId !== null}
                   onClick={() => restore(v.id)}
                 >
-                  {busyId === v.id ? "Restoring…" : "Really restore?"}
+                  {busyId === v.id ? "Restoring…" : "Restore this version?"}
                 </Button>
               ) : (
                 <Button
