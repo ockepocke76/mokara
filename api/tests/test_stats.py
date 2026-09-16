@@ -747,7 +747,7 @@ def _recalculate_bbd_with_costs(original_sims, params):
                 total_cash_needed = consumption_drawdown + asset_management_fee
 
                 # 3. Calculate interest based on debt *after* borrowing for consumption and fees.
-                # This matches the logic in simulation.py
+                # This matches the logic in core/simulation.py
                 debt_for_consumption_and_fees = consumption_drawdown + asset_management_fee
                 interest_paid = (total_debt + debt_for_consumption_and_fees) * params['loan_interest_rate']
 
