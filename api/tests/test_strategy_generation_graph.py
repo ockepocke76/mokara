@@ -225,10 +225,14 @@ def test_evolve_parameter_change_is_minimal_edit():
     # Exactly the requested default changed; every other line survived verbatim
     assert saved['code'] == seed_code.replace("'default': 0.04", "'default': 0.05")
 
-    history = db.get_strategy_evolution_history(sid, include_code=True)
+    history = db.get_strategy_evolution_history(sid)
     assert history and history[-1]['request'] == request
-    # The pre-change code is snapshotted, so a bad evolve is recoverable
-    assert history[-1]['previous_code'] == seed_code
+    # The pre-change code lives in the version DAG, so a bad evolve is
+    # recoverable: head is the evolve, its parent is the original create.
+    versions = db.get_strategy_versions(sid, user_id)
+    assert [v['source'] for v in versions] == ['evolve', 'create']
+    assert versions[0]['is_head'] and versions[0]['request'] == request
+    assert db.get_strategy_version(versions[1]['id'])['code'] == seed_code
 
 
 def test_evolve_structural_request_falls_back_to_rebuild():
@@ -360,9 +364,11 @@ def test_evolve_verbatim_seed_output_is_rejected(monkeypatch):
     assert db.get_custom_strategy(sid)['code'] == seed_code  # seed untouched
 
 
-def test_evolve_clone_snapshots_parent_code():
-    """The previous_code snapshot must COALESCE from the parent for a
-    pure-reference clone (whose own code column is NULL)."""
+def test_evolve_clone_forks_the_version_dag():
+    """A pure-reference clone's head POINTS at the parent's version node;
+    evolving the clone forks the DAG there — the parent's chain and row stay
+    untouched, and the pre-change code stays reachable through the shared
+    ancestor."""
     user_id = _new_user()
     parent_id, parent_code = _seed_strategy(user_id, name="Clone Parent")
     clone_id = db.save_custom_strategy(
@@ -371,17 +377,27 @@ def test_evolve_clone_snapshots_parent_code():
         validation_status='validated', parent_strategy_id=parent_id)
     assert clone_id and clone_id != parent_id
 
+    # The clone's head is the parent's create node — a pointer, not a copy
+    clone_versions = db.get_strategy_versions(clone_id, user_id)
+    parent_versions = db.get_strategy_versions(parent_id, user_id)
+    assert len(parent_versions) == 1
+    assert [v['id'] for v in clone_versions] == [parent_versions[0]['id']]
+
     run_id = _start_evolve(user_id, clone_id, "change the default withdrawal rate to 5%")
     runner.resume_run(run_id, {'kind': 'review', 'action': 'save'})
     assert sg.get_run(run_id)['status'] == 'completed'
 
-    history = db.get_strategy_evolution_history(clone_id, include_code=True)
-    assert history and history[-1]['previous_code'] == parent_code
-    # the default listing strips the snapshots in SQL
-    stripped = db.get_strategy_evolution_history(clone_id)
-    assert stripped and 'previous_code' not in stripped[-1]
-    # the parent's own row is untouched
+    # Fork: the clone's evolve is a child of the SHARED ancestor node
+    clone_versions = db.get_strategy_versions(clone_id, user_id)
+    assert [v['source'] for v in clone_versions] == ['evolve', 'create']
+    assert clone_versions[0]['strategy_id'] == clone_id
+    assert clone_versions[1]['id'] == parent_versions[0]['id']
+    assert clone_versions[0]['parent_version_id'] == parent_versions[0]['id']
+    # The parent still heads at the shared node; its row is untouched
+    assert db.get_strategy_versions(parent_id, user_id) == parent_versions
     assert db.get_custom_strategy(parent_id)['code'] == parent_code
+    # The pre-change code stays reachable for revert
+    assert db.get_strategy_version(clone_versions[1]['id'])['code'] == parent_code
 
 
 def test_change_scope_normalization_and_legacy_guard():
