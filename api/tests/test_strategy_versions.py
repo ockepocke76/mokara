@@ -112,8 +112,10 @@ def test_revert_refuses_foreign_users_and_foreign_versions():
 
 
 def test_clone_ancestry_stops_at_other_users_history():
-    """A clone of another user's strategy sees the shared head node but never
-    the donor's private iteration history."""
+    """A clone of another user's strategy sees the shared head node (marked
+    inherited, its evolve prompt redacted) but never the donor's private
+    iteration history — and evolving the clone keeps exactly that boundary
+    node restorable."""
     owner = _new_user()
     cloner = _new_user()
     donor = _save(owner, "Donor", CODE_V1)
@@ -130,6 +132,47 @@ def test_clone_ancestry_stops_at_other_users_history():
 
     visible = db.get_strategy_versions(clone_id, cloner)
     assert [v['id'] for v in visible] == [donor_head['id']]  # head only
+    # The donor's evolve prompt is private — redacted on the boundary node
+    assert visible[0]['owned'] is False
+    assert visible[0]['request'] is None
+    # The donor sees their own prompt untouched
+    assert db.get_strategy_versions(donor, owner)[0]['request'] == "private iteration"
+
+    # Evolve the clone (cross-user fork): the boundary node must stay in the
+    # chain so the pre-evolve state is restorable — the feature's core flow.
+    _save(cloner, "Their Clone", CODE_V3, strategy_id=clone_id,
+          evolution_request="my own change")
+    chain = db.get_strategy_versions(clone_id, cloner)
+    assert [v['id'] for v in chain] == [chain[0]['id'], donor_head['id']]
+    assert chain[0]['owned'] is True and chain[0]['request'] == "my own change"
+    assert chain[1]['owned'] is False and chain[1]['request'] is None
+    # ...but never the donor's deeper history (the create node stays hidden)
+    assert len(chain) == 2
+
+    # Restore to the boundary node works and brings back the cloned code
+    res = db.revert_strategy_to_version(clone_id, cloner, donor_head['id'])
+    assert res['success'], res
+    assert db.get_custom_strategy(clone_id)['code'] == CODE_V2
+
+
+def test_pure_clone_revert_is_refused():
+    """An unedited clone tracks its parent — revert must not silently
+    materialize it into a fork."""
+    owner = _new_user()
+    cloner = _new_user()
+    donor = _save(owner, "Fixed Donor", CODE_V1)
+    donor_head = db.get_strategy_versions(donor, owner)[0]
+    clone_id = db.save_custom_strategy(
+        user_id=cloner, strategy_name="Tracking Clone",
+        class_name="VersionedStrategy", description='', ai_description='',
+        code=None, parameters_json={}, validation_status='validated',
+        parent_strategy_id=donor)
+
+    res = db.revert_strategy_to_version(clone_id, cloner, donor_head['id'])
+    assert not res['success']
+    assert 'unedited clone' in res['error']
+    row = db.get_custom_strategy(clone_id)
+    assert row['is_pure_clone'] is True  # still a tracking pointer
 
 
 def test_cloning_your_own_strategy_never_destroys_it():
@@ -152,6 +195,37 @@ def test_cloning_your_own_strategy_never_destroys_it():
     # And the clone's head points at the shared version node
     assert ([v['id'] for v in db.get_strategy_versions(res['strategy_id'], user_id)]
             == [db.get_strategy_versions(sid, user_id)[0]['id']])
+
+
+def test_cloning_over_a_soft_deleted_name_never_resurrects_it():
+    """The upsert's name lookup matches soft-deleted rows too (and its UPDATE
+    resurrects them), so the collision guard must see deleted names."""
+    from services.strategy_clone import clone_strategy
+
+    user_id = _new_user()
+    sid = _save(user_id, "Trash Test", CODE_V1)
+    assert db.soft_delete_custom_strategy(sid, user_id)
+
+    donor_owner = _new_user()
+    donor = _save(donor_owner, "Trash Test", CODE_V2)
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE CUSTOM_STRATEGIES SET is_public = TRUE WHERE id = %s",
+                       (donor,))
+        conn.commit()
+    finally:
+        db.release_connection(conn)
+
+    res = clone_strategy(strategy_id=donor, user_id=user_id, db=db)
+    assert res['success'], res
+    assert res['strategy_id'] not in (sid, donor)
+    clone = db.get_custom_strategy(res['strategy_id'])
+    assert clone['strategy_name'] == "Trash Test (clone)"
+    # The soft-deleted row stays deleted and untouched
+    trashed = db.get_custom_strategy(sid)
+    assert trashed['deleted_at'] is not None
+    assert trashed['code'] == CODE_V1
 
 
 def test_revert_to_head_repairs_a_diverged_row():
@@ -215,8 +289,20 @@ def test_backfill_reconstructs_legacy_rows():
     assert db.get_strategy_version(versions[0]['id'])['code'] == CODE_V2
     assert db.get_strategy_version(versions[1]['id'])['code'] == CODE_V1
     assert versions[0]['request'] == 'legacy evolve'
+    # Historical nodes get their parameters reconstructed from the code (the
+    # snapshots never stored them), so a restore must not wipe the row's
+    # params — the pre-fix behavior wrote '{}' over them.
+    hist_params = json.loads(db.get_strategy_version(versions[1]['id'])['parameters_json'])
+    assert hist_params['withdrawal_rate']['default'] == 0.04
+    res = db.revert_strategy_to_version(sid, user_id, versions[1]['id'])
+    assert res['success'], res
+    row = db.get_custom_strategy(sid)
+    assert row['code'] == CODE_V1
+    restored_params = db.deserialize_json_column(row['parameters_json'])
+    assert restored_params['withdrawal_rate']['default'] == 0.04
     # The clone points at the reconstructed head
     assert [v['id'] for v in db.get_strategy_versions(clone_id, user_id)][0] == versions[0]['id']
-    # Idempotent: a second pass changes nothing
+    # Idempotent for reconstruction: a later pass rebuilds nothing (the
+    # revert above legitimately appended one node)
     assert backfill_strategy_versions(db) == 0
-    assert len(db.get_strategy_versions(sid, user_id)) == 2
+    assert len(db.get_strategy_versions(sid, user_id)) == 3

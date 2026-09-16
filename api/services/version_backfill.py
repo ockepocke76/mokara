@@ -4,14 +4,17 @@ Startup backfill for the V39 strategy version DAG.
 Strategies that predate the DAG have code but no head_version_id. This
 reconstructs their chain from the legacy evolution_history previous_code
 snapshots (written between V37 and V39), then points pure-reference clones
-at their parent's head. Idempotent: rows with a head are never touched, so
-after one pass per database this is a cheap no-op.
+at their parent's head. Idempotent: rows with a head are never touched, and
+a cheap indexed probe skips everything (lock included) once a database has
+been backfilled.
 
 Runs at API startup under an advisory lock (same pattern as the builtin
 sync — concurrent containers must not double-insert version rows).
 """
 import json
 import logging
+
+from psycopg2 import errors as pg_errors
 
 from utils.strategy_utils import calculate_strategy_hash
 
@@ -21,13 +24,37 @@ def backfill_strategy_versions(db) -> int:
     conn = db.get_connection()
     try:
         cursor = db._get_cursor(conn)
+        # Cheap probe first (index-only on idx_custom_strategies_headless):
+        # in the steady state nothing is headless and no lock is taken. A
+        # pre-V39 schema (missing column) is a clean no-op, not an error.
+        try:
+            cursor.execute("""
+                SELECT 1 FROM CUSTOM_STRATEGIES
+                WHERE head_version_id IS NULL LIMIT 1
+            """)
+            if cursor.fetchone() is None:
+                return 0
+        except (pg_errors.UndefinedColumn, pg_errors.UndefinedTable):
+            logging.warning(
+                "Strategy-version backfill skipped: V39 not applied yet")
+            conn.rollback()
+            return 0
         cursor.execute(
             "SELECT pg_advisory_lock(hashtext('mokara_version_backfill'))")
         try:
             return _backfill(cursor, conn)
         finally:
-            cursor.execute(
-                "SELECT pg_advisory_unlock(hashtext('mokara_version_backfill'))")
+            # Roll back first: executing the unlock on an aborted transaction
+            # would raise and LEAK the session-level lock into the pool,
+            # blocking every future startup (same hazard the migration
+            # runner guards against in db/postgresql/core.py).
+            try:
+                conn.rollback()
+                cursor.execute(
+                    "SELECT pg_advisory_unlock(hashtext('mokara_version_backfill'))")
+                conn.commit()
+            except Exception:
+                logging.exception("Advisory unlock failed after backfill")
     finally:
         db.release_connection(conn)
 
@@ -56,7 +83,8 @@ def _backfill(cursor, conn) -> int:
         # is the code BEFORE request i, so request i belongs to the NEXT
         # snapshot in the chain (or to the current code for the last entry).
         snapshots = [(e.get('previous_code'), e.get('request'))
-                     for e in history if e.get('previous_code')]
+                     for e in history
+                     if isinstance(e, dict) and e.get('previous_code')]
         chain = []
         produced_by = None
         for snap_code, request in snapshots:
@@ -69,9 +97,16 @@ def _backfill(cursor, conn) -> int:
         parent_id = None
         for i, (node_code, request) in enumerate(chain):
             is_live = i == len(chain) - 1  # the final node is the live code
-            params = (parameters_json or '{}') if is_live else '{}'
+            # Historical snapshots never stored parameters: reconstruct them
+            # from the code itself where possible (a restore must not wipe
+            # the row's params with an unknown, so unknown stays NULL).
+            if is_live:
+                params = parameters_json or '{}'
+            else:
+                params = _params_from_code(node_code, class_name)
+            params_for_hash = json.loads(params) if params else {}
             content_hash = (sha if is_live and sha else
-                            calculate_strategy_hash(node_code, json.loads(params)))
+                            calculate_strategy_hash(node_code, params_for_hash))
             cursor.execute("""
                 INSERT INTO STRATEGY_VERSIONS
                     (strategy_id, content_hash, code, parameters_json,
@@ -99,3 +134,14 @@ def _backfill(cursor, conn) -> int:
     touched += cursor.rowcount
     conn.commit()
     return touched
+
+
+def _params_from_code(code: str, class_name: str):
+    """JSON string of the parameters declared in `code`, or None (unknown)."""
+    try:
+        from core.ast_parser import safe_parse_strategy_parameters
+
+        params = safe_parse_strategy_parameters(code, class_name)
+        return json.dumps(params) if params else None
+    except Exception:
+        return None

@@ -11,7 +11,9 @@ CREATE TABLE IF NOT EXISTS STRATEGY_VERSIONS (
     strategy_id INTEGER REFERENCES CUSTOM_STRATEGIES(id) ON DELETE SET NULL,
     content_hash VARCHAR(64) NOT NULL,
     code TEXT NOT NULL,
-    parameters_json TEXT NOT NULL DEFAULT '{}',
+    -- NULL = parameters unknown (reconstructed nodes); restore must never
+    -- overwrite the row's params with an unknown.
+    parameters_json TEXT,
     class_name VARCHAR(255),
     parent_version_id INTEGER REFERENCES STRATEGY_VERSIONS(id) ON DELETE SET NULL,
     source VARCHAR(16) NOT NULL DEFAULT 'edit'
@@ -33,3 +35,8 @@ CREATE INDEX IF NOT EXISTS idx_strategy_versions_hash
 ALTER TABLE CUSTOM_STRATEGIES
     ADD COLUMN IF NOT EXISTS head_version_id INTEGER
         REFERENCES STRATEGY_VERSIONS(id) ON DELETE SET NULL;
+
+-- The startup backfill probes for headless rows on every boot; keep that an
+-- index-only near-noop once everything is migrated.
+CREATE INDEX IF NOT EXISTS idx_custom_strategies_headless
+    ON CUSTOM_STRATEGIES(id) WHERE head_version_id IS NULL;

@@ -386,10 +386,12 @@ def strategy_versions(strategy_id: int,
          # content hashes carry a legacy 'draft_' prefix — not display material
          'short_hash': (v.get('content_hash') or '').removeprefix('draft_')[:8],
          'source': v.get('source'),
-         'request': v.get('request'),
+         'request': v.get('request'),  # already redacted for foreign nodes
          'created_at': str(v.get('created_at') or '') or None,
          'is_head': bool(v.get('is_head')),
-         # committed under another of the user's strategies (clone ancestry)
+         # a clone-boundary node: committed under a strategy the user does
+         # not own (the state that was cloned)
+         'inherited': not v.get('owned'),
          'from_strategy_id': (v.get('strategy_id')
                               if v.get('strategy_id') not in (None, strategy_id)
                               else None)}
