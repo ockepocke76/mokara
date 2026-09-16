@@ -3,7 +3,7 @@ from plotly.subplots import make_subplots
 import plotly.io as pio
 import logging
 from core.stats import get_final_outcomes_quantiles
-from reporting.color_scheme import ChartColors, get_chart_colors, get_theme_from_config, get_plotly_theme_template
+from reporting.color_scheme import ChartColors, get_chart_colors, get_chart_theme, get_plotly_theme_template
 
 import pandas as pd
 import numpy as np
@@ -15,14 +15,22 @@ except ImportError:
     STATSMODELS_AVAILABLE = False
 
 # --- Plotly Template Setup ---
-# Get the theme from config and create custom template
-Theme = get_theme_from_config()
-template_config = get_plotly_theme_template(theme_name='dark' if Theme.__name__ == 'DarkTheme' else 'light')
+# Installed lazily on first figure build: importing this module must not do
+# YAML I/O (get_chart_theme reads config.yml) or mutate global plotly state
+# as a side effect. Every public builder calls ensure_plotly_template().
+_plotly_template_installed = False
 
-pio.templates["my_theme"] = go.layout.Template(
-    layout=go.Layout(**template_config['layout'])
-)
-pio.templates.default = "my_theme"
+
+def ensure_plotly_template():
+    global _plotly_template_installed
+    if _plotly_template_installed:
+        return
+    _plotly_template_installed = True
+    template_config = get_plotly_theme_template(theme_name=get_chart_theme())
+    pio.templates["my_theme"] = go.layout.Template(
+        layout=go.Layout(**template_config['layout'])
+    )
+    pio.templates.default = "my_theme"
 
 
 def _apply_legend_style(fig, position='top-left'):
@@ -58,6 +66,7 @@ def plot_price_history_interactive(price_data, asset_name, params, theme='dark')
     """
     Generates an interactive Plotly chart for price history with a scale toggle.
     """
+    ensure_plotly_template()
     import pandas as pd
     start_date = params.get('start_date', 'N/A')
     # Get theme-aware colors
@@ -110,6 +119,7 @@ def plot_all_simulation_paths_interactive(full_results_df=None, sampled_results_
     - `sampled_results_df`: (Live Run) A smaller, sampled DataFrame for plotting faint paths.
     - `precalculated_asset_paths`: (Regeneration) A DataFrame with pre-calculated p25, p50, mean, and p75 paths.
     """
+    ensure_plotly_template()
     import pandas as pd
     # Get theme-aware colors
     Colors = get_chart_colors(theme)
@@ -306,6 +316,7 @@ def plot_final_net_worth_distribution_interactive(results_df=None, params=None, 
     """
     Generates an interactive Plotly histogram of the final net worth distribution with a scale toggle.
     """
+    ensure_plotly_template()
     import pandas as pd
     # Get theme-aware colors
     Colors = get_chart_colors(theme)
@@ -409,6 +420,7 @@ def plot_yearly_returns_interactive(yearly_returns_data, asset_name, theme='dark
     """
     Generates an interactive Plotly bar chart for yearly returns.
     """
+    ensure_plotly_template()
     import pandas as pd
     # Get theme-aware colors
     Colors = get_chart_colors(theme)
@@ -445,6 +457,7 @@ def plot_rolling_returns_histogram_interactive(returns_data, returns_stats, asse
     """
     Generates an interactive Plotly histogram for rolling returns.
     """
+    ensure_plotly_template()
     import pandas as pd
     # Get theme-aware colors
     Colors = get_chart_colors(theme)
@@ -524,6 +537,7 @@ def plot_autocorrelation_interactive(acf_data, asset_name, theme='dark'):
     Generates an interactive Plotly chart for autocorrelation of daily returns
     from pre-calculated ACF data.
     """
+    ensure_plotly_template()
     import pandas as pd
     # Get theme-aware colors
     Colors = get_chart_colors(theme)
@@ -580,6 +594,7 @@ def plot_historical_drawdowns_interactive(drawdowns, asset_name, theme='dark'):
     """
     Generates an interactive Plotly chart for historical drawdowns.
     """
+    ensure_plotly_template()
     import pandas as pd
     fig = go.Figure()
 
@@ -617,6 +632,7 @@ def plot_simulation_overview_interactive(df, params, final_stats, precalculated_
     Generates an interactive plot summarizing the simulation outcomes, including
     median asset value, net worth, debt, and annual drawdown, using a dual-axis layout.
     """
+    ensure_plotly_template()
     # --- Create a figure with a secondary y-axis ---
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -748,6 +764,7 @@ def plot_portfolio_value_overview_interactive(df, params, final_stats, precalcul
     Args:
         show_title: If False, suppresses title for mobile/compact layouts
     """
+    ensure_plotly_template()
     # Get theme-aware colors
     Colors = get_chart_colors(theme)
     fig = go.Figure()
@@ -904,6 +921,7 @@ def plot_cashflow_liabilities_interactive(df, params, final_stats, currency='SEK
     Displays median debt, cash, annual drawdown, total costs, and contributions on a linear scale.
     This is the second of two plots that replace the old dual-axis overview plot.
     """
+    ensure_plotly_template()
     # Get theme-aware colors
     Colors = get_chart_colors(theme)
     fig = go.Figure()
@@ -979,6 +997,7 @@ def plot_yearly_cash_flow_interactive(final_stats, params, currency='SEK', theme
     Args:
         show_title: If False, suppresses title for mobile/compact layouts
     """
+    ensure_plotly_template()
     import pandas as pd
     # Get theme-aware colors
     Colors = get_chart_colors(theme)
@@ -1087,6 +1106,7 @@ def plot_survival_curve_interactive(survival_rates, params, theme='dark'):
     Returns:
         Plotly figure object
     """
+    ensure_plotly_template()
     Colors = get_chart_colors(theme)
     fig = go.Figure()
     

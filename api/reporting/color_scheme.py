@@ -359,31 +359,6 @@ def get_chart_theme():
     return _cached_theme
 
 
-def get_theme_from_config():
-    """
-    Get the theme from the configuration file.
-    
-    Returns:
-        Theme class based on config, defaults to DarkTheme
-    """
-    try:
-        import yaml
-        import os
-        
-        config_path = os.path.join(os.path.dirname(__file__), '..', 'config.yml')
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f)
-                # Navigate to ui.chart_theme with default fallback
-                theme_name = config.get('ui', {}).get('chart_theme', {}).get('value', 'dark')
-                return get_theme(theme_name)
-    except Exception:
-        # If config can't be read, default to dark theme
-        pass
-    
-    return DarkTheme
-
-
 def get_plotly_theme_template(theme_name='dark'):
     """
     Returns a dictionary with Plotly template configuration for the specified theme.

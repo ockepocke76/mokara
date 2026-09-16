@@ -19,6 +19,11 @@ export type PlotlyChartProps = {
   className?: string;
 };
 
+// The engine (api/reporting/color_scheme.py) is the single source of truth
+// for chart colors/theme: figures arrive fully styled in the API's plotly
+// JSON. This base layout only adapts them to the page (transparent paper,
+// site font) — never re-style colors web-side (a hand-mirrored palette
+// drifted unnoticed until R5.9 deleted it).
 const BASE_LAYOUT: Partial<Layout> = {
   autosize: true,
   margin: { l: 48, r: 16, t: 32, b: 40 },
