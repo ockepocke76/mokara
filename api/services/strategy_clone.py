@@ -74,8 +74,23 @@ def clone_strategy(
                 'error': 'Recursion prevention: Clones must be edited/materialized before they can be cloned themselves.'
             }
         
-        # Determine clone name (use original name if not specified)
+        # Determine clone name (use original name if not specified). If the
+        # user already owns a strategy with that name, suffix it:
+        # save_custom_strategy upserts by (user_id, strategy_name), so a
+        # colliding clone would UPDATE the existing row — with
+        # is_clone_unedited=True that nulls its code (cloning your own
+        # strategy used to destroy it this way).
         final_clone_name = clone_name or parent_strategy['strategy_name']
+        existing = {s['strategy_name'] for s in
+                    (db.get_user_custom_strategies(user_id) or [])
+                    if s.get('user_id') == user_id}
+        if final_clone_name in existing:
+            base = final_clone_name
+            n = 2
+            final_clone_name = f"{base} (clone)"
+            while final_clone_name in existing:
+                final_clone_name = f"{base} (clone {n})"
+                n += 1
         
         # Extract parent metadata
         parent_sha = parent_strategy.get('git_commit_sha')
