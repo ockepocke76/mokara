@@ -337,7 +337,7 @@ export function SimulateForm({
         ))}
       </Accordion>
 
-      <div className="sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] -mx-4 border-t bg-background/95 px-4 py-3 backdrop-blur md:bottom-0">
+      <div className="sticky bottom-[calc(var(--spacing-tabbar)+env(safe-area-inset-bottom))] -mx-4 border-t bg-background/95 px-4 py-3 backdrop-blur md:bottom-0">
         {phase.kind === "error" && (
           <p className="mb-2 text-sm text-destructive">{phase.message}</p>
         )}

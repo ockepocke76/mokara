@@ -13,7 +13,7 @@ export function DocsMobileNav() {
   return (
     <nav
       aria-label="Docs sections"
-      className="sticky top-14 z-30 -mb-2 border-b bg-background/95 backdrop-blur md:hidden"
+      className="sticky top-topbar z-30 -mb-2 border-b bg-background/95 backdrop-blur md:hidden"
     >
       <div className="flex gap-2 overflow-x-auto px-4 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {DOCS_NAV.map((item) => {

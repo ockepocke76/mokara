@@ -41,7 +41,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
         <TooltipProvider delayDuration={200}>
           <div className="flex min-h-screen">
             <Sidebar viewer={viewer} />
-            <div className="flex min-w-0 flex-1 flex-col pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0">
+            <div className="flex min-w-0 flex-1 flex-col pb-[calc(var(--spacing-tabbar)+env(safe-area-inset-bottom))] md:pb-0">
               <SiteHeader viewer={viewer} />
               <EarlyAccessBanner />
               {children}
