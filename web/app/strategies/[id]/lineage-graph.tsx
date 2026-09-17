@@ -4,7 +4,10 @@
  *  branching off it, drawn with Mermaid (same renderer as the strategy
  *  flowcharts). Plain-language labels per the W5 UX rules — this is the map;
  *  the Versions list below it is where restores happen. */
+import { useMemo } from "react";
+
 import { MermaidChart } from "@/components/mermaid-chart";
+import { VERSION_SOURCE_LABELS } from "@/lib/version-source-labels";
 
 export type LineageNode = {
   id: number;
@@ -17,27 +20,23 @@ export type LineageNode = {
   parent_version_id?: number | null;
   inherited?: boolean;
   strategy_name?: string | null;
+  strategy_deleted?: boolean;
   heads?: { id: number; name: string }[];
 };
 
-const SOURCE_LABELS: Record<string, string> = {
-  create: "created",
-  evolve: "evolved",
-  edit: "edited",
-  revert: "restored",
-  backfill: "imported",
-};
-
-/** Mermaid labels break on quotes/brackets and we never want markup from
- *  user text — keep letters, digits and light punctuation only. */
+/** Mermaid flowchart labels break on quotes/brackets — keep letters, digits
+ *  and light punctuation. (XSS is mermaid's job: the shared MermaidChart pins
+ *  securityLevel "strict"; this is parser-escaping, not a security control.) */
 function clean(text: string, max: number): string {
   const stripped = text.replace(/[^\p{L}\p{N} .,%:;!?'()\-–—/]/gu, " ").replace(/\s+/g, " ").trim();
   return stripped.length > max ? `${stripped.slice(0, max - 1)}…` : stripped;
 }
 
+const MAX_GRAPH_NODES = 80;
+
 export function buildLineageMermaid(
   nodes: LineageNode[],
-  currentStrategyName: string,
+  currentStrategyId: number,
 ): string | null {
   if (nodes.length < 2) return null;
   const hasBranching = nodes.some((n) => !n.in_spine || n.inherited);
@@ -46,27 +45,36 @@ export function buildLineageMermaid(
   const ids = new Set(nodes.map((n) => n.id));
   const lines = ["flowchart LR"];
   const oldestFirst = [...nodes].sort((a, b) =>
-    (a.created_at ?? "").localeCompare(b.created_at ?? ""),
+    (a.created_at ?? "") < (b.created_at ?? "") ? -1 : 1,
   );
   for (const n of oldestFirst) {
     const parts: string[] = [];
     if (n.inherited) {
       parts.push("from the original");
     } else {
-      parts.push(SOURCE_LABELS[n.source ?? ""] ?? n.source ?? "saved");
+      // Name the strategy a fork node lives on — the text cue that keeps the
+      // graph readable without relying on color alone.
+      if (!n.in_spine && n.strategy_name) parts.push(clean(n.strategy_name, 26));
+      parts.push(clean(VERSION_SOURCE_LABELS[n.source ?? ""] ?? n.source ?? "saved", 16));
+      if (n.strategy_deleted) parts.push("(deleted strategy)");
     }
-    if (n.created_at) parts.push(clean(n.created_at.slice(0, 10), 12));
+    if (n.created_at) parts.push(n.created_at.slice(0, 10));
     if (n.request) parts.push(clean(n.request, 34));
     for (const h of n.heads ?? []) {
-      const name = clean(h.name, 24);
       parts.push(
-        name === clean(currentStrategyName, 24)
+        h.id === currentStrategyId
           ? "current version"
-          : `current of ${name}`,
+          : `current of ${clean(h.name, 24)}`,
       );
     }
     lines.push(`  v${n.id}["${parts.join("<br/>")}"]`);
-    const cls = n.inherited ? "inherited" : n.in_spine ? "spine" : "fork";
+    const cls = n.inherited
+      ? "inherited"
+      : n.strategy_deleted
+        ? "trashed"
+        : n.in_spine
+          ? "spine"
+          : "fork";
     lines.push(`  class v${n.id} ${cls}`);
   }
   for (const n of oldestFirst) {
@@ -77,6 +85,7 @@ export function buildLineageMermaid(
   lines.push(
     "  classDef spine fill:#dbeafe,stroke:#3b82f6,color:#1e3a5f",
     "  classDef fork fill:#f4f4f5,stroke:#a1a1aa,color:#3f3f46",
+    "  classDef trashed fill:#f4f4f5,stroke:#a1a1aa,color:#71717a,stroke-dasharray: 2 3",
     "  classDef inherited fill:#fef9c3,stroke:#ca8a04,color:#713f12,stroke-dasharray: 4 3",
   );
   return lines.join("\n");
@@ -84,21 +93,41 @@ export function buildLineageMermaid(
 
 export function LineageGraph({
   nodes,
-  strategyName,
+  strategyId,
 }: {
   nodes: LineageNode[];
-  strategyName: string;
+  strategyId: number;
 }) {
-  const code = buildLineageMermaid(nodes, strategyName);
+  const code = useMemo(
+    () =>
+      nodes.length > MAX_GRAPH_NODES
+        ? null
+        : buildLineageMermaid(nodes, strategyId),
+    [nodes, strategyId],
+  );
+  const legend = useMemo(() => {
+    const parts = ["blue is this strategy's own line of versions"];
+    if (nodes.some((n) => n.inherited))
+      parts.push("yellow is the version it was cloned from");
+    if (nodes.some((n) => !n.in_spine && !n.inherited))
+      parts.push(
+        "grey are versions saved on your related strategies (each named on its box)",
+      );
+    return parts.join(", ") + ".";
+  }, [nodes]);
+  if (nodes.length > MAX_GRAPH_NODES) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        This strategy&apos;s history is too large to draw — the full list is
+        below.
+      </p>
+    );
+  }
   if (!code) return null;
   return (
     <div className="space-y-2">
-      <p className="text-sm font-semibold">Lineage</p>
-      <p className="text-sm text-muted-foreground">
-        How this strategy&apos;s code branched over time — blue is this
-        strategy&apos;s own line, yellow is what it was cloned from, grey are
-        your other strategies that branched off it.
-      </p>
+      <p className="text-sm font-semibold">How this strategy branched</p>
+      <p className="text-sm text-muted-foreground">{legend}</p>
       <div className="overflow-x-auto rounded-md border p-3">
         <MermaidChart code={code} />
       </div>
