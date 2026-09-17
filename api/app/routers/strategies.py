@@ -369,6 +369,57 @@ def strategy_history(strategy_id: int,
     }
 
 
+@router.get("/strategies/{strategy_id}/versions")
+def strategy_versions(strategy_id: int,
+                      user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """The strategy's version ancestry (V39 DAG) — owner only: the chain
+    carries evolve requests, and revert is owner-only anyway."""
+    from db.database import db
+
+    user = _require_user(user)
+    strategy = _owned_strategy(strategy_id, user)
+    if strategy['user_id'] != user['id']:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    versions = db.get_strategy_versions(strategy_id, user['id']) or []
+    return {'versions': [
+        {'id': v['id'],
+         # content hashes carry a legacy 'draft_' prefix — not display material
+         'short_hash': (v.get('content_hash') or '').removeprefix('draft_')[:8],
+         'source': v.get('source'),
+         'request': v.get('request'),  # already redacted for foreign nodes
+         'created_at': str(v.get('created_at') or '') or None,
+         'is_head': bool(v.get('is_head')),
+         # a clone-boundary node: committed under a strategy the user does
+         # not own (the state that was cloned)
+         'inherited': not v.get('owned'),
+         'from_strategy_id': (v.get('strategy_id')
+                              if v.get('strategy_id') not in (None, strategy_id)
+                              else None)}
+        for v in versions]}
+
+
+class RevertRequest(BaseModel):
+    version_id: int
+
+
+@router.post("/strategies/{strategy_id}/revert")
+def revert_strategy(strategy_id: int, body: RevertRequest,
+                    user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """Restore an earlier version (append-only: the restore becomes the new
+    head). Ownership and ancestry are enforced in the DB layer too."""
+    from db.database import db
+
+    user = _require_user(user)
+    strategy = _owned_strategy(strategy_id, user)
+    if strategy['user_id'] != user['id']:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    result = db.revert_strategy_to_version(strategy_id, user['id'], body.version_id)
+    if not result.get('success'):
+        raise HTTPException(status_code=422,
+                            detail=result.get('error') or 'Revert failed')
+    return {'reverted': True, 'version_id': result.get('version_id')}
+
+
 @router.post("/strategies/{strategy_id}/publish")
 def publish_strategy(strategy_id: int,
                      user: Optional[dict] = Depends(get_current_user)) -> dict:

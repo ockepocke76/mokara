@@ -17,6 +17,76 @@ from ..logging_utils import log_db_call
 class StrategiesMixin:
     """Custom strategies: CRUD, lineage, publishing, and evaluations. Mixed into PostgreSQLDatabase."""
 
+    def _record_strategy_version(self, cursor, *, strategy_id, code,
+                                 parameters_json, class_name, content_hash,
+                                 source, request, user_id, prior_code=None):
+        """Append a version node (V39 DAG) and move the strategy's head, on
+        the caller's cursor/transaction. The version store is the recovery
+        substrate, so failures are NOT swallowed — the save fails with them.
+        The one tolerated case is a pre-V39 schema (missing table/column):
+        that rolls back to a savepoint and returns None so a not-yet-migrated
+        database keeps saving (callers degrade accordingly).
+
+        No-op when the head already carries this content_hash. When the
+        strategy has no head yet but we know the code being replaced
+        (prior_code), a 'backfill' parent node (parameters unknown → NULL) is
+        created first so the pre-change code is never lost — this makes the
+        save path self-healing for rows the startup backfill missed.
+        """
+        from psycopg2 import errors as pg_errors
+
+        cursor.execute("SAVEPOINT strategy_version")
+        try:
+            cursor.execute(
+                "SELECT head_version_id FROM CUSTOM_STRATEGIES WHERE id = %s",
+                (strategy_id,))
+            row = cursor.fetchone()
+            head_id = row[0] if row else None
+            if head_id:
+                cursor.execute(
+                    "SELECT content_hash FROM STRATEGY_VERSIONS WHERE id = %s",
+                    (head_id,))
+                head = cursor.fetchone()
+                if head and head[0] == content_hash:
+                    cursor.execute("RELEASE SAVEPOINT strategy_version")
+                    return head_id  # identical content — no new node
+            elif prior_code and prior_code.strip() and prior_code.strip() != (code or '').strip():
+                cursor.execute("""
+                    INSERT INTO STRATEGY_VERSIONS
+                        (strategy_id, content_hash, code, parameters_json,
+                         class_name, parent_version_id, source, created_by_user_id)
+                    VALUES (%s, %s, %s, NULL, %s, NULL, 'backfill', %s)
+                    RETURNING id
+                """, (strategy_id, calculate_strategy_hash(prior_code, {}),
+                      prior_code, class_name, user_id))
+                head_id = cursor.fetchone()[0]
+            cursor.execute("""
+                INSERT INTO STRATEGY_VERSIONS
+                    (strategy_id, content_hash, code, parameters_json,
+                     class_name, parent_version_id, source, request,
+                     created_by_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (strategy_id, content_hash, code, parameters_json, class_name,
+                  head_id, source, request, user_id))
+            version_id = cursor.fetchone()[0]
+            cursor.execute(
+                "UPDATE CUSTOM_STRATEGIES SET head_version_id = %s WHERE id = %s",
+                (version_id, strategy_id))
+            cursor.execute("RELEASE SAVEPOINT strategy_version")
+            return version_id
+        except (pg_errors.UndefinedTable, pg_errors.UndefinedColumn):
+            logging.warning(
+                "Strategy-version store missing (V39 not applied); saving without it")
+            cursor.execute("ROLLBACK TO SAVEPOINT strategy_version")
+            return None
+        except Exception:
+            # Anything else is a real failure of the recovery substrate:
+            # restore the savepoint so the transaction is clean, then let the
+            # save fail loudly instead of silently diverging row from head.
+            cursor.execute("ROLLBACK TO SAVEPOINT strategy_version")
+            raise
+
     @log_db_call
     def save_custom_strategy(self, user_id, strategy_name, class_name, description, ai_description, code, 
                             parameters_json, validation_status='not_started', validation_error=None, 
@@ -116,19 +186,34 @@ class StrategiesMixin:
                       parent_strategy_id, clone_source_commit_sha, is_clone_unedited,
                       is_clone_unedited, is_clone_unedited, strategy_id))
 
+                version_id = None
+                if code and not is_clone_unedited:
+                    # V39 version DAG: this save replaces the row's code —
+                    # append a version node and move the head.
+                    version_id = self._record_strategy_version(
+                        cursor, strategy_id=strategy_id, code=code,
+                        parameters_json=parameters_json, class_name=class_name,
+                        content_hash=(git_commit_sha or
+                                      calculate_strategy_hash(code, json.loads(parameters_json))),
+                        source=('evolve' if evolution_request else 'edit'),
+                        request=evolution_request, user_id=user_id,
+                        prior_code=previous_code)
+
                 if evolution_request:
-                    # DB-native evolution history (V37) — this column is the
-                    # authoritative timeline. Savepoint: recording the timeline
-                    # must never fail the save itself (e.g. V37 not applied).
+                    # DB-native evolution history (V37) — the human-request
+                    # timeline. Savepoint: recording the timeline must never
+                    # fail the save itself (e.g. V37 not applied). Code
+                    # snapshots live in STRATEGY_VERSIONS (V39), not here —
+                    # EXCEPT on a pre-V39 database, where the legacy snapshot
+                    # is the only recovery material until the backfill runs.
                     entry = {
                         'timestamp': datetime.now(timezone.utc).isoformat(),
                         'request': evolution_request,
                         'user_id': user_id,
                         'commit_sha': git_commit_sha,
-                        # Snapshot of the code this evolve replaced — the only
-                        # way back after an in-place update.
-                        'previous_code': previous_code,
                     }
+                    if code and not is_clone_unedited and version_id is None:
+                        entry['previous_code'] = previous_code
                     cursor.execute("SAVEPOINT evolution_append")
                     try:
                         cursor.execute("""
@@ -196,6 +281,30 @@ class StrategiesMixin:
                         WHERE id = %s
                     """, (git_commit_sha, strategy_id))
 
+                if code:
+                    # V39 version DAG: the first commit on this strategy.
+                    self._record_strategy_version(
+                        cursor, strategy_id=strategy_id, code=code,
+                        parameters_json=parameters_json, class_name=class_name,
+                        content_hash=git_commit_sha, source='create',
+                        request=evolution_request, user_id=user_id)
+                elif parent_strategy_id:
+                    # Pure-reference clone: the head is a POINTER to the
+                    # parent's current version node — no copy, and a later
+                    # evolve of the clone forks the DAG at that node.
+                    # Savepoint: must not fail saves on a pre-V39 schema.
+                    cursor.execute("SAVEPOINT clone_head")
+                    try:
+                        cursor.execute("""
+                            UPDATE CUSTOM_STRATEGIES SET head_version_id =
+                                (SELECT head_version_id FROM CUSTOM_STRATEGIES WHERE id = %s)
+                            WHERE id = %s
+                        """, (parent_strategy_id, strategy_id))
+                        cursor.execute("RELEASE SAVEPOINT clone_head")
+                    except Exception:
+                        logging.exception("Clone head-pointer set failed; saving without it")
+                        cursor.execute("ROLLBACK TO SAVEPOINT clone_head")
+
             conn.commit()
 
             return strategy_id
@@ -248,6 +357,23 @@ class StrategiesMixin:
         except Exception as e:
             logging.error(f"Failed to get custom strategies: {e}", exc_info=True)
             return []
+
+    @log_db_call
+    def get_user_strategy_names(self, user_id):
+        """ALL of the user's strategy names, soft-deleted included — the same
+        universe save_custom_strategy's (user_id, strategy_name) upsert
+        matches against (its lookup has no deleted_at filter and the update
+        resurrects), so collision guards must use this, not a live-only
+        listing."""
+        try:
+            with self._connection_cursor(commit=False) as cursor:
+                cursor.execute(
+                    "SELECT strategy_name FROM CUSTOM_STRATEGIES WHERE user_id = %s",
+                    (user_id,))
+                return {row[0] for row in cursor.fetchall()}
+        except Exception as e:
+            logging.error(f"Failed to get strategy names: {e}", exc_info=True)
+            return set()
 
     @log_db_call
     def get_custom_strategy(self, strategy_id):
@@ -423,6 +549,186 @@ class StrategiesMixin:
         except Exception as e:
             logging.error(f"Failed to get evolution history: {e}", exc_info=True)
             return []
+
+    # V39 version DAG ------------------------------------------------------
+
+    # A node is GRANTED to the user when they own the strategy it was
+    # committed under, or when their own chain forked from it (the clone
+    # boundary: the fork point's content was handed over at clone time).
+    # Traversal therefore expands only FROM nodes the user owns — a foreign
+    # node enters the chain as its boundary, but its own ancestors (the
+    # donor's private iterations) stay unreachable.
+    _VERSION_ANCESTRY_SQL = """
+        WITH RECURSIVE chain AS (
+            SELECT v.id, v.content_hash, v.parent_version_id, v.strategy_id,
+                   v.source, v.request, v.created_at, 0 AS depth
+            FROM CUSTOM_STRATEGIES cs
+            JOIN STRATEGY_VERSIONS v ON v.id = cs.head_version_id
+            WHERE cs.id = %(strategy_id)s
+            UNION ALL
+            SELECT p.id, p.content_hash, p.parent_version_id, p.strategy_id,
+                   p.source, p.request, p.created_at, c.depth + 1
+            FROM STRATEGY_VERSIONS p
+            JOIN chain c ON p.id = c.parent_version_id
+            JOIN CUSTOM_STRATEGIES co ON co.id = c.strategy_id
+            WHERE c.depth < 500 AND co.user_id = %(user_id)s
+        )
+        SELECT chain.id, chain.content_hash, chain.parent_version_id,
+               chain.strategy_id, chain.source, chain.created_at, chain.depth,
+               (owner.user_id IS NOT NULL AND owner.user_id = %(user_id)s)
+                   AS owned,
+               -- The evolve request is the author's private prompt: only the
+               -- node's owner gets to read it.
+               CASE WHEN owner.user_id = %(user_id)s THEN chain.request END
+                   AS request
+        FROM chain
+        LEFT JOIN CUSTOM_STRATEGIES owner ON owner.id = chain.strategy_id
+    """
+
+    @log_db_call
+    def get_strategy_versions(self, strategy_id, user_id):
+        """The strategy's version ancestry (head first — its `git log`),
+        metadata only. Nodes committed under other users' strategies appear
+        only as clone-boundary nodes (owned=False, request redacted); their
+        ancestors are never traversed."""
+        try:
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor,
+                                         commit=False) as cursor:
+                cursor.execute(self._VERSION_ANCESTRY_SQL + " ORDER BY depth",
+                               {'strategy_id': strategy_id, 'user_id': user_id})
+                rows = [dict(r) for r in cursor.fetchall()]
+                for r in rows:
+                    r['is_head'] = r['depth'] == 0
+                return rows
+        except Exception as e:
+            logging.error(f"Failed to get strategy versions: {e}", exc_info=True)
+            return []
+
+    @log_db_call
+    def get_strategy_version(self, version_id):
+        """One version node, code included."""
+        try:
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor,
+                                         commit=False) as cursor:
+                cursor.execute("""
+                    SELECT id, strategy_id, content_hash, code, parameters_json,
+                           class_name, parent_version_id, source, request,
+                           created_at, created_by_user_id
+                    FROM STRATEGY_VERSIONS WHERE id = %s
+                """, (version_id,))
+                return cursor.fetchone()
+        except Exception as e:
+            logging.error(f"Failed to get strategy version {version_id}: {e}", exc_info=True)
+            return None
+
+    @log_db_call
+    def revert_strategy_to_version(self, strategy_id, user_id, version_id):
+        """Git-revert style restore: append a NEW head whose content is an
+        ancestor version's (history stays append-only), and write that content
+        back onto the strategy row. The target must be in the strategy's own
+        ancestry (ownership-bounded), so nobody reverts onto arbitrary or
+        foreign version nodes.
+
+        Returns {'success': bool, 'error': str|None, 'version_id': int|None}.
+        """
+        conn = self.get_connection()
+        try:
+            cursor = self._get_cursor(conn)
+            cursor.execute("""
+                SELECT cs.user_id, cs.head_version_id, cs.git_commit_sha,
+                       hv.content_hash,
+                       (cs.code IS NULL AND cs.parent_strategy_id IS NOT NULL)
+                           AS is_pure_clone
+                FROM CUSTOM_STRATEGIES cs
+                LEFT JOIN STRATEGY_VERSIONS hv ON hv.id = cs.head_version_id
+                WHERE cs.id = %s AND cs.deleted_at IS NULL
+            """, (strategy_id,))
+            row = cursor.fetchone()
+            if not row:
+                return {'success': False, 'error': 'Strategy not found', 'version_id': None}
+            owner_id, head_id, row_sha, head_sha, is_pure_clone = row
+            if owner_id != user_id:
+                logging.warning(
+                    "SECURITY: user %s attempted revert on strategy %s owned by %s",
+                    user_id, strategy_id, owner_id)
+                return {'success': False, 'error': 'Not your strategy', 'version_id': None}
+            if not head_id:
+                return {'success': False, 'error': 'No version history yet', 'version_id': None}
+            if is_pure_clone:
+                # An unedited clone TRACKS its parent — writing code onto it
+                # would silently materialize it into a fork. (Its NULL hash
+                # would otherwise read as a repairable divergence below.)
+                return {'success': False,
+                        'error': 'This is an unedited clone — it follows its '
+                                 'parent. Evolve it first, or restore on the '
+                                 'original strategy.',
+                        'version_id': None}
+            if version_id == head_id and row_sha == head_sha:
+                # Restoring the head is a no-op — unless the row's content has
+                # somehow diverged from its own head, where the restore is
+                # exactly the repair needed.
+                return {'success': False, 'error': 'Already the current version', 'version_id': None}
+            cursor.execute(self._VERSION_ANCESTRY_SQL + " ORDER BY depth",
+                           {'strategy_id': strategy_id, 'user_id': owner_id})
+            if version_id not in [r[0] for r in cursor.fetchall()]:
+                return {'success': False, 'error': "Not in this strategy's history",
+                        'version_id': None}
+            cursor.execute("""
+                SELECT code, parameters_json, class_name, content_hash, source
+                FROM STRATEGY_VERSIONS WHERE id = %s
+            """, (version_id,))
+            code, parameters_json, class_name, content_hash, source = cursor.fetchone()
+            # Reconstructed ('backfill') nodes have unknown parameters (NULL)
+            # and code that never ran under the current validator: never wipe
+            # the row's params with an unknown, and don't stamp 'validated'
+            # on code this system did not validate.
+            cursor.execute("""
+                UPDATE CUSTOM_STRATEGIES
+                SET code = %s, parameters_json = COALESCE(%s, parameters_json),
+                    class_name = COALESCE(%s, class_name),
+                    git_commit_sha = %s, is_clone_unedited = FALSE,
+                    validation_status = CASE WHEN %s = 'backfill'
+                                             THEN validation_status
+                                             ELSE 'validated' END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (code, parameters_json, class_name, content_hash, source,
+                  strategy_id))
+            new_version_id = self._record_strategy_version(
+                cursor, strategy_id=strategy_id, code=code,
+                parameters_json=parameters_json, class_name=class_name,
+                content_hash=content_hash, source='revert',
+                request=f"Restored version {version_id}", user_id=user_id)
+            if new_version_id is None:
+                # Version store unavailable (pre-V39): a restore that cannot
+                # record itself must not happen at all.
+                conn.rollback()
+                return {'success': False,
+                        'error': 'Version store unavailable', 'version_id': None}
+            # The human timeline records the restore too (savepoint-guarded
+            # like every evolution append).
+            entry = {'timestamp': datetime.now(timezone.utc).isoformat(),
+                     'request': 'Restored an earlier version',
+                     'user_id': user_id, 'commit_sha': content_hash}
+            cursor.execute("SAVEPOINT evolution_append")
+            try:
+                cursor.execute("""
+                    UPDATE CUSTOM_STRATEGIES
+                    SET evolution_history = COALESCE(evolution_history, '[]'::jsonb) || %s::jsonb
+                    WHERE id = %s
+                """, (json.dumps([entry]), strategy_id))
+                cursor.execute("RELEASE SAVEPOINT evolution_append")
+            except Exception:
+                logging.exception("Evolution-history append failed; reverting without it")
+                cursor.execute("ROLLBACK TO SAVEPOINT evolution_append")
+            conn.commit()
+            return {'success': True, 'error': None, 'version_id': new_version_id}
+        except Exception as e:
+            logging.error(f"Failed to revert strategy {strategy_id}: {e}", exc_info=True)
+            conn.rollback()
+            return {'success': False, 'error': 'Revert failed', 'version_id': None}
+        finally:
+            self.release_connection(conn)
 
     @log_db_call
     def set_strategy_published_status(self, strategy_id, user_id, is_published):

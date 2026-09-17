@@ -2,12 +2,15 @@
 
 /** History tab: the strategy's human-input timeline. For the owner this is
  *  built from the generation runs — the verbatim original request, evolve
- *  requests, clarify answers, and refine feedback. Strategies without
- *  recorded runs (non-owners, migrated rows) fall back to the legacy
- *  evolution entries + genesis. */
+ *  requests, clarify answers, and refine feedback — plus the version chain
+ *  (V39 DAG) with one-click restore. Strategies without recorded runs
+ *  (non-owners, migrated rows) fall back to the legacy evolution entries +
+ *  genesis. */
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -68,10 +71,152 @@ export function HistoryTab({ strategyId }: { strategyId: number }) {
   }
 
   const runs = payload.runs ?? [];
-  if (runs.length > 0) {
-    return <RunTimeline runs={runs} />;
+  return (
+    <div className="space-y-8">
+      {runs.length > 0 ? (
+        <RunTimeline runs={runs} />
+      ) : (
+        <LegacyTimeline payload={payload} />
+      )}
+      <VersionsSection strategyId={strategyId} />
+    </div>
+  );
+}
+
+type VersionEntry = {
+  id: number;
+  short_hash?: string;
+  source?: string;
+  request?: string | null;
+  created_at?: string | null;
+  is_head?: boolean;
+  inherited?: boolean;
+  from_strategy_id?: number | null;
+};
+
+const VERSION_SOURCE_LABELS: Record<string, string> = {
+  create: "created",
+  evolve: "evolved",
+  edit: "edited",
+  revert: "restored",
+  backfill: "imported",
+};
+
+/** The version chain (owner only — the endpoint 404s for everyone else,
+ *  which simply hides the section). */
+function VersionsSection({ strategyId }: { strategyId: number }) {
+  const router = useRouter();
+  const [versions, setVersions] = useState<VersionEntry[] | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [confirmId, setConfirmId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/bff/strategies/${strategyId}/versions`);
+        if (!res.ok) return; // non-owner: no section
+        const body = await res.json();
+        if (!cancelled) setVersions(body.versions ?? []);
+      } catch {
+        // Leave hidden; a reload recovers.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [strategyId, refreshKey]);
+
+  async function restore(versionId: number) {
+    setBusyId(versionId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/bff/strategies/${strategyId}/revert`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version_id: versionId }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setError(typeof body.detail === "string" ? body.detail : "Restore failed.");
+        return;
+      }
+      setRefreshKey((k) => k + 1); // reload the list
+      router.refresh(); // code/params on the page reflect the restored head
+    } finally {
+      setBusyId(null);
+      setConfirmId(null);
+    }
   }
-  return <LegacyTimeline payload={payload} />;
+
+  if (!versions || versions.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm font-semibold">Versions</p>
+      <p className="text-sm text-muted-foreground">
+        This strategy&apos;s line of saved code states, newest first (saves
+        that changed nothing aren&apos;t repeated). Restoring never deletes
+        anything — the restored state becomes a new version.
+      </p>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <div className="space-y-2">
+        {versions.map((v, i) => (
+          <div
+            key={v.id}
+            className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-sm"
+          >
+            <span className="font-mono text-xs text-muted-foreground">
+              v{versions.length - i}
+            </span>
+            <Badge variant={v.is_head ? "secondary" : "outline"}>
+              {v.is_head ? "current" : VERSION_SOURCE_LABELS[v.source ?? ""] ?? v.source}
+            </Badge>
+            {v.inherited && (
+              <Badge variant="outline" title="Saved on the strategy this one was cloned from">
+                from the original
+              </Badge>
+            )}
+            {v.short_hash && (
+              <span
+                className="font-mono text-xs text-muted-foreground"
+                title="Content fingerprint — two versions with the same code and parameters share it"
+              >
+                {v.short_hash}
+              </span>
+            )}
+            <span className="text-xs text-muted-foreground">
+              {formatTime(v.created_at)}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-muted-foreground">
+              {v.request ?? ""}
+            </span>
+            {!v.is_head &&
+              (confirmId === v.id ? (
+                <Button
+                  size="sm"
+                  disabled={busyId !== null}
+                  onClick={() => restore(v.id)}
+                >
+                  {busyId === v.id ? "Restoring…" : "Restore this version?"}
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busyId !== null}
+                  onClick={() => setConfirmId(v.id)}
+                >
+                  Restore
+                </Button>
+              ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function RunTimeline({ runs }: { runs: RunEntry[] }) {
