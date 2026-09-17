@@ -322,7 +322,14 @@ function OverviewTab({
         </Card>
       )}
 
-      <FamilyTree strategyId={strategy.id} />
+      <FamilyTree
+        strategyId={strategy.id}
+        mayHaveFamily={
+          Boolean(strategy.parent_strategy_id) ||
+          strategy.is_builtin ||
+          (strategy.usage_clone_count ?? 0) + (strategy.usage_fork_count ?? 0) > 0
+        }
+      />
     </div>
   );
 }

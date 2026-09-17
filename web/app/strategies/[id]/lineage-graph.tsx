@@ -7,6 +7,7 @@
 import { useMemo } from "react";
 
 import { MermaidChart } from "@/components/mermaid-chart";
+import { cleanMermaidLabel as clean } from "@/lib/mermaid-label";
 import { VERSION_SOURCE_LABELS } from "@/lib/version-source-labels";
 
 export type LineageNode = {
@@ -23,14 +24,6 @@ export type LineageNode = {
   strategy_deleted?: boolean;
   heads?: { id: number; name: string }[];
 };
-
-/** Mermaid flowchart labels break on quotes/brackets — keep letters, digits
- *  and light punctuation. (XSS is mermaid's job: the shared MermaidChart pins
- *  securityLevel "strict"; this is parser-escaping, not a security control.) */
-function clean(text: string, max: number): string {
-  const stripped = text.replace(/[^\p{L}\p{N} .,%:;!?'()\-–—/]/gu, " ").replace(/\s+/g, " ").trim();
-  return stripped.length > max ? `${stripped.slice(0, max - 1)}…` : stripped;
-}
 
 const MAX_GRAPH_NODES = 80;
 
