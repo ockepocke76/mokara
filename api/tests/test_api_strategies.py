@@ -316,11 +316,16 @@ def test_versions_endpoint_and_revert_flow():
 
     r = client.get(f"/strategies/{strategy_id}/versions", headers=headers)
     assert r.status_code == 200
-    versions = r.json()["versions"]
+    body = r.json()
+    versions = body["versions"]
     assert [v["source"] for v in versions] == ["evolve", "create"]
     assert versions[0]["is_head"] and versions[0]["short_hash"]
     # Version metadata never carries code
     assert "code" not in versions[0]
+    # The lineage graph's fork rows ship in the same response — empty for a
+    # plain linear history (no row is ever shipped twice)
+    assert body["forks"] == []
+    assert all(v["in_spine"] for v in versions)
 
     # Another user gets a 404, not someone else's lineage
     other = _auth()
@@ -342,3 +347,19 @@ def test_versions_endpoint_and_revert_flow():
     r = client.post(f"/strategies/{strategy_id}/revert", headers=headers,
                     json={"version_id": versions[0]["id"]})
     assert r.status_code == 422
+
+
+def test_version_serializer_redacts_foreign_nodes():
+    """A clone-boundary node (owned=False) must never ship its parent id (a
+    pointer into the donor's private chain) or the donor's strategy name."""
+    from app.routers.strategies import _serialize_version_node
+
+    node = {'id': 5, 'content_hash': 'draft_abcdef', 'parent_version_id': 4,
+            'owned': False, 'strategy_name': 'Donor Secret', 'request': None}
+    out = _serialize_version_node(node)
+    assert out['parent_version_id'] is None
+    assert out['strategy_name'] is None
+    assert out['inherited'] is True
+    out = _serialize_version_node({**node, 'owned': True})
+    assert out['parent_version_id'] == 4
+    assert out['inherited'] is False

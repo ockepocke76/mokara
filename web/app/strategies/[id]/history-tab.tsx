@@ -7,12 +7,16 @@
  *  (non-owners, migrated rows) fall back to the legacy evolution entries +
  *  genesis. */
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+
+import { VERSION_SOURCE_LABELS } from "@/lib/version-source-labels";
+
+import { LineageGraph, type LineageNode } from "./lineage-graph";
 
 type RunInput = {
   kind?: string;
@@ -83,43 +87,40 @@ export function HistoryTab({ strategyId }: { strategyId: number }) {
   );
 }
 
-type VersionEntry = {
-  id: number;
-  short_hash?: string;
-  source?: string;
-  request?: string | null;
-  created_at?: string | null;
-  is_head?: boolean;
-  inherited?: boolean;
-  from_strategy_id?: number | null;
-};
+type VersionEntry = LineageNode;
 
-const VERSION_SOURCE_LABELS: Record<string, string> = {
-  create: "created",
-  evolve: "evolved",
-  edit: "edited",
-  revert: "restored",
-  backfill: "imported",
-};
-
-/** The version chain (owner only — the endpoint 404s for everyone else,
- *  which simply hides the section). */
+/** The version chain + lineage graph (owner only — the endpoint 404s for
+ *  everyone else, which simply hides the section). */
 function VersionsSection({ strategyId }: { strategyId: number }) {
   const router = useRouter();
   const [versions, setVersions] = useState<VersionEntry[] | null>(null);
+  const [forks, setForks] = useState<LineageNode[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [confirmId, setConfirmId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const nodes = useMemo(
+    () => [...(versions ?? []), ...forks],
+    [versions, forks],
+  );
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch(`/api/bff/strategies/${strategyId}/versions`);
-        if (!res.ok) return; // non-owner: no section
+        if (!res.ok) {
+          // First load: non-owner, just hide the section. After a restore's
+          // refetch, though, silence would leave a stale list on screen.
+          if (!cancelled && versions !== null)
+            setError("Couldn't refresh the version list — reload the page.");
+          return;
+        }
         const body = await res.json();
-        if (!cancelled) setVersions(body.versions ?? []);
+        if (!cancelled) {
+          setVersions(body.versions ?? []);
+          setForks(body.forks ?? []);
+        }
       } catch {
         // Leave hidden; a reload recovers.
       }
@@ -127,6 +128,7 @@ function VersionsSection({ strategyId }: { strategyId: number }) {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId, refreshKey]);
 
   async function restore(versionId: number) {
@@ -154,7 +156,9 @@ function VersionsSection({ strategyId }: { strategyId: number }) {
   if (!versions || versions.length === 0) return null;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-6">
+      <LineageGraph nodes={nodes} strategyId={strategyId} />
+      <div className="space-y-3">
       <p className="text-sm font-semibold">Versions</p>
       <p className="text-sm text-muted-foreground">
         This strategy&apos;s line of saved code states, newest first (saves
@@ -214,6 +218,7 @@ function VersionsSection({ strategyId }: { strategyId: number }) {
               ))}
           </div>
         ))}
+      </div>
       </div>
     </div>
   );

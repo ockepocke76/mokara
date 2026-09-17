@@ -605,6 +605,84 @@ class StrategiesMixin:
             return []
 
     @log_db_call
+    def get_strategy_lineage(self, strategy_id, user_id):
+        """The strategy's lineage GRAPH: its ancestry spine (same granted /
+        redacted semantics as get_strategy_versions) plus every descendant
+        node on the user's OWN strategies (their forks — soft-deleted ones
+        included as pass-through, flagged strategy_deleted, so deleting an
+        intermediate clone never amputates a live branch from the graph).
+        Other users' forks of the user's strategies are private to those
+        users and never appear.
+
+        Everything runs on ONE connection/snapshot — a save landing between
+        split reads would otherwise draw the fresh head as a parentless fork.
+
+        Returns {'spine': [...], 'forks': [...]}; both row sets carry
+        in_spine and heads = [{'id','name'}] naming the user's live
+        strategies whose head is that node.
+        """
+        try:
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor,
+                                         commit=False) as cursor:
+                cursor.execute(self._VERSION_ANCESTRY_SQL + " ORDER BY depth",
+                               {'strategy_id': strategy_id, 'user_id': user_id})
+                spine = [dict(r) for r in cursor.fetchall()]
+                if not spine:
+                    return {'spine': [], 'forks': []}
+                for r in spine:
+                    r['is_head'] = r['depth'] == 0
+                    r['in_spine'] = True
+                spine_ids = [r['id'] for r in spine]
+
+                cursor.execute("""
+                    WITH RECURSIVE forks AS (
+                        SELECT v.id, v.content_hash, v.parent_version_id,
+                               v.strategy_id, v.source, v.request, v.created_at,
+                               o.strategy_name,
+                               (o.deleted_at IS NOT NULL) AS strategy_deleted
+                        FROM STRATEGY_VERSIONS v
+                        JOIN CUSTOM_STRATEGIES o ON o.id = v.strategy_id
+                        WHERE v.parent_version_id = ANY(%(spine_ids)s)
+                          AND v.id != ALL(%(spine_ids)s)
+                          AND o.user_id = %(user_id)s
+                        UNION
+                        SELECT c.id, c.content_hash, c.parent_version_id,
+                               c.strategy_id, c.source, c.request, c.created_at,
+                               o2.strategy_name,
+                               (o2.deleted_at IS NOT NULL) AS strategy_deleted
+                        FROM STRATEGY_VERSIONS c
+                        JOIN forks f ON c.parent_version_id = f.id
+                        JOIN CUSTOM_STRATEGIES o2 ON o2.id = c.strategy_id
+                        WHERE o2.user_id = %(user_id)s
+                    )
+                    SELECT * FROM forks ORDER BY created_at, id
+                """, {'spine_ids': spine_ids, 'user_id': user_id})
+                forks = [dict(r) for r in cursor.fetchall()]
+                for r in forks:
+                    r['owned'] = True  # the fork walk only visits owned rows
+                    r['in_spine'] = False
+                    r['is_head'] = False
+
+                all_ids = spine_ids + [r['id'] for r in forks]
+                cursor.execute("""
+                    SELECT head_version_id, id, strategy_name
+                    FROM CUSTOM_STRATEGIES
+                    WHERE user_id = %(user_id)s AND deleted_at IS NULL
+                      AND head_version_id = ANY(%(ids)s)
+                """, {'user_id': user_id, 'ids': all_ids})
+                heads = {}
+                for row in cursor.fetchall():
+                    heads.setdefault(row['head_version_id'], []).append(
+                        {'id': row['id'], 'name': row['strategy_name']})
+                for n in spine + forks:
+                    n['heads'] = heads.get(n['id'], [])
+                return {'spine': spine, 'forks': forks}
+        except Exception as e:
+            logging.error(f"Failed to get strategy lineage: {e}", exc_info=True)
+            return {'spine': self.get_strategy_versions(strategy_id, user_id),
+                    'forks': []}
+
+    @log_db_call
     def get_strategy_version(self, version_id):
         """One version node, code included."""
         try:

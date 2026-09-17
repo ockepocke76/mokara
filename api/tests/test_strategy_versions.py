@@ -253,6 +253,68 @@ def test_revert_to_head_repairs_a_diverged_row():
     assert not db.revert_strategy_to_version(sid, user_id, head['id'])['success']
 
 
+def test_lineage_includes_own_forks_with_head_markers():
+    """The lineage graph adds the user's own forks to the ancestry spine,
+    with head markers naming which strategy each head node is current for."""
+    from services.strategy_clone import clone_strategy
+
+    user_id = _new_user()
+    sid = _save(user_id, "Lineage Root", CODE_V1)
+    clone = clone_strategy(strategy_id=sid, user_id=user_id, db=db)
+    assert clone['success']
+    clone_id = clone['strategy_id']
+    _save(user_id, "Lineage Root (clone)", CODE_V2, strategy_id=clone_id,
+          evolution_request="fork it")
+
+    lineage = db.get_strategy_lineage(sid, user_id)
+    assert [v['id'] for v in lineage['spine']] == \
+        [db.get_strategy_versions(sid, user_id)[0]['id']]
+    assert len(lineage['spine']) == 1 and len(lineage['forks']) == 1
+    root_node = lineage['spine'][0]
+    fork_node = lineage['forks'][0]
+    assert fork_node['parent_version_id'] == root_node['id']
+    assert fork_node['strategy_name'] == "Lineage Root (clone)"
+    assert fork_node['request'] == "fork it"
+    assert fork_node['strategy_deleted'] is False
+    # Head markers land on the SPINE rows too (not just copies): the root
+    # node heads the original, the fork heads the clone
+    assert [h['name'] for h in root_node['heads']] == ["Lineage Root"]
+    assert [h['name'] for h in fork_node['heads']] == ["Lineage Root (clone)"]
+
+    # Soft-deleting the clone must not amputate the branch from the graph —
+    # its nodes stay as flagged pass-through (and it stops being a head).
+    assert db.soft_delete_custom_strategy(clone_id, user_id)
+    lineage = db.get_strategy_lineage(sid, user_id)
+    assert len(lineage['forks']) == 1
+    assert lineage['forks'][0]['strategy_deleted'] is True
+    assert lineage['forks'][0]['heads'] == []
+
+
+def test_lineage_excludes_other_users_forks():
+    """Another user's fork of my public strategy is THEIR private history —
+    my lineage graph must not include it."""
+    owner = _new_user()
+    forker = _new_user()
+    sid = _save(owner, "Public Root", CODE_V1)
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE CUSTOM_STRATEGIES SET is_public = TRUE WHERE id = %s", (sid,))
+        conn.commit()
+    finally:
+        db.release_connection(conn)
+
+    from services.strategy_clone import clone_strategy
+    clone = clone_strategy(strategy_id=sid, user_id=forker, db=db)
+    assert clone['success']
+    _save(forker, "Public Root", CODE_V2, strategy_id=clone['strategy_id'],
+          evolution_request="their private fork")
+
+    lineage = db.get_strategy_lineage(sid, owner)
+    assert lineage['forks'] == []
+    assert all(n['in_spine'] for n in lineage['spine'])
+
+
 def test_backfill_reconstructs_legacy_rows():
     user_id = _new_user()
     sid = _save(user_id, "Legacy Test", CODE_V2)
