@@ -83,7 +83,7 @@ def generate_simulation_hash(params: dict) -> str:
     # Remove non-deterministic or user-specific keys that should not affect the simulation result
     # 'component_hashes' is excluded because it tracks code versions, not input parameters, and is added after initial hashing.
     # 'custom_strategy_param_defs' is derived metadata.
-    for key in ['user_email', 'user_name', 'simulation_name', 'process_key', 'is_prod_env', 'gemini_api_key', 'pdf_report_path', 'component_hashes', 'custom_strategy_param_defs']:
+    for key in ['user_email', 'user_name', 'simulation_name', 'process_key', 'is_prod_env', 'gemini_api_key', 'pdf_report_path', 'component_hashes', 'custom_strategy_param_defs', 'custom_strategy_name', 'custom_strategy_description', 'custom_strategy_ai_description', 'custom_strategy_id']:
         params_copy.pop(key, None)
 
     # Sort the dictionary by key to ensure a consistent order, then convert to a JSON string
