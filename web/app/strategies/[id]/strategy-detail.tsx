@@ -32,6 +32,7 @@ import { Markdown } from "@/components/markdown";
 import { TestFlightCard } from "../new/cards";
 import { TestArtifact } from "../model";
 import { EvaluationTab } from "./evaluation-tab";
+import { FamilyTree } from "./family-tree";
 import { HistoryTab } from "./history-tab";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -320,6 +321,8 @@ function OverviewTab({
           </CardContent>
         </Card>
       )}
+
+      <FamilyTree strategyId={strategy.id} />
     </div>
   );
 }
