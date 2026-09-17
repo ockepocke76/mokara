@@ -423,7 +423,11 @@ def _round_finite(v):
 _PATH_SERIES = {'net_worth': 'Net Worth', 'asset_value': 'Asset Value',
                 'debt': 'Debt', 'cash': 'Cash',
                 'contributed': 'Amount Contributed',
-                'withdrawn': 'Consumption Delivered'}
+                'withdrawn': 'Consumption Delivered',
+                # Debt-funded strategies (e.g. Buy Borrow Die) record zero
+                # 'Consumption Delivered' — the real cash flow is here.
+                # _worst_path_trace below derives from this same mapping.
+                'borrowed': 'Debt Change', 'sold': 'Amount Sold'}
 
 
 def _condense_paths(result: dict) -> list[dict]:
@@ -539,6 +543,12 @@ def test_sim(state: GenState, config) -> dict:
     return {'test_result': test_result, 'baseline_result': baseline}
 
 
+# The worst-path narrative's field names, mapped to their _PATH_SERIES key
+# (only 'withdrawal' differs) — keeps the engine column names declared once.
+_TRACE_FIELDS = {'net_worth': 'net_worth', 'withdrawal': 'withdrawn',
+                 'sold': 'sold', 'borrowed': 'borrowed', 'contributed': 'contributed'}
+
+
 def _worst_path_trace(result: dict) -> list[dict]:
     worst = None
     worst_final = None
@@ -551,12 +561,10 @@ def _worst_path_trace(result: dict) -> list[dict]:
             worst_final, worst = final, yearly
     if not worst:
         return []
-    _r = _round_finite
     return _sanitize([
-        {'year': y['Year'], 'net_worth': _r(y['Net Worth']),
-         'withdrawal': _r(y['Consumption Delivered']),
-         'sold': _r(y['Amount Sold']), 'borrowed': _r(y['Debt Change']),
-         'contributed': _r(y['Amount Contributed'])}
+        {'year': y['Year'],
+         **{field: _round_finite(y.get(_PATH_SERIES[series_key]))
+            for field, series_key in _TRACE_FIELDS.items()}}
         for y in worst])
 
 

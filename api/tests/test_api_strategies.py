@@ -89,9 +89,10 @@ def test_full_generation_flow_and_crud():
     # Every path carries the full yearly series with real values, not just
     # net worth (and not all-None arrays from a renamed engine column).
     for series in ("net_worth", "asset_value", "debt", "cash",
-                   "contributed", "withdrawn"):
+                   "contributed", "withdrawn", "borrowed", "sold"):
         assert len(body["paths"][0][series]) == len(body["paths"][0]["years"])
-    assert any(v is not None for v in body["paths"][0]["net_worth"])
+    for series in ("net_worth", "borrowed", "sold"):
+        assert any(v is not None for v in body["paths"][0][series])
 
     # Evaluate queues a job
     r = client.post(f"/strategies/{strategy_id}/evaluate", headers=headers)

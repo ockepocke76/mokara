@@ -248,14 +248,19 @@ def _calculate_summary_stats(random_paths: List[Dict], backtest_path: Optional[D
         total_contributed = sum(y['Amount Contributed'] for y in yearly)
         total_taxes = sum(y['Tax Paid'] for y in yearly)
         total_fees = sum(y['Fees Paid'] for y in yearly)
-        
+        # 'Debt Change' is signed (draws minus repayments) — sum only the
+        # positive years so a deleveraging year doesn't net against and
+        # understate total debt drawn. 'Amount Sold' is already nonnegative.
+        total_borrowed = sum(y['Debt Change'] for y in yearly if y['Debt Change'] > 0)
+        total_sold = sum(y['Amount Sold'] for y in yearly)
+
         # Get strategy category from the strategy itself (proper architecture!)
         try:
             strategy_category = strategy_instance.evaluation_category()
         except Exception:
             # Fallback if strategy doesn't implement the method
             strategy_category = 'UNKNOWN'
-        
+
         backtest_analytics = {
             'backtest_final_nw': backtest_final_nw,
             'backtest_max_drawdown': max_drawdown,
@@ -263,6 +268,8 @@ def _calculate_summary_stats(random_paths: List[Dict], backtest_path: Optional[D
             'backtest_total_contributed': total_contributed,
             'backtest_total_taxes': total_taxes,
             'backtest_total_fees': total_fees,
+            'backtest_total_borrowed': total_borrowed,
+            'backtest_total_sold': total_sold,
             'strategy_category': strategy_category
         }
     
