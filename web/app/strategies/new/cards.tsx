@@ -414,6 +414,8 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
   const category = typeof s.strategy_category === "string" ? s.strategy_category : null;
   const contributed = num(s.backtest_total_contributed);
   const withdrawn = num(s.backtest_total_withdrawn);
+  const borrowed = num(s.backtest_total_borrowed);
+  const sold = num(s.backtest_total_sold);
   const taxes = num(s.backtest_total_taxes);
   const fees = num(s.backtest_total_fees);
   const costs = taxes !== null || fees !== null ? (taxes ?? 0) + (fees ?? 0) : null;
@@ -430,6 +432,14 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
       : null,
     withdrawn !== null && withdrawn > 0
       ? { label: "Total withdrawn", value: fmtCompact.format(withdrawn) }
+      : null,
+    // Debt-funded strategies (e.g. Buy Borrow Die) fund spending by
+    // borrowing/selling rather than withdrawing — surface those totals too.
+    borrowed !== null && borrowed > 0
+      ? { label: "Total borrowed", value: fmtCompact.format(borrowed) }
+      : null,
+    sold !== null && sold > 0
+      ? { label: "Total sold", value: fmtCompact.format(sold) }
       : null,
     costs !== null && costs > 0
       ? { label: "Taxes & fees paid", value: fmtCompact.format(costs) }
