@@ -75,7 +75,7 @@ def run_and_save_simulation(ui_params, full_sim_params, simulation_hash, progres
     from core.stats import calculate_final_statistics, calculate_historical_price_stats
     from core.input_analysis import calculate_autocorrelation, calculate_historical_drawdowns, analyze_returns_distribution
     from core.scoring import calculate_risk_score, calculate_risk_return_score
-    from simulation import run_simulation
+    from core.simulation import run_simulation
     from reporting.analysis import (
         get_gemini_analysis_prompt, get_gemini_analysis,
         get_executive_summary_prompt, get_executive_summary_from_gemini,

@@ -184,6 +184,34 @@ def _sandboxed_getattr(obj, name):
 _safe_globals['_getattr_'] = _sandboxed_getattr
 
 
+# RestrictedPython compiles `x += y` on plain names into
+# `x = _inplacevar_('+=', x, y)`. Supplying the operator dispatch here is
+# the root-cause fix for the old source-level rewriter, which regex-mangled
+# `**=` and `//=` into broken code.
+import operator as _operator
+
+_INPLACE_OPERATIONS = {
+    '+=': _operator.iadd, '-=': _operator.isub, '*=': _operator.imul,
+    '/=': _operator.itruediv, '//=': _operator.ifloordiv,
+    '%=': _operator.imod, '**=': _operator.ipow,
+    '<<=': _operator.ilshift, '>>=': _operator.irshift,
+    '&=': _operator.iand, '|=': _operator.ior, '^=': _operator.ixor,
+    '@=': _operator.imatmul,
+}
+
+
+def _guarded_inplacevar(op, target, value):
+    try:
+        impl = _INPLACE_OPERATIONS[op]
+    except KeyError:
+        raise NotImplementedError(
+            f"in-place operator {op!r} is not supported in the sandbox")
+    return impl(target, value)
+
+
+_safe_globals['_inplacevar_'] = _guarded_inplacevar
+
+
 def _normalize_key(key):
     """Helper to convert a key to a standardized format (lowercase, snake_case)."""
     if isinstance(key, str):
@@ -227,6 +255,7 @@ _safe_globals['_strategy_write_'] = _strategy_write_guard
 _safe_globals['_write_'] = _strategy_write_guard # Fallback for any internal uses
 
 import ast
+import copy
 from RestrictedPython.transformer import copy_locations, INSPECT_ATTRIBUTES
 
 class StrategyPolicy(RestrictingNodeTransformer):
@@ -264,6 +293,31 @@ class StrategyPolicy(RestrictingNodeTransformer):
         the execution. Strategies have no legitimate use for it."""
         self.error(node, 'global statements are not allowed in the sandbox.')
         return node
+
+    def visit_AugAssign(self, node):
+        """Allow `self.x += 1` and `d[k] += 1`, which RestrictedPython
+        forbids outright, by desugaring them to plain assignments at the
+        AST level (`self.x = self.x + 1`) and re-running the transformer —
+        the load goes through _getattr_/_getitem_ and the store through the
+        write guard like any other. (The old source-level regex rewriter
+        provided this by accident; like it, the desugaring evaluates the
+        target expression twice.) Plain-name targets keep RestrictedPython's
+        own `_inplacevar_` transformation.
+        """
+        if isinstance(node.target, ast.Name):
+            return super().visit_AugAssign(node)
+        if not isinstance(node.target, (ast.Attribute, ast.Subscript)):
+            self.error(node, 'Augmented assignment to this target is not allowed.')
+            return node
+
+        load_target = copy.deepcopy(node.target)
+        load_target.ctx = ast.Load()
+        binop = ast.BinOp(left=load_target, op=node.op, right=node.value)
+        assign = ast.Assign(targets=[node.target], value=binop)
+        copy_locations(binop, node)
+        copy_locations(assign, node)
+        ast.fix_missing_locations(assign)
+        return self.visit(assign)
 
     def visit_Attribute(self, node):
         """
@@ -479,54 +533,6 @@ def _validate_strategy_class(strategy_class, strict_category=False):
         logging.error(f"Strategy validation dry run failed: {e}", exc_info=True)
         raise # Re-raise the exception to be caught by the caller
 
-def _rewrite_inplace_assignments(code: str) -> str:
-    """
-    Rewrites in-place assignments (e.g., x += 1) to their explicit
-    equivalents (e.g., x = x + 1) to avoid a bug in RestrictedPython's
-    AST transformer that causes a NameError for '_inplacevar_'.
-    """
-    # List of in-place operators and their standard equivalents
-    operators = {
-        '+': '+=',
-        '-': '-=',
-        '*': '*=',
-        '/': '/=',
-        '%': '%=',
-        '**': '**=',
-        '//': '//='
-    }
-
-    # Split the code into lines to process them individually
-    lines = code.split('\n')
-    rewritten_lines = []
-
-    for line in lines:
-        # Preserve indentation
-        indentation = re.match(r'^\s*', line).group(0)
-        stripped_line = line.strip()
-
-        # Check if the line contains an in-place assignment
-        found = False
-        for op_symbol, op_assign in operators.items():
-            if op_assign in stripped_line:
-                # A simple but effective regex to capture the target and the value
-                # It captures everything before the operator as the target, and everything after as the value.
-                pattern = re.compile(r'(.+?)\s*' + re.escape(op_assign) + r'\s*(.+)')
-                match = pattern.match(stripped_line)
-                if match:
-                    target, value = match.groups()
-                    # Reconstruct the line as an explicit assignment
-                    rewritten_line = f"{indentation}{target.strip()} = {target.strip()} {op_symbol} {value.strip()}"
-                    rewritten_lines.append(rewritten_line)
-                    found = True
-                    break # Move to the next line once a match is found and replaced
-        
-        if not found:
-            rewritten_lines.append(line)
-
-    return '\n'.join(rewritten_lines)
-
-
 # --- Resource-limited validation -------------------------------------------
 # The dry run in _validate_strategy_class executes the untrusted code's
 # methods. RestrictedPython bounds WHAT the code can reach, not how long it
@@ -643,11 +649,6 @@ def execute_strategy_code(code_string: str, strategy_class_name: str = "CustomSt
 
         if isolate:
             _validate_in_subprocess(code_string, strategy_class_name, strict_category)
-
-        # --- FIX: Pre-process the code to remove in-place assignments ---
-        # This is a workaround for a bug in RestrictedPython's AST transformer
-        # that causes a NameError for '_inplacevar_'.
-        code_string = _rewrite_inplace_assignments(code_string)
 
         # 1. Compile the code in a restricted environment.
         # The '<string>' argument is a dummy filename for error messages.

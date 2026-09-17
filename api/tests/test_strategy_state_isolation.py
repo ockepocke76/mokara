@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 from core.strategy import BaseStrategy
-from simulation import run_simulation
+from core.simulation import run_simulation
 
 class StatefulTestStrategy(BaseStrategy):
     """

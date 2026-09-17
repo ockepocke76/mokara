@@ -3,7 +3,7 @@ import unittest
 import pandas as pd
 import numpy as np
 
-from simulation import run_simulation
+from core.simulation import run_simulation
 from core.strategy import BaseStrategy
 from core.portfolio import Portfolio
 from core.stats import calculate_final_statistics

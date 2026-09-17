@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple
 from core.stats import calculate_final_statistics
-from simulation import run_simulation
+from core.simulation import run_simulation
 from core.shared_logic import prepare_results_dataframe
 
 

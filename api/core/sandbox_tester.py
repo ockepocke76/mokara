@@ -74,7 +74,7 @@ def run_sandbox_test(strategy_code: str, class_name: str, test_params: Dict[str,
             - error: Error message if failed
     """
     from core.sandbox import execute_strategy_code, SandboxedStrategyWrapper
-    from simulation import run_simulation
+    from core.simulation import run_simulation
     from core.data import load_and_prepare_data, prepare_simulation_inputs
     from core.shared_logic import assemble_params
     

@@ -3,7 +3,7 @@ import json
 import os
 import pandas as pd
 import numpy as np
-from simulation import run_simulation
+from core.simulation import run_simulation
 from core.shared_logic import prepare_results_dataframe
 from core.strategy_get_rich_stay_rich import GetRichStayRichStrategy
 

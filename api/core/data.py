@@ -12,7 +12,7 @@ if str(project_root) not in sys.path:
 
 import logging
 from db.regeneration_db import load_asset_data_from_cache, save_asset_data_to_cache
-from simulation import generate_synthetic_bootstrap_data
+from core.simulation import generate_synthetic_bootstrap_data
 from core.stats import calculate_historical_mu_sigma
 
 def _generate_asset_key(params: dict) -> str:
