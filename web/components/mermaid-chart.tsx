@@ -39,7 +39,16 @@ export function MermaidChart({ code }: { code: string }) {
     (async () => {
       try {
         const mermaid = (await import("mermaid")).default;
-        mermaid.initialize({ startOnLoad: false, theme: "neutral" });
+        // securityLevel stays pinned to "strict": the rendered SVG goes into
+        // innerHTML below, and lineage-graph labels carry USER-AUTHORED text
+        // (evolve prompts). "strict" makes mermaid DOMPurify labels; loosening
+        // it (e.g. for clickable nodes) would turn every label in the app
+        // into an HTML-injection sink — don't, without a different sink.
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: "neutral",
+          securityLevel: "strict",
+        });
         const { svg } = await mermaid.render(
           `mermaid-${Math.random().toString(36).slice(2)}`,
           code,

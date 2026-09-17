@@ -59,6 +59,23 @@ def _sync_builtin_strategies() -> None:
 
 
 @app.on_event("startup")
+def _backfill_strategy_versions() -> None:
+    # V39 version DAG: strategies from before the DAG get their chain
+    # reconstructed once (from legacy evolution_history snapshots); clones
+    # get head pointers. Idempotent and advisory-locked inside the service.
+    # Registered after the builtin sync so builtin rows exist and get heads.
+    try:
+        from db.database import db
+        from services.version_backfill import backfill_strategy_versions
+
+        count = backfill_strategy_versions(db)
+        if count:
+            logging.info("Strategy-version backfill: %d strategies", count)
+    except Exception:
+        logging.exception("Strategy-version backfill failed; continuing")
+
+
+@app.on_event("startup")
 def _reconcile_orphaned_generation_runs() -> None:
     # Runs still marked 'running' at startup belong to a dead process (the
     # runner is a daemon thread) — fail them so their SSE streams terminate

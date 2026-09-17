@@ -89,9 +89,10 @@ def test_full_generation_flow_and_crud():
     # Every path carries the full yearly series with real values, not just
     # net worth (and not all-None arrays from a renamed engine column).
     for series in ("net_worth", "asset_value", "debt", "cash",
-                   "contributed", "withdrawn"):
+                   "contributed", "withdrawn", "borrowed", "sold"):
         assert len(body["paths"][0][series]) == len(body["paths"][0]["years"])
-    assert any(v is not None for v in body["paths"][0]["net_worth"])
+    for series in ("net_worth", "borrowed", "sold"):
+        assert any(v is not None for v in body["paths"][0][series])
 
     # Evaluate queues a job
     r = client.post(f"/strategies/{strategy_id}/evaluate", headers=headers)
@@ -298,3 +299,67 @@ def test_history_records_evolution():
     r = client.get(f"/strategies/{strategy_id}/history", headers=other)
     assert r.status_code == 200
     assert r.json()["runs"] == []
+
+
+def test_versions_endpoint_and_revert_flow():
+    headers = _auth()
+    _, strategy_id = _generate_and_save(headers)
+
+    # Evolve once so there is something to revert to
+    r = client.post("/strategies/generate", headers=headers,
+                    json={"request": "make the withdrawal rate 5%",
+                          "seed_strategy_id": strategy_id})
+    run_id = r.json()["run_id"]
+    r = client.post(f"/strategies/generate/{run_id}/resume", headers=headers,
+                    json={"kind": "review", "action": "save"})
+    assert r.status_code == 200
+
+    r = client.get(f"/strategies/{strategy_id}/versions", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    versions = body["versions"]
+    assert [v["source"] for v in versions] == ["evolve", "create"]
+    assert versions[0]["is_head"] and versions[0]["short_hash"]
+    # Version metadata never carries code
+    assert "code" not in versions[0]
+    # The lineage graph's fork rows ship in the same response — empty for a
+    # plain linear history (no row is ever shipped twice)
+    assert body["forks"] == []
+    assert all(v["in_spine"] for v in versions)
+
+    # Another user gets a 404, not someone else's lineage
+    other = _auth()
+    assert client.get(f"/strategies/{strategy_id}/versions",
+                      headers=other).status_code == 404
+    assert client.post(f"/strategies/{strategy_id}/revert", headers=other,
+                       json={"version_id": versions[1]["id"]}).status_code == 404
+
+    # Restore the original: append-only — three versions, head content = v1
+    r = client.post(f"/strategies/{strategy_id}/revert", headers=headers,
+                    json={"version_id": versions[1]["id"]})
+    assert r.status_code == 200, r.text
+    r = client.get(f"/strategies/{strategy_id}/versions", headers=headers)
+    versions = r.json()["versions"]
+    assert [v["source"] for v in versions] == ["revert", "evolve", "create"]
+    assert versions[0]["short_hash"] == versions[2]["short_hash"]
+
+    # Reverting to the current head is refused
+    r = client.post(f"/strategies/{strategy_id}/revert", headers=headers,
+                    json={"version_id": versions[0]["id"]})
+    assert r.status_code == 422
+
+
+def test_version_serializer_redacts_foreign_nodes():
+    """A clone-boundary node (owned=False) must never ship its parent id (a
+    pointer into the donor's private chain) or the donor's strategy name."""
+    from app.routers.strategies import _serialize_version_node
+
+    node = {'id': 5, 'content_hash': 'draft_abcdef', 'parent_version_id': 4,
+            'owned': False, 'strategy_name': 'Donor Secret', 'request': None}
+    out = _serialize_version_node(node)
+    assert out['parent_version_id'] is None
+    assert out['strategy_name'] is None
+    assert out['inherited'] is True
+    out = _serialize_version_node({**node, 'owned': True})
+    assert out['parent_version_id'] == 4
+    assert out['inherited'] is False

@@ -343,7 +343,15 @@ function StatTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-type SeriesKey = "net_worth" | "asset_value" | "debt" | "cash" | "contributed" | "withdrawn";
+type SeriesKey =
+  | "net_worth"
+  | "asset_value"
+  | "debt"
+  | "cash"
+  | "contributed"
+  | "withdrawn"
+  | "borrowed"
+  | "sold";
 
 /** Thin lines for the random paths, one thick highlighted line for the
  * historical backtest — the same visual grammar as the old app's test UI. */
@@ -425,6 +433,11 @@ const TABLE_COLUMNS: { key: SeriesKey; label: string }[] = [
   { key: "debt", label: "Debt" },
   { key: "contributed", label: "Contributed" },
   { key: "withdrawn", label: "Withdrawn" },
+  // Raw signed engine value (draws minus repayments) — "Debt change" reads
+  // correctly whichever way it goes; the chart below splits it into two
+  // always-nonnegative bars instead.
+  { key: "borrowed", label: "Debt change" },
+  { key: "sold", label: "Sold" },
 ];
 
 function YearByYearTable({ paths }: { paths: TestPath[] }) {
@@ -494,6 +507,8 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
   const category = typeof s.strategy_category === "string" ? s.strategy_category : null;
   const contributed = num(s.backtest_total_contributed);
   const withdrawn = num(s.backtest_total_withdrawn);
+  const borrowed = num(s.backtest_total_borrowed);
+  const sold = num(s.backtest_total_sold);
   const taxes = num(s.backtest_total_taxes);
   const fees = num(s.backtest_total_fees);
   const costs = taxes !== null || fees !== null ? (taxes ?? 0) + (fees ?? 0) : null;
@@ -510,6 +525,14 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
       : null,
     withdrawn !== null && withdrawn > 0
       ? { label: "Total withdrawn", value: fmtCompact.format(withdrawn) }
+      : null,
+    // Debt-funded strategies (e.g. Buy Borrow Die) fund spending by
+    // borrowing/selling rather than withdrawing — surface those totals too.
+    borrowed !== null && borrowed > 0
+      ? { label: "Total borrowed", value: fmtCompact.format(borrowed) }
+      : null,
+    sold !== null && sold > 0
+      ? { label: "Total sold", value: fmtCompact.format(sold) }
       : null,
     costs !== null && costs > 0
       ? { label: "Taxes & fees paid", value: fmtCompact.format(costs) }
@@ -530,28 +553,48 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
     .filter(Boolean)
     .join(" ");
 
-  const cashFlowBars = backtest
-    ? [
-        backtest.contributed?.some((v) => (v ?? 0) !== 0)
-          ? {
-              x: backtest.years,
-              y: backtest.contributed,
-              type: "bar" as const,
-              name: "Contributed",
-              marker: { color: "rgba(44,160,44,0.7)" },
-            }
-          : null,
-        backtest.withdrawn?.some((v) => (v ?? 0) !== 0)
-          ? {
-              x: backtest.years,
-              y: backtest.withdrawn,
-              type: "bar" as const,
-              name: "Withdrawn",
-              marker: { color: "rgba(214,39,40,0.7)" },
-            }
-          : null,
-      ].filter((t) => t !== null)
+  // Debt-funded strategies (e.g. Buy Borrow Die) show zero withdrawn —
+  // spending shows up as borrowing/asset sales instead. 'borrowed' is the
+  // engine's signed net debt change (draws minus repayments), so it's split
+  // into two always-nonnegative bars here rather than plotting a value that
+  // can go negative under a one-directional "Borrowed" label/color.
+  const FLOW_SERIES = backtest
+    ? (
+        [
+          { name: "Contributed", captionLabel: "contributions", color: "rgba(44,160,44,0.7)", values: backtest.contributed },
+          { name: "Withdrawn", captionLabel: "withdrawals", color: "rgba(214,39,40,0.7)", values: backtest.withdrawn },
+          {
+            name: "Borrowed",
+            captionLabel: "borrowing",
+            color: "rgba(255,127,14,0.7)",
+            values: backtest.borrowed?.map((v) => ((v ?? 0) > 0 ? v : 0)),
+          },
+          {
+            name: "Debt repaid",
+            captionLabel: "debt repayment",
+            color: "rgba(31,119,180,0.7)",
+            values: backtest.borrowed?.map((v) => ((v ?? 0) < 0 ? -(v ?? 0) : 0)),
+          },
+          { name: "Sold", captionLabel: "asset sales", color: "rgba(148,103,189,0.7)", values: backtest.sold },
+        ] satisfies { name: string; captionLabel: string; color: string; values: (number | null)[] | undefined }[]
+      ).filter((s) => s.values?.some((v) => (v ?? 0) !== 0))
     : [];
+
+  const cashFlowBars = backtest
+    ? FLOW_SERIES.map((s) => ({
+        x: backtest.years,
+        y: s.values,
+        type: "bar" as const,
+        name: s.name,
+        marker: { color: s.color },
+      }))
+    : [];
+
+  const flowCaptionText = FLOW_SERIES.length
+    ? `Annual ${new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(
+        FLOW_SERIES.map((s) => s.captionLabel),
+      )} along the historical backtest path.`
+    : "";
 
   return (
     <Card>
@@ -661,15 +704,12 @@ export function TestFlightCard({ test }: { test: TestArtifact }) {
                       xaxis: { title: { text: "Year" } },
                     }}
                   />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Annual contributions and withdrawals along the historical
-                    backtest path.
-                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">{flowCaptionText}</p>
                 </>
               ) : (
                 <p className="py-6 text-center text-xs text-muted-foreground">
                   {backtest
-                    ? "No contributions or withdrawals occurred on the backtest path."
+                    ? "No contributions, withdrawals, borrowing, debt repayment, or asset sales occurred on the backtest path."
                     : "This run produced no historical backtest path to chart cash flows from."}
                 </p>
               )}

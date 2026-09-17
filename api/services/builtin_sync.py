@@ -132,6 +132,7 @@ def sync_builtin_strategy(
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = %s
                 """, (code, commit_sha, description, description, existing[0]))
+                builtin_id = existing[0]
                 status = 'updated'
                 message = f'Updated (SHA: {commit_sha[:7]})'
             else:
@@ -141,10 +142,21 @@ def sync_builtin_strategy(
                     (user_id, strategy_name, class_name, description, ai_description, code, git_commit_sha,
                      is_public, validation_status, created_at, updated_at)
                     VALUES (0, %s, %s, %s, %s, %s, %s, TRUE, 'validated', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    RETURNING id
                 """, (strategy_name, strategy_class.__name__, description, description, code, commit_sha))
+                builtin_id = cursor.fetchone()[0]
                 status = 'success'
                 message = f'Created (SHA: {commit_sha[:7]})'
-            
+
+            # V39 version DAG: builtin code changes must move the head too —
+            # user clones point at these nodes, and a stale head would let a
+            # clone "restore" a pre-deploy implementation.
+            db._record_strategy_version(
+                cursor, strategy_id=builtin_id, code=code,
+                parameters_json=None, class_name=strategy_class.__name__,
+                content_hash=commit_sha, source='edit',
+                request='Built-in strategy update', user_id=0)
+
             conn.commit()
             logging.info(f"✓ Synced {strategy_name}: {status}")
             

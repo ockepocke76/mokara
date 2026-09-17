@@ -58,6 +58,10 @@ export type TestPath = {
   cash?: (number | null)[];
   contributed?: (number | null)[];
   withdrawn?: (number | null)[];
+  // Debt-funded flows (e.g. Buy Borrow Die): 'withdrawn' is zero there, so
+  // these carry the real annual cash flow.
+  borrowed?: (number | null)[];
+  sold?: (number | null)[];
   is_backtest?: boolean;
 };
 

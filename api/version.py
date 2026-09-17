@@ -6,7 +6,7 @@ from pathlib import Path
 # Define the logical components and the files/directories that belong to them.
 # This is the single source of truth for what constitutes a change in a component.
 COMPONENT_MAP = {
-    "Simulation Engine": ["simulation.py"],
+    "Simulation Engine": ["core/simulation.py"],
     "Core Statistics": ["core/stats.py"],
     "Portfolio Logic": ["core/portfolio.py"],
     "Strategy Logic": ["core/strategy.py", "core/sandbox.py", "core/strategy_get_rich_stay_rich.py"],
