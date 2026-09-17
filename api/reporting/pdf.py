@@ -457,7 +457,7 @@ def get_strategic_analysis_chapter_content(params, styles):
         
         strategy_key = params.get('strategy', '')
         # Convert snake_case to display name, preferring custom name if available
-        if strategy_key == 'custom_strategy':
+        if strategy_key == 'custom':
              strategy_display = params.get('custom_strategy_name', 'Custom Strategy')
         else:
              strategy_display = ' '.join(word.capitalize() for word in strategy_key.split('_'))
@@ -656,7 +656,7 @@ def generate_pdf_report(params, input_plot_buffers, output_plot_buffers, output_
     
     # improved strategy display name logic
     raw_strategy_key = params.get('strategy', '')
-    if raw_strategy_key == 'custom_strategy':
+    if raw_strategy_key == 'custom':
         strategy_display = params.get('custom_strategy_name', 'Custom Strategy')
     else:
         strategy_display = ' '.join(word.capitalize() for word in raw_strategy_key.split('_'))
