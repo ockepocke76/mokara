@@ -605,6 +605,78 @@ class StrategiesMixin:
             return []
 
     @log_db_call
+    def get_strategy_lineage(self, strategy_id, user_id):
+        """The nodes of the strategy's lineage GRAPH: its ancestry spine (the
+        same rows get_strategy_versions returns — granted clone-boundary
+        nodes included, requests redacted) plus every descendant node that
+        lives on one of the user's own live strategies (their forks). Other
+        users' forks of the user's strategies are private to those users and
+        never appear.
+
+        Returns {'spine': [...ancestry rows, head first...],
+                 'nodes': [...spine + fork rows...]}, where every node also
+        carries in_spine and heads = [{'id','name'}] for the user's live
+        strategies whose head is that node.
+        """
+        spine = self.get_strategy_versions(strategy_id, user_id)
+        if not spine:
+            return {'spine': [], 'nodes': []}
+        spine_ids = [r['id'] for r in spine]
+        try:
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor,
+                                         commit=False) as cursor:
+                cursor.execute("""
+                    WITH RECURSIVE forks AS (
+                        SELECT v.id, v.content_hash, v.parent_version_id,
+                               v.strategy_id, v.source, v.request, v.created_at,
+                               o.strategy_name
+                        FROM STRATEGY_VERSIONS v
+                        JOIN CUSTOM_STRATEGIES o ON o.id = v.strategy_id
+                        WHERE v.parent_version_id = ANY(%(spine_ids)s)
+                          AND v.id != ALL(%(spine_ids)s)
+                          AND o.user_id = %(user_id)s AND o.deleted_at IS NULL
+                        UNION
+                        SELECT c.id, c.content_hash, c.parent_version_id,
+                               c.strategy_id, c.source, c.request, c.created_at,
+                               o2.strategy_name
+                        FROM STRATEGY_VERSIONS c
+                        JOIN forks f ON c.parent_version_id = f.id
+                        JOIN CUSTOM_STRATEGIES o2 ON o2.id = c.strategy_id
+                        WHERE o2.user_id = %(user_id)s AND o2.deleted_at IS NULL
+                    )
+                    SELECT * FROM forks ORDER BY created_at, id
+                """, {'spine_ids': spine_ids, 'user_id': user_id})
+                forks = [dict(r) for r in cursor.fetchall()]
+
+                nodes = []
+                for r in spine:
+                    node = dict(r)
+                    node['in_spine'] = True
+                    nodes.append(node)
+                for r in forks:
+                    r['owned'] = True  # the fork walk only visits owned rows
+                    r['in_spine'] = False
+                    nodes.append(r)
+
+                all_ids = [n['id'] for n in nodes]
+                cursor.execute("""
+                    SELECT head_version_id, id, strategy_name
+                    FROM CUSTOM_STRATEGIES
+                    WHERE user_id = %(user_id)s AND deleted_at IS NULL
+                      AND head_version_id = ANY(%(ids)s)
+                """, {'user_id': user_id, 'ids': all_ids})
+                heads = {}
+                for row in cursor.fetchall():
+                    heads.setdefault(row['head_version_id'], []).append(
+                        {'id': row['id'], 'name': row['strategy_name']})
+                for n in nodes:
+                    n['heads'] = heads.get(n['id'], [])
+                return {'spine': spine, 'nodes': nodes}
+        except Exception as e:
+            logging.error(f"Failed to get strategy lineage: {e}", exc_info=True)
+            return {'spine': spine, 'nodes': []}
+
+    @log_db_call
     def get_strategy_version(self, version_id):
         """One version node, code included."""
         try:

@@ -369,33 +369,46 @@ def strategy_history(strategy_id: int,
     }
 
 
+def _serialize_version_node(v: dict, strategy_id: int) -> dict:
+    return {
+        'id': v['id'],
+        # content hashes carry a legacy 'draft_' prefix — not display material
+        'short_hash': (v.get('content_hash') or '').removeprefix('draft_')[:8],
+        'source': v.get('source'),
+        'request': v.get('request'),  # already redacted for foreign nodes
+        'created_at': str(v.get('created_at') or '') or None,
+        'is_head': bool(v.get('is_head')),
+        'in_spine': bool(v.get('in_spine', True)),
+        'parent_version_id': v.get('parent_version_id'),
+        # a clone-boundary node: committed under a strategy the user does
+        # not own (the state that was cloned)
+        'inherited': not v.get('owned'),
+        'strategy_name': v.get('strategy_name'),
+        'heads': v.get('heads', []),
+        'from_strategy_id': (v.get('strategy_id')
+                             if v.get('strategy_id') not in (None, strategy_id)
+                             else None),
+    }
+
+
 @router.get("/strategies/{strategy_id}/versions")
 def strategy_versions(strategy_id: int,
                       user: Optional[dict] = Depends(get_current_user)) -> dict:
-    """The strategy's version ancestry (V39 DAG) — owner only: the chain
-    carries evolve requests, and revert is owner-only anyway."""
+    """The strategy's version ancestry + lineage graph (V39 DAG) — owner
+    only: the chain carries evolve requests, and revert is owner-only anyway.
+    `versions` is the restore list (the ancestry spine, head first); `nodes`
+    adds the user's own forks branching off it, for the lineage graph."""
     from db.database import db
 
     user = _require_user(user)
     strategy = _owned_strategy(strategy_id, user)
     if strategy['user_id'] != user['id']:
         raise HTTPException(status_code=404, detail="Strategy not found")
-    versions = db.get_strategy_versions(strategy_id, user['id']) or []
-    return {'versions': [
-        {'id': v['id'],
-         # content hashes carry a legacy 'draft_' prefix — not display material
-         'short_hash': (v.get('content_hash') or '').removeprefix('draft_')[:8],
-         'source': v.get('source'),
-         'request': v.get('request'),  # already redacted for foreign nodes
-         'created_at': str(v.get('created_at') or '') or None,
-         'is_head': bool(v.get('is_head')),
-         # a clone-boundary node: committed under a strategy the user does
-         # not own (the state that was cloned)
-         'inherited': not v.get('owned'),
-         'from_strategy_id': (v.get('strategy_id')
-                              if v.get('strategy_id') not in (None, strategy_id)
-                              else None)}
-        for v in versions]}
+    lineage = db.get_strategy_lineage(strategy_id, user['id'])
+    return {'versions': [_serialize_version_node(v, strategy_id)
+                         for v in lineage['spine']],
+            'nodes': [_serialize_version_node(n, strategy_id)
+                      for n in lineage['nodes']]}
 
 
 class RevertRequest(BaseModel):

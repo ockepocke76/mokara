@@ -315,11 +315,16 @@ def test_versions_endpoint_and_revert_flow():
 
     r = client.get(f"/strategies/{strategy_id}/versions", headers=headers)
     assert r.status_code == 200
-    versions = r.json()["versions"]
+    body = r.json()
+    versions = body["versions"]
     assert [v["source"] for v in versions] == ["evolve", "create"]
     assert versions[0]["is_head"] and versions[0]["short_hash"]
     # Version metadata never carries code
     assert "code" not in versions[0]
+    # The lineage graph nodes ship in the same response (no forks here, so
+    # they mirror the spine)
+    assert [n["id"] for n in body["nodes"]] == [v["id"] for v in versions]
+    assert all(n["in_spine"] for n in body["nodes"])
 
     # Another user gets a 404, not someone else's lineage
     other = _auth()
