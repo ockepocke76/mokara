@@ -682,23 +682,38 @@ class StrategiesMixin:
             return {'spine': self.get_strategy_versions(strategy_id, user_id),
                     'forks': []}
 
+    # THE visibility boundary of the family tree, defined once so the walks
+    # and the hidden-count negation can never drift apart. IS TRUE forms keep
+    # the predicate and its negation provably complementary on NULL flags.
+    # is_published_to_leaderboard is the product's actual "make public"
+    # action; is_public is honored for built-ins and legacy rows.
+    _FAMILY_VISIBLE = ("({a}.is_public IS TRUE "
+                       "OR {a}.is_published_to_leaderboard IS TRUE "
+                       "OR {a}.user_id = 0 OR {a}.user_id = %(user_id)s)")
+
     @log_db_call
     def get_strategy_family(self, strategy_id, user_id):
         """The strategy-level family tree: root at the highest ancestor
-        reachable through VISIBLE strategies (public, built-in, or the
-        viewer's own), then every visible descendant. Invisible strategies
+        reachable through VISIBLE strategies (public/published, built-in, or
+        the viewer's own), then every visible descendant. Soft-deleted
+        visible strategies are kept as flagged pass-through so a trashed
+        intermediate never amputates a live branch. Invisible strategies
         never appear — each visible node instead carries hidden_forks, the
-        count of its direct children the viewer may not see (consistent with
-        the fork counts the leaderboard already shows).
+        count of its live direct children the viewer may not see. Built-in
+        nodes report hidden_forks 0: a platform-wide private-clone tally is
+        not something any other surface exposes.
 
         Returns a list of node dicts ordered root-first; the caller decides
         which parent pointers are safe to expose.
         """
         params = {'strategy_id': strategy_id, 'user_id': user_id}
+        visible_p = self._FAMILY_VISIBLE.format(a='p')
+        visible_c = self._FAMILY_VISIBLE.format(a='c')
+        visible_h = self._FAMILY_VISIBLE.format(a='h')
         try:
             with self._connection_cursor(cursor_factory=extras.RealDictCursor,
                                          commit=False) as cursor:
-                cursor.execute("""
+                cursor.execute(f"""
                     WITH RECURSIVE up AS (
                         SELECT cs.id, cs.parent_strategy_id, 0 AS height
                         FROM CUSTOM_STRATEGIES cs
@@ -709,39 +724,39 @@ class StrategiesMixin:
                         JOIN up ON p.id = up.parent_strategy_id
                         WHERE up.height < 50
                           AND p.id != up.id  -- corrupt self-link guard
-                          AND p.deleted_at IS NULL
-                          AND (p.is_public = TRUE OR p.user_id = 0
-                               OR p.user_id = %(user_id)s)
+                          AND {visible_p}
                     ),
                     root AS (
                         SELECT id FROM up ORDER BY height DESC LIMIT 1
                     ),
                     tree AS (
                         SELECT cs.id, cs.parent_strategy_id, cs.strategy_name,
-                               cs.user_id, cs.is_public, cs.created_at,
-                               cs.git_commit_sha, cs.clone_source_commit_sha,
-                               0 AS depth
+                               cs.user_id, cs.is_public,
+                               cs.is_published_to_leaderboard, cs.deleted_at,
+                               cs.created_at, cs.git_commit_sha,
+                               cs.clone_source_commit_sha, 0 AS depth
                         FROM CUSTOM_STRATEGIES cs
                         JOIN root ON cs.id = root.id
                         UNION ALL
                         SELECT c.id, c.parent_strategy_id, c.strategy_name,
-                               c.user_id, c.is_public, c.created_at,
-                               c.git_commit_sha, c.clone_source_commit_sha,
-                               tree.depth + 1
+                               c.user_id, c.is_public,
+                               c.is_published_to_leaderboard, c.deleted_at,
+                               c.created_at, c.git_commit_sha,
+                               c.clone_source_commit_sha, tree.depth + 1
                         FROM CUSTOM_STRATEGIES c
                         JOIN tree ON c.parent_strategy_id = tree.id
                         WHERE tree.depth < 50
                           AND c.id != tree.id  -- corrupt self-link guard
-                          AND c.deleted_at IS NULL
-                          AND (c.is_public = TRUE OR c.user_id = 0
-                               OR c.user_id = %(user_id)s)
+                          AND {visible_c}
                     )
                     SELECT t.id, t.parent_strategy_id, t.strategy_name,
                            t.created_at, t.depth,
+                           (t.deleted_at IS NOT NULL) AS strategy_deleted,
                            (t.user_id = 0) AS is_builtin,
                            (t.user_id = %(user_id)s) AS is_own,
-                           (t.is_public IS NOT TRUE AND t.user_id != 0)
-                               AS is_private,
+                           (t.is_public IS NOT TRUE
+                            AND t.is_published_to_leaderboard IS NOT TRUE
+                            AND t.user_id != 0) AS is_private,
                            -- Public author identity: the chosen display name
                            -- only — never the email fallback other surfaces
                            -- still carry.
@@ -749,23 +764,37 @@ class StrategiesMixin:
                                 ELSE COALESCE(u.display_name, 'anonymous')
                            END AS owner_name,
                            ev.excellence_score,
-                           (SELECT COUNT(*) FROM CUSTOM_STRATEGIES h
-                            WHERE h.parent_strategy_id = t.id
-                              AND h.deleted_at IS NULL
-                              AND NOT (h.is_public = TRUE OR h.user_id = 0
-                                       OR h.user_id = %(user_id)s)
-                           ) AS hidden_forks
+                           CASE WHEN t.user_id = 0 THEN 0 ELSE
+                               (SELECT COUNT(*) FROM CUSTOM_STRATEGIES h
+                                WHERE h.parent_strategy_id = t.id
+                                  AND h.deleted_at IS NULL
+                                  AND NOT {visible_h})
+                           END AS hidden_forks
                     FROM tree t
                     LEFT JOIN USERS u ON u.id = t.user_id
                     LEFT JOIN LATERAL (
+                        -- the LATEST evaluation for this content, matching
+                        -- what the list/detail surfaces show
                         SELECT excellence_score FROM STRATEGY_EVALUATIONS e
                         WHERE e.git_commit_sha = COALESCE(t.git_commit_sha,
                                                           t.clone_source_commit_sha)
-                        ORDER BY e.excellence_score DESC NULLS LAST LIMIT 1
+                        ORDER BY e.created_at DESC LIMIT 1
                     ) ev ON TRUE
                     ORDER BY t.depth, t.created_at, t.id
+                    LIMIT 201
                 """, params)
-                return [dict(r) for r in cursor.fetchall()]
+                rows = [dict(r) for r in cursor.fetchall()]
+                # Deleted rows exist only as connective tissue: prune deleted
+                # leaves so trashed dead-ends don't clutter the tree.
+                while True:
+                    parents = {r['parent_strategy_id'] for r in rows}
+                    pruned = [r for r in rows
+                              if not (r['strategy_deleted']
+                                      and r['id'] not in parents
+                                      and r['id'] != strategy_id)]
+                    if len(pruned) == len(rows):
+                        return pruned
+                    rows = pruned
         except Exception as e:
             logging.error(f"Failed to get strategy family: {e}", exc_info=True)
             return []

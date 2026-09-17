@@ -44,7 +44,14 @@ def _owned_strategy(strategy_id: int, user: dict) -> dict:
     strategy = db.get_custom_strategy(strategy_id)
     if not strategy or strategy.get('deleted_at'):
         raise HTTPException(status_code=404, detail="Strategy not found")
-    if strategy['user_id'] != user['id'] and not strategy.get('is_public'):
+    if strategy['user_id'] != user['id'] and not (
+            strategy.get('is_public')
+            or strategy.get('is_published_to_leaderboard')):
+        # Publishing to the leaderboard IS the product's "make public" action
+        # (nothing else sets is_public for user strategies); the leaderboard
+        # already exposes these strategies' details, and clone hands over
+        # their code, so the read endpoints admit them too. Every mutating
+        # endpoint re-checks ownership explicitly.
         raise HTTPException(status_code=404, detail="Strategy not found")
     return strategy
 
@@ -447,10 +454,13 @@ def strategy_family(strategy_id: int,
     from db.database import db
 
     user = _require_user(user)
-    _owned_strategy(strategy_id, user)  # owner or public — 404 otherwise
+    _owned_strategy(strategy_id, user)  # owner or public/published — else 404
     rows = db.get_strategy_family(strategy_id, user['id']) or []
+    truncated = len(rows) > 200
+    rows = rows[:200]
     visible_ids = {r['id'] for r in rows}
-    return {'nodes': [
+    return {'truncated': truncated,
+            'nodes': [
         {'id': r['id'],
          # never ship a pointer to a strategy the viewer can't see
          'parent_id': (r['parent_strategy_id']
@@ -460,10 +470,10 @@ def strategy_family(strategy_id: int,
          'is_builtin': bool(r['is_builtin']),
          'is_own': bool(r['is_own']),
          'is_private': bool(r['is_private']),
+         'is_deleted': bool(r['strategy_deleted']),
          'is_self': r['id'] == strategy_id,
          'score': r['excellence_score'],
-         'hidden_forks': r['hidden_forks'],
-         'created_at': str(r['created_at'] or '') or None}
+         'hidden_forks': r['hidden_forks']}
         for r in rows]}
 
 
