@@ -1,4 +1,5 @@
 import logging
+import os
 from .content import get_methodology_description
 from core.strategy import TrinityStrategy, BuyBorrowDieStrategy
 from core.strategy_get_rich_stay_rich import GetRichStayRichStrategy
@@ -287,8 +288,11 @@ def get_gemini_analysis(prompt, api_key, analytics_tracking_info=None):
         return "AI analysis skipped: The Gemini API key is not configured. For Streamlit deployment, add 'GEMINI_API_KEY' to your secrets. For local execution, set it as an environment variable."
 
     try:
-        # Use centralized wrapper
-        text, error_msg, usage_meta = call_gemini_safe('gemini-2.0-flash', prompt, api_key=api_key)
+        # Use centralized wrapper. Same GEMINI_MODEL_FAST override as the
+        # strategy-designer's fast tier (api/app/agents/llm.py) — one knob
+        # for both when a model is retired (gemini-2.0-flash was, 2026-09).
+        model_name = os.environ.get('GEMINI_MODEL_FAST', 'gemini-2.5-flash')
+        text, error_msg, usage_meta = call_gemini_safe(model_name, prompt, api_key=api_key)
         
         if error_msg:
              logging.warning(f"AI Analysis blocked: {error_msg}")
