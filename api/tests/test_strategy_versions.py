@@ -269,17 +269,25 @@ def test_lineage_includes_own_forks_with_head_markers():
     lineage = db.get_strategy_lineage(sid, user_id)
     assert [v['id'] for v in lineage['spine']] == \
         [db.get_strategy_versions(sid, user_id)[0]['id']]
-    by_spine = {n['id']: n for n in lineage['nodes'] if n['in_spine']}
-    forks = [n for n in lineage['nodes'] if not n['in_spine']]
-    assert len(by_spine) == 1 and len(forks) == 1
-    root_node = next(iter(by_spine.values()))
-    fork_node = forks[0]
+    assert len(lineage['spine']) == 1 and len(lineage['forks']) == 1
+    root_node = lineage['spine'][0]
+    fork_node = lineage['forks'][0]
     assert fork_node['parent_version_id'] == root_node['id']
     assert fork_node['strategy_name'] == "Lineage Root (clone)"
     assert fork_node['request'] == "fork it"
-    # Head markers: the root node heads the original, the fork heads the clone
+    assert fork_node['strategy_deleted'] is False
+    # Head markers land on the SPINE rows too (not just copies): the root
+    # node heads the original, the fork heads the clone
     assert [h['name'] for h in root_node['heads']] == ["Lineage Root"]
     assert [h['name'] for h in fork_node['heads']] == ["Lineage Root (clone)"]
+
+    # Soft-deleting the clone must not amputate the branch from the graph —
+    # its nodes stay as flagged pass-through (and it stops being a head).
+    assert db.soft_delete_custom_strategy(clone_id, user_id)
+    lineage = db.get_strategy_lineage(sid, user_id)
+    assert len(lineage['forks']) == 1
+    assert lineage['forks'][0]['strategy_deleted'] is True
+    assert lineage['forks'][0]['heads'] == []
 
 
 def test_lineage_excludes_other_users_forks():
@@ -303,8 +311,8 @@ def test_lineage_excludes_other_users_forks():
           evolution_request="their private fork")
 
     lineage = db.get_strategy_lineage(sid, owner)
-    assert [n['id'] for n in lineage['nodes']] == [v['id'] for v in lineage['spine']]
-    assert all(n['in_spine'] for n in lineage['nodes'])
+    assert lineage['forks'] == []
+    assert all(n['in_spine'] for n in lineage['spine'])
 
 
 def test_backfill_reconstructs_legacy_rows():

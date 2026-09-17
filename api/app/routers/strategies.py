@@ -369,7 +369,8 @@ def strategy_history(strategy_id: int,
     }
 
 
-def _serialize_version_node(v: dict, strategy_id: int) -> dict:
+def _serialize_version_node(v: dict) -> dict:
+    owned = bool(v.get('owned'))
     return {
         'id': v['id'],
         # content hashes carry a legacy 'draft_' prefix — not display material
@@ -379,15 +380,20 @@ def _serialize_version_node(v: dict, strategy_id: int) -> dict:
         'created_at': str(v.get('created_at') or '') or None,
         'is_head': bool(v.get('is_head')),
         'in_spine': bool(v.get('in_spine', True)),
-        'parent_version_id': v.get('parent_version_id'),
+        # A foreign clone-boundary node's parent is the donor's PRIVATE
+        # ancestor — even its row id must not ship (it reveals whether and
+        # how much the donor iterated before publishing).
+        'parent_version_id': v.get('parent_version_id') if owned else None,
         # a clone-boundary node: committed under a strategy the user does
         # not own (the state that was cloned)
-        'inherited': not v.get('owned'),
-        'strategy_name': v.get('strategy_name'),
+        'inherited': not owned,
+        # NOTE: the ancestry spine never selects strategy_name — for owned
+        # spine nodes the client knows the current strategy, and for foreign
+        # boundary nodes the donor's name must stay unshipped. Fork rows are
+        # always the user's own, so their names label the graph.
+        'strategy_name': v.get('strategy_name') if owned else None,
+        'strategy_deleted': bool(v.get('strategy_deleted')),
         'heads': v.get('heads', []),
-        'from_strategy_id': (v.get('strategy_id')
-                             if v.get('strategy_id') not in (None, strategy_id)
-                             else None),
     }
 
 
@@ -396,8 +402,9 @@ def strategy_versions(strategy_id: int,
                       user: Optional[dict] = Depends(get_current_user)) -> dict:
     """The strategy's version ancestry + lineage graph (V39 DAG) — owner
     only: the chain carries evolve requests, and revert is owner-only anyway.
-    `versions` is the restore list (the ancestry spine, head first); `nodes`
-    adds the user's own forks branching off it, for the lineage graph."""
+    `versions` is the restore list (the ancestry spine, head first); `forks`
+    holds the user's own branches off that spine — together they form the
+    lineage graph, with no row shipped twice."""
     from db.database import db
 
     user = _require_user(user)
@@ -405,10 +412,8 @@ def strategy_versions(strategy_id: int,
     if strategy['user_id'] != user['id']:
         raise HTTPException(status_code=404, detail="Strategy not found")
     lineage = db.get_strategy_lineage(strategy_id, user['id'])
-    return {'versions': [_serialize_version_node(v, strategy_id)
-                         for v in lineage['spine']],
-            'nodes': [_serialize_version_node(n, strategy_id)
-                      for n in lineage['nodes']]}
+    return {'versions': [_serialize_version_node(v) for v in lineage['spine']],
+            'forks': [_serialize_version_node(n) for n in lineage['forks']]}
 
 
 class RevertRequest(BaseModel):
