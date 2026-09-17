@@ -310,8 +310,12 @@ scaffolding) implements; remaining deltas are the open items below.
 > and every call site unchanged). R5.9 merged 2026-09-16: the drifted, importer-less web palette mirror
 > deleted (color_scheme.py is the single source; figures arrive fully
 > styled), plotly template now installed lazily instead of as an import
-> side effect. Remaining in R5: R5.10 (engine relocations + the
-> **=/// = regex rewriter).
+> side effect. R5.10 merged 2026-09-17: real in-place assignment in the sandbox
+> (_inplacevar_ + AST desugaring for attribute/subscript targets; the
+> **=-corrupting regex rewriter deleted), simulation.py moved under
+> core/ (review caught version.py's component map pointing at the old
+> path — the outdated-report warning would have gone permanently blind).
+> R5 is COMPLETE.
 
 - [x] **R5.1 🔴 `save_custom_strategy` layering inversion** — closed by R4's git excision (plain transactional upsert; fork count inlined on the same cursor)
       (`postgresql_db.py:1243-1556`, 314 lines): db→services import, GitHub
@@ -354,7 +358,7 @@ scaffolding) implements; remaining deltas are the open items below.
       `color_scheme.py` hex-by-hex (`web/lib/chart-theme.ts:7-20`), which
       itself encodes light/dark four parallel times; two conflicting plotly
       base layouts. Serve palette from `/config` or codegen the TS.
-- [ ] **R5.10 🟢** Move `sandbox_tester.plot_test_results` (plotly in
+- [x] **R5.10 🟢** Move `sandbox_tester.plot_test_results` (plotly in
       `core/`, `sandbox_tester.py:245-403`) into `reporting/`, reusing the
       interactive builders. Move `api/simulation.py` under `core/`
       (legit entry point, wrong altitude). Fix theme-at-import side effect
