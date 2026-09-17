@@ -164,9 +164,16 @@ def test_create_simulation_rejects_missing_custom_strategy():
 
 
 def test_create_simulation_clamps_custom_strategy_num_simulations():
+    """num_simulations is clamped to the caller's tier limit for custom
+    strategies (core.limits.LimitEnforcer.get_mc_iterations_limit), not a
+    flat constant — a fresh test user defaults to the FREE tier (1000)."""
+    from core.limits import LimitEnforcer
+
     email = f"custom-strat-{uuid.uuid4().hex[:10]}@example.com"
     headers = _auth(email)
-    _, strategy_id = _make_strategy(email, validation_status="validated")
+    user_id, strategy_id = _make_strategy(email, validation_status="validated")
+    expected_limit = LimitEnforcer(db).get_mc_iterations_limit(user_id, is_custom_strategy=True)
+    assert expected_limit > 0
 
     r = client.post(
         "/simulations",
@@ -187,7 +194,73 @@ def test_create_simulation_clamps_custom_strategy_num_simulations():
     if job:
         params = job["payload"]["params"] if isinstance(job.get("payload"), dict) else {}
         if params:
-            assert params.get("num_simulations", 0) <= 2000
+            assert params.get("num_simulations") == expected_limit
+
+
+def test_create_simulation_rejects_non_numeric_num_simulations():
+    """A malformed num_simulations must 422 cleanly, not 500."""
+    email = f"custom-strat-{uuid.uuid4().hex[:10]}@example.com"
+    headers = _auth(email)
+    _, strategy_id = _make_strategy(email, validation_status="validated")
+
+    r = client.post(
+        "/simulations",
+        headers=headers,
+        json={
+            "params": {
+                "strategy": f"custom:{strategy_id}",
+                "asset_model": "parametric",
+                "num_simulations": "not-a-number",
+            }
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_create_simulation_rejects_client_supplied_custom_code():
+    """Security regression test: a client must not be able to bypass the
+    ownership/validation gate by sending strategy='custom' directly with its
+    own custom_strategy_code — only the "custom:<id>" path (which fetches
+    the code fresh from the DB) may set the strategy engine's 'custom'
+    execution sentinel."""
+    email = f"custom-strat-{uuid.uuid4().hex[:10]}@example.com"
+    headers = _auth(email)
+
+    r = client.post(
+        "/simulations",
+        headers=headers,
+        json={
+            "params": {
+                "strategy": "custom",
+                "asset_model": "parametric",
+                "custom_strategy_code": MINIMAL_STRATEGY_CODE,
+                "custom_strategy_class_name": "MinimalCustomStrategy",
+            }
+        },
+    )
+    assert r.status_code == 400
+
+    # Even if the request is otherwise well-formed (a real built-in strategy
+    # selected), smuggled custom_strategy_* fields must be stripped, never
+    # forwarded to the job payload.
+    r = client.post(
+        "/simulations",
+        headers=headers,
+        json={
+            "params": {
+                "strategy": "trinity",
+                "asset_model": "parametric",
+                "custom_strategy_code": MINIMAL_STRATEGY_CODE,
+                "custom_strategy_class_name": "MinimalCustomStrategy",
+            }
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    job = db.get_job_by_id(body["job_id"]) if body.get("job_id") else None
+    if job:
+        params = job["payload"]["params"] if isinstance(job.get("payload"), dict) else {}
+        assert "custom_strategy_code" not in params
 
 
 def test_custom_strategy_simulation_runs_end_to_end():
@@ -217,8 +290,11 @@ def test_custom_strategy_simulation_runs_end_to_end():
 
     job = db.get_job_by_id(job_id)
     assert job is not None
-    assert job["payload"]["params"]["strategy"] == "custom"
-    assert job["payload"]["params"]["custom_strategy_class_name"] == "MinimalCustomStrategy"
+    params = job["payload"]["params"]
+    assert params["strategy"] == "custom"
+    assert params["custom_strategy_class_name"] == "MinimalCustomStrategy"
+    assert params["custom_strategy_param_defs"]["withdrawal_rate"]["default"] == 0.04
+    assert params["custom_strategy_params"]["withdrawal_rate"] == 0.04
 
     # Claim this specific job (scoped by id, unlike fetch_and_lock_job's
     # "next available" pick) so the test can't race a real dev worker.
@@ -259,3 +335,14 @@ def test_hash_ignores_custom_strategy_metadata_but_not_code():
 
     c = {**base, "custom_strategy_code": "print(2)"}
     assert generate_simulation_hash(a) != generate_simulation_hash(c)
+
+
+def test_hash_distinguishes_custom_strategy_id_even_with_identical_code():
+    """Security regression: two different strategies (e.g. two users' clones
+    of the same public template, byte-identical code) must never collide
+    onto the same simulation_hash — that would leak one user's cached
+    report (with the other strategy's name/description) to the other."""
+    base = {"strategy": "custom", "custom_strategy_code": "print(1)", "custom_strategy_class_name": "X"}
+    a = {**base, "custom_strategy_id": 1, "custom_strategy_name": "A's clone"}
+    b = {**base, "custom_strategy_id": 2, "custom_strategy_name": "B's clone"}
+    assert generate_simulation_hash(a) != generate_simulation_hash(b)

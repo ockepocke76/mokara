@@ -74,11 +74,6 @@ STRATEGY_LABELS = {
     "get_rich_stay_rich": "Get Rich, Stay Rich",
 }
 
-# Ceiling on num_simulations for custom (user-authored) strategies — well
-# below the built-in max of 10000, but comparable to the ~1600 total paths
-# the 8-scenario evaluation already runs against untrusted code today.
-CUSTOM_STRATEGY_MAX_SIMULATIONS = 2000
-
 
 def _custom_param_spec(key: str, conf: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Best-effort ParamSpec from a custom strategy's simpler {default, description}
@@ -297,7 +292,22 @@ def create_simulation(
     if body.simulation_name:
         ui_params["simulation_name"] = body.simulation_name
 
+    # custom_strategy_* fields must only ever be populated by the trusted DB
+    # lookup below — never trust them if the client supplied them directly
+    # (that would let a "strategy": "custom" request run arbitrary code with
+    # no ownership or validation_status check at all).
+    for key in (
+        "custom_strategy_code", "custom_strategy_class_name", "custom_strategy_name",
+        "custom_strategy_description", "custom_strategy_ai_description",
+        "custom_strategy_id", "custom_strategy_param_defs", "custom_strategy_params",
+    ):
+        ui_params.pop(key, None)
+
     strategy_value = str(ui_params.get("strategy", ""))
+    if strategy_value == "custom":
+        # Bare 'custom' is the internal execution sentinel this branch sets
+        # below (as "custom:<id>") — never a valid selector on its own.
+        raise HTTPException(status_code=400, detail="Unknown strategy")
     if strategy_value.startswith("custom:"):
         from app.routers.strategies import _owned_strategy
 
@@ -310,6 +320,8 @@ def create_simulation(
             raise HTTPException(status_code=422, detail="This strategy has not been validated yet")
         if not custom_strategy.get("code"):
             raise HTTPException(status_code=422, detail="Strategy has no runnable code")
+        if not custom_strategy.get("class_name"):
+            raise HTTPException(status_code=422, detail="Strategy has no class name")
         ui_params["strategy"] = "custom"
         ui_params["custom_strategy_code"] = custom_strategy["code"]
         ui_params["custom_strategy_class_name"] = custom_strategy["class_name"]
@@ -317,11 +329,32 @@ def create_simulation(
         ui_params["custom_strategy_description"] = custom_strategy.get("description")
         ui_params["custom_strategy_ai_description"] = custom_strategy.get("ai_description")
         ui_params["custom_strategy_id"] = custom_strategy["id"]
+        ui_params["custom_strategy_param_defs"] = (
+            db.deserialize_json_column(custom_strategy.get("parameters_json")) or {}
+        )
 
     full = assemble_params(ui_params)
 
     if full.get("strategy") == "custom":
-        full["num_simulations"] = min(int(full.get("num_simulations", 1000)), CUSTOM_STRATEGY_MAX_SIMULATIONS)
+        # Resolved parameter values (post-assemble: user overrides, falling
+        # back to the strategy's own recorded default when the client didn't
+        # send that key — e.g. a slider left untouched) for the PDF settings
+        # table and Gemini analysis prompt.
+        full["custom_strategy_params"] = {
+            k: full[k] if k in full else conf.get("default")
+            for k, conf in full.get("custom_strategy_param_defs", {}).items()
+        }
+        limit = limiter.get_mc_iterations_limit(user["id"], is_custom_strategy=True)
+        if limit <= 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Your plan does not include running custom strategies.",
+            )
+        try:
+            requested = int(full.get("num_simulations", 1000))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail={"num_simulations": "must be a number"})
+        full["num_simulations"] = min(requested, limit)
 
     # Currency from the user's profile unless explicitly set
     if "currency" not in full:
