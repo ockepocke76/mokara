@@ -14,6 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
+import { LineageGraph, type LineageNode } from "./lineage-graph";
+
 type RunInput = {
   kind?: string;
   action?: string;
@@ -46,7 +48,13 @@ function formatTime(value?: string | null): string | null {
   return value.slice(0, 16).replace("T", " ");
 }
 
-export function HistoryTab({ strategyId }: { strategyId: number }) {
+export function HistoryTab({
+  strategyId,
+  strategyName,
+}: {
+  strategyId: number;
+  strategyName: string;
+}) {
   const [payload, setPayload] = useState<HistoryPayload | null>(null);
 
   useEffect(() => {
@@ -78,19 +86,12 @@ export function HistoryTab({ strategyId }: { strategyId: number }) {
       ) : (
         <LegacyTimeline payload={payload} />
       )}
-      <VersionsSection strategyId={strategyId} />
+      <VersionsSection strategyId={strategyId} strategyName={strategyName} />
     </div>
   );
 }
 
-type VersionEntry = {
-  id: number;
-  short_hash?: string;
-  source?: string;
-  request?: string | null;
-  created_at?: string | null;
-  is_head?: boolean;
-  inherited?: boolean;
+type VersionEntry = LineageNode & {
   from_strategy_id?: number | null;
 };
 
@@ -102,11 +103,18 @@ const VERSION_SOURCE_LABELS: Record<string, string> = {
   backfill: "imported",
 };
 
-/** The version chain (owner only — the endpoint 404s for everyone else,
- *  which simply hides the section). */
-function VersionsSection({ strategyId }: { strategyId: number }) {
+/** The version chain + lineage graph (owner only — the endpoint 404s for
+ *  everyone else, which simply hides the section). */
+function VersionsSection({
+  strategyId,
+  strategyName,
+}: {
+  strategyId: number;
+  strategyName: string;
+}) {
   const router = useRouter();
   const [versions, setVersions] = useState<VersionEntry[] | null>(null);
+  const [nodes, setNodes] = useState<LineageNode[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [confirmId, setConfirmId] = useState<number | null>(null);
@@ -119,7 +127,10 @@ function VersionsSection({ strategyId }: { strategyId: number }) {
         const res = await fetch(`/api/bff/strategies/${strategyId}/versions`);
         if (!res.ok) return; // non-owner: no section
         const body = await res.json();
-        if (!cancelled) setVersions(body.versions ?? []);
+        if (!cancelled) {
+          setVersions(body.versions ?? []);
+          setNodes(body.nodes ?? []);
+        }
       } catch {
         // Leave hidden; a reload recovers.
       }
@@ -154,7 +165,9 @@ function VersionsSection({ strategyId }: { strategyId: number }) {
   if (!versions || versions.length === 0) return null;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-6">
+      <LineageGraph nodes={nodes} strategyName={strategyName} />
+      <div className="space-y-3">
       <p className="text-sm font-semibold">Versions</p>
       <p className="text-sm text-muted-foreground">
         This strategy&apos;s line of saved code states, newest first (saves
@@ -214,6 +227,7 @@ function VersionsSection({ strategyId }: { strategyId: number }) {
               ))}
           </div>
         ))}
+      </div>
       </div>
     </div>
   );

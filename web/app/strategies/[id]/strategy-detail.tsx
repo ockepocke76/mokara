@@ -153,7 +153,7 @@ export function StrategyDetail({
         </TabsContent>
 
         <TabsContent value="history" className="mt-4">
-          <HistoryTab strategyId={strategy.id} />
+          <HistoryTab strategyId={strategy.id} strategyName={strategy.strategy_name} />
         </TabsContent>
       </Tabs>
     </div>
