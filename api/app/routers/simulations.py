@@ -75,8 +75,50 @@ STRATEGY_LABELS = {
 }
 
 
+def _custom_param_spec(key: str, conf: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Best-effort ParamSpec from a custom strategy's simpler {default, description}
+    shape — no min/max/type metadata exists for user-authored strategies."""
+    if not isinstance(conf, dict) or "default" not in conf:
+        return None
+    default = conf["default"]
+    if isinstance(default, bool):
+        ptype = "boolean"
+    elif isinstance(default, (int, float)):
+        ptype = "number"
+    else:
+        ptype = "text"
+    return {
+        "key": key,
+        "label": key.replace("_", " ").title(),
+        "description": conf.get("description"),
+        "default": default,
+        "type": ptype,
+    }
+
+
+def _custom_strategy_spec(row: Dict[str, Any], user_id: int) -> Optional[Dict[str, Any]]:
+    from db.database import db
+
+    if not row.get("code"):
+        return None
+    params_json = db.deserialize_json_column(row.get("parameters_json")) or {}
+    params = [spec for pkey, conf in params_json.items() if (spec := _custom_param_spec(pkey, conf))]
+    validated = row.get("validation_status") == "validated"
+    is_owner = row.get("user_id") == user_id
+    return {
+        "key": f"custom:{row['id']}",
+        "name": row.get("strategy_name") or f"Strategy {row['id']}",
+        "description": row.get("description"),
+        "params": params,
+        "group": "mine" if is_owner else "community",
+        "is_custom": True,
+        "disabled": not validated,
+        "disabled_reason": None if validated else "Not validated yet — finish validation in the strategy designer before running it here.",
+    }
+
+
 @router.get("/config/params")
-def config_params() -> dict:
+def config_params(user: Optional[dict] = Depends(get_current_user)) -> dict:
     """The config-driven parameter schema that drives the simulate form."""
     from config import CONFIG
     from core.strategy import BuyBorrowDieStrategy, TrinityStrategy
@@ -109,8 +151,18 @@ def config_params() -> dict:
                 "name": STRATEGY_LABELS.get(key, key),
                 "description": CONFIG.get("strategies", {}).get(key, {}).get("description"),
                 "params": params,
+                "group": "builtin",
             }
         )
+
+    if user:
+        from db.database import db
+
+        custom_rows = db.get_user_custom_strategies(user["id"]) or []
+        for row in custom_rows:
+            spec = _custom_strategy_spec(row, user["id"])
+            if spec is not None:
+                strategies.append(spec)
 
     assets = []
     for key, model in CONFIG.get("asset_models", {}).items():
@@ -239,7 +291,70 @@ def create_simulation(
     ui_params = dict(body.params)
     if body.simulation_name:
         ui_params["simulation_name"] = body.simulation_name
+
+    # custom_strategy_* fields must only ever be populated by the trusted DB
+    # lookup below — never trust them if the client supplied them directly
+    # (that would let a "strategy": "custom" request run arbitrary code with
+    # no ownership or validation_status check at all).
+    for key in (
+        "custom_strategy_code", "custom_strategy_class_name", "custom_strategy_name",
+        "custom_strategy_description", "custom_strategy_ai_description",
+        "custom_strategy_id", "custom_strategy_param_defs", "custom_strategy_params",
+    ):
+        ui_params.pop(key, None)
+
+    strategy_value = str(ui_params.get("strategy", ""))
+    if strategy_value == "custom":
+        # Bare 'custom' is the internal execution sentinel this branch sets
+        # below (as "custom:<id>") — never a valid selector on its own.
+        raise HTTPException(status_code=400, detail="Unknown strategy")
+    if strategy_value.startswith("custom:"):
+        from app.routers.strategies import _owned_strategy
+
+        try:
+            strategy_id = int(strategy_value.split(":", 1)[1])
+        except (IndexError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid strategy id")
+        custom_strategy = _owned_strategy(strategy_id, user)
+        if custom_strategy.get("validation_status") != "validated":
+            raise HTTPException(status_code=422, detail="This strategy has not been validated yet")
+        if not custom_strategy.get("code"):
+            raise HTTPException(status_code=422, detail="Strategy has no runnable code")
+        if not custom_strategy.get("class_name"):
+            raise HTTPException(status_code=422, detail="Strategy has no class name")
+        ui_params["strategy"] = "custom"
+        ui_params["custom_strategy_code"] = custom_strategy["code"]
+        ui_params["custom_strategy_class_name"] = custom_strategy["class_name"]
+        ui_params["custom_strategy_name"] = custom_strategy.get("strategy_name")
+        ui_params["custom_strategy_description"] = custom_strategy.get("description")
+        ui_params["custom_strategy_ai_description"] = custom_strategy.get("ai_description")
+        ui_params["custom_strategy_id"] = custom_strategy["id"]
+        ui_params["custom_strategy_param_defs"] = (
+            db.deserialize_json_column(custom_strategy.get("parameters_json")) or {}
+        )
+
     full = assemble_params(ui_params)
+
+    if full.get("strategy") == "custom":
+        # Resolved parameter values (post-assemble: user overrides, falling
+        # back to the strategy's own recorded default when the client didn't
+        # send that key — e.g. a slider left untouched) for the PDF settings
+        # table and Gemini analysis prompt.
+        full["custom_strategy_params"] = {
+            k: full[k] if k in full else conf.get("default")
+            for k, conf in full.get("custom_strategy_param_defs", {}).items()
+        }
+        limit = limiter.get_mc_iterations_limit(user["id"], is_custom_strategy=True)
+        if limit <= 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Your plan does not include running custom strategies.",
+            )
+        try:
+            requested = int(full.get("num_simulations", 1000))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail={"num_simulations": "must be a number"})
+        full["num_simulations"] = min(requested, limit)
 
     # Currency from the user's profile unless explicitly set
     if "currency" not in full:

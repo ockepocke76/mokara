@@ -83,6 +83,23 @@ export function ParamField({
   }
 
   if (spec.type === "number") {
+    if (spec.min == null && spec.max == null) {
+      // No range metadata — e.g. a custom strategy's params, which carry no
+      // min/max/step (unlike built-ins). A slider needs real bounds, so
+      // fall back to a plain numeric input instead of a nonsense 0-100 range.
+      const num = typeof value === "number" ? value : Number(spec.default ?? 0);
+      return (
+        <div className="grid gap-1.5">
+          <FieldLabel spec={spec} />
+          <Input
+            type="number"
+            value={num}
+            step="any"
+            onChange={(e) => onChange(Number(e.target.value))}
+          />
+        </div>
+      );
+    }
     const num = typeof value === "number" ? value : Number(spec.default ?? 0);
     const scale = spec.is_percent ? 100 : 1;
     const display = Math.round(num * scale * 10000) / 10000;

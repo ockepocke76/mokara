@@ -598,7 +598,7 @@ def prepare_executive_summary(params: Dict[str, Any], stats: Dict[str, Any], gem
     """
     from core.currency_config import format_currency_amount
     
-    if params.get('strategy') == 'custom_strategy':
+    if params.get('strategy') == 'custom':
         strategy_display = params.get('custom_strategy_name', 'Custom Strategy')
     else:
         strategy_display = ' '.join(word.capitalize() for word in params.get('strategy', '').split('_'))

@@ -918,7 +918,10 @@ def get_strategic_analysis_content(params, evaluation_data=None):
     # Get the appropriate description
     if strategy_key == 'custom':
         # For custom strategies, use the AI-generated description from the database
-        custom_desc = params.get('ai_description', 'No description provided for this custom strategy.')
+        custom_desc = params.get(
+            'custom_strategy_ai_description',
+            params.get('custom_strategy_description', 'No description provided for this custom strategy.'),
+        )
         strategy_description = f"""
             <b>Custom Strategy: {params.get('custom_strategy_name', 'User-Defined Strategy')}</b><br/><br/>
             {custom_desc}

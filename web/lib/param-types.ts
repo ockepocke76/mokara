@@ -19,6 +19,10 @@ export type StrategySpec = {
   name: string;
   description?: string | null;
   params: ParamSpec[];
+  group?: "builtin" | "mine" | "community";
+  is_custom?: boolean;
+  disabled?: boolean;
+  disabled_reason?: string | null;
 };
 
 export type AssetSpec = {
