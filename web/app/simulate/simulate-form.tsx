@@ -24,7 +24,9 @@ import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -231,11 +233,29 @@ export function SimulateForm({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {schema.strategies.map((s) => (
-                    <SelectItem key={s.key} value={s.key}>
-                      {s.name}
-                    </SelectItem>
-                  ))}
+                  {(
+                    [
+                      ["builtin", "Built-in"],
+                      ["mine", "My Strategies"],
+                      ["community", "Community"],
+                    ] as const
+                  ).map(([group, label]) => {
+                    const items = schema.strategies.filter(
+                      (s) => (s.group ?? "builtin") === group,
+                    );
+                    if (items.length === 0) return null;
+                    return (
+                      <SelectGroup key={group}>
+                        <SelectLabel>{label}</SelectLabel>
+                        {items.map((s) => (
+                          <SelectItem key={s.key} value={s.key} disabled={s.disabled}>
+                            {s.name}
+                            {s.disabled_reason ? ` — ${s.disabled_reason}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    );
+                  })}
                 </SelectContent>
               </Select>
               {strategy?.description && (
