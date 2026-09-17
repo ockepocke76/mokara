@@ -55,6 +55,8 @@ export type Entry = {
   scenario_results: ScenarioResult[];
   usage_clone_count: number;
   usage_fork_count: number;
+  /** All-generations count: clones of clones, private ones included. */
+  descendant_count: number;
   clone_target_id: number | null;
   in_library: boolean;
 };

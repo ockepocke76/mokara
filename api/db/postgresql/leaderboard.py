@@ -83,7 +83,15 @@ class LeaderboardMixin:
                             COALESCE(u.display_name, u.email) as user_name,
                             u.email as user_email,
                             (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = TRUE) as usage_clone_count,
-                            (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = FALSE) as usage_fork_count
+                            (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = FALSE) as usage_fork_count,
+                            (WITH RECURSIVE d AS (
+                                SELECT dc.id, 1 AS depth FROM CUSTOM_STRATEGIES dc
+                                WHERE dc.parent_strategy_id = cs.id AND dc.deleted_at IS NULL
+                                UNION ALL
+                                SELECT c2.id, d.depth + 1 FROM CUSTOM_STRATEGIES c2
+                                JOIN d ON c2.parent_strategy_id = d.id
+                                WHERE c2.deleted_at IS NULL AND c2.id != d.id AND d.depth < 50
+                             ) SELECT COUNT(*) FROM d) as descendant_count
                         FROM STRATEGY_EVALUATIONS e
                         LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %s
                         LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
@@ -102,7 +110,17 @@ class LeaderboardMixin:
                             cs.description as custom_description,
                             cs.is_published_to_leaderboard,
                             COALESCE(u.display_name, u.email) as user_name,
-                            u.email as user_email
+                            u.email as user_email,
+                            (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = TRUE) as usage_clone_count,
+                            (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = FALSE) as usage_fork_count,
+                            (WITH RECURSIVE d AS (
+                                SELECT dc.id, 1 AS depth FROM CUSTOM_STRATEGIES dc
+                                WHERE dc.parent_strategy_id = cs.id AND dc.deleted_at IS NULL
+                                UNION ALL
+                                SELECT c2.id, d.depth + 1 FROM CUSTOM_STRATEGIES c2
+                                JOIN d ON c2.parent_strategy_id = d.id
+                                WHERE c2.deleted_at IS NULL AND c2.id != d.id AND d.depth < 50
+                             ) SELECT COUNT(*) FROM d) as descendant_count
                         FROM STRATEGY_EVALUATIONS e
                         LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %s
                         LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
