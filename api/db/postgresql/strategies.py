@@ -683,6 +683,94 @@ class StrategiesMixin:
                     'forks': []}
 
     @log_db_call
+    def get_strategy_family(self, strategy_id, user_id):
+        """The strategy-level family tree: root at the highest ancestor
+        reachable through VISIBLE strategies (public, built-in, or the
+        viewer's own), then every visible descendant. Invisible strategies
+        never appear — each visible node instead carries hidden_forks, the
+        count of its direct children the viewer may not see (consistent with
+        the fork counts the leaderboard already shows).
+
+        Returns a list of node dicts ordered root-first; the caller decides
+        which parent pointers are safe to expose.
+        """
+        params = {'strategy_id': strategy_id, 'user_id': user_id}
+        try:
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor,
+                                         commit=False) as cursor:
+                cursor.execute("""
+                    WITH RECURSIVE up AS (
+                        SELECT cs.id, cs.parent_strategy_id, 0 AS height
+                        FROM CUSTOM_STRATEGIES cs
+                        WHERE cs.id = %(strategy_id)s AND cs.deleted_at IS NULL
+                        UNION ALL
+                        SELECT p.id, p.parent_strategy_id, up.height + 1
+                        FROM CUSTOM_STRATEGIES p
+                        JOIN up ON p.id = up.parent_strategy_id
+                        WHERE up.height < 50
+                          AND p.id != up.id  -- corrupt self-link guard
+                          AND p.deleted_at IS NULL
+                          AND (p.is_public = TRUE OR p.user_id = 0
+                               OR p.user_id = %(user_id)s)
+                    ),
+                    root AS (
+                        SELECT id FROM up ORDER BY height DESC LIMIT 1
+                    ),
+                    tree AS (
+                        SELECT cs.id, cs.parent_strategy_id, cs.strategy_name,
+                               cs.user_id, cs.is_public, cs.created_at,
+                               cs.git_commit_sha, cs.clone_source_commit_sha,
+                               0 AS depth
+                        FROM CUSTOM_STRATEGIES cs
+                        JOIN root ON cs.id = root.id
+                        UNION ALL
+                        SELECT c.id, c.parent_strategy_id, c.strategy_name,
+                               c.user_id, c.is_public, c.created_at,
+                               c.git_commit_sha, c.clone_source_commit_sha,
+                               tree.depth + 1
+                        FROM CUSTOM_STRATEGIES c
+                        JOIN tree ON c.parent_strategy_id = tree.id
+                        WHERE tree.depth < 50
+                          AND c.id != tree.id  -- corrupt self-link guard
+                          AND c.deleted_at IS NULL
+                          AND (c.is_public = TRUE OR c.user_id = 0
+                               OR c.user_id = %(user_id)s)
+                    )
+                    SELECT t.id, t.parent_strategy_id, t.strategy_name,
+                           t.created_at, t.depth,
+                           (t.user_id = 0) AS is_builtin,
+                           (t.user_id = %(user_id)s) AS is_own,
+                           (t.is_public IS NOT TRUE AND t.user_id != 0)
+                               AS is_private,
+                           -- Public author identity: the chosen display name
+                           -- only — never the email fallback other surfaces
+                           -- still carry.
+                           CASE WHEN t.user_id = 0 THEN 'built-in'
+                                ELSE COALESCE(u.display_name, 'anonymous')
+                           END AS owner_name,
+                           ev.excellence_score,
+                           (SELECT COUNT(*) FROM CUSTOM_STRATEGIES h
+                            WHERE h.parent_strategy_id = t.id
+                              AND h.deleted_at IS NULL
+                              AND NOT (h.is_public = TRUE OR h.user_id = 0
+                                       OR h.user_id = %(user_id)s)
+                           ) AS hidden_forks
+                    FROM tree t
+                    LEFT JOIN USERS u ON u.id = t.user_id
+                    LEFT JOIN LATERAL (
+                        SELECT excellence_score FROM STRATEGY_EVALUATIONS e
+                        WHERE e.git_commit_sha = COALESCE(t.git_commit_sha,
+                                                          t.clone_source_commit_sha)
+                        ORDER BY e.excellence_score DESC NULLS LAST LIMIT 1
+                    ) ev ON TRUE
+                    ORDER BY t.depth, t.created_at, t.id
+                """, params)
+                return [dict(r) for r in cursor.fetchall()]
+        except Exception as e:
+            logging.error(f"Failed to get strategy family: {e}", exc_info=True)
+            return []
+
+    @log_db_call
     def get_strategy_version(self, version_id):
         """One version node, code included."""
         try:

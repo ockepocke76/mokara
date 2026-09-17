@@ -438,6 +438,35 @@ def revert_strategy(strategy_id: int, body: RevertRequest,
     return {'reverted': True, 'version_id': result.get('version_id')}
 
 
+@router.get("/strategies/{strategy_id}/family")
+def strategy_family(strategy_id: int,
+                    user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """The strategy-level family tree (clone lineage) — visible to anyone who
+    can view the strategy. Only public/built-in/own strategies appear;
+    others are aggregated into per-node hidden-fork counts."""
+    from db.database import db
+
+    user = _require_user(user)
+    _owned_strategy(strategy_id, user)  # owner or public — 404 otherwise
+    rows = db.get_strategy_family(strategy_id, user['id']) or []
+    visible_ids = {r['id'] for r in rows}
+    return {'nodes': [
+        {'id': r['id'],
+         # never ship a pointer to a strategy the viewer can't see
+         'parent_id': (r['parent_strategy_id']
+                       if r['parent_strategy_id'] in visible_ids else None),
+         'name': r['strategy_name'],
+         'owner': r['owner_name'],
+         'is_builtin': bool(r['is_builtin']),
+         'is_own': bool(r['is_own']),
+         'is_private': bool(r['is_private']),
+         'is_self': r['id'] == strategy_id,
+         'score': r['excellence_score'],
+         'hidden_forks': r['hidden_forks'],
+         'created_at': str(r['created_at'] or '') or None}
+        for r in rows]}
+
+
 @router.post("/strategies/{strategy_id}/publish")
 def publish_strategy(strategy_id: int,
                      user: Optional[dict] = Depends(get_current_user)) -> dict:
