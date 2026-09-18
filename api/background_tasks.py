@@ -985,13 +985,7 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
 
     average_results_df = precalculated_data.get('average_results_df')
     if average_results_df is not None and not average_results_df.empty:
-        # Use the centralized function to format the table
         # === Average Yearly Results Appendix ===
-        # OLD CODE - Being replaced by manifest-driven approach
-        # df_for_ui = prepare_average_results_table(average_results_df)
-        # send_result('dataframe', df_for_ui, caption=f"All values are shown in thousands of {simulation_currency} for improved readability, representing the average state of the portfolio at the end of each year, after all transactions have been completed. NOTE: Average results are heavily affected by outliers, look at median table to understand typical outcomes.", section='Appendices', sub_section='Average Yearly Results')
-        
-        # NEW: Manifest-driven rendering
         section_name = 'Appendices: Average Yearly Results'
         if section_name in REPORT_STRUCTURE:
             df_for_ui = prepare_average_results_table(average_results_df)
@@ -1000,13 +994,7 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
 
     median_yearly_results_df = precalculated_data.get('median_yearly_results_df')
     if median_yearly_results_df is not None and not median_yearly_results_df.empty:
-        # Use the centralized function to format the table
         # === Median Yearly Results Appendix ===
-        # OLD CODE - Being replaced by manifest-driven approach
-        # df_for_ui = prepare_median_yearly_results_table(median_yearly_results_df)
-        # send_result('dataframe', df_for_ui, caption=f"All values are shown in thousands of {simulation_currency} for improved readability, representing the median state of the portfolio at the end of each year, after all transactions have been completed.", section='Appendices', sub_section='Median Yearly Results')
-        
-        # NEW: Manifest-driven rendering
         section_name = 'Appendices: Median Yearly Results'
         if section_name in REPORT_STRUCTURE:
             df_for_ui = prepare_median_yearly_results_table(median_yearly_results_df)
