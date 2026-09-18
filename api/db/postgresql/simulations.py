@@ -13,6 +13,7 @@ from psycopg2 import extras
 
 from ..utils import _sanitize_for_json
 from ..logging_utils import log_db_call
+from utils.helpers import compute_log_scale_histogram
 
 
 def _save_dataframe_to_db(cursor, results_id, data_key, df):
@@ -486,9 +487,9 @@ class SimulationsMixin:
                     })
 
                     final_net_worths_raw = net_worth_df.iloc[-1]
-                    p1 = np.percentile(final_net_worths_raw, 1)
-                    p99 = np.percentile(final_net_worths_raw, 99)
-                    counts, bin_edges = np.histogram(final_net_worths_raw, bins=200, range=(p1, p99))
+                    # Log-spaced bins (matching the log-scale x-axis) with bin count
+                    # scaled to sample size (num_simulations ranges 1,000-10,000+).
+                    counts, bin_edges = compute_log_scale_histogram(final_net_worths_raw)
                     final_net_worths_hist_data = {'counts': counts, 'bin_edges': bin_edges}
 
                     num_sims = params.get('num_simulations', 10000)
