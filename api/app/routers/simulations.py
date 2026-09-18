@@ -591,6 +591,12 @@ def _render_report_json(simulation_hash: str, viewer_is_admin: bool) -> str:
                     item["type"] = "image"
                 else:
                     continue
+            elif kind == "image":
+                # Already base64-encoded PNG bytes (e.g. the methodology
+                # flowchart) → data URI
+                data = item.get("data")
+                if isinstance(data, str) and data and not data.startswith("data:"):
+                    item["data"] = f"data:image/png;base64,{data}"
             else:
                 item["data"] = _sanitize_for_json(item.get("data"))
         except Exception:
