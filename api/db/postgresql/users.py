@@ -12,6 +12,16 @@ from core.cache import ttl_cache
 from ..logging_utils import log_db_call
 
 
+# Tables with a user_id FK to USERS(id) that isn't ON DELETE CASCADE — must be
+# cleared before the user row itself can go. background_jobs uses ON DELETE
+# SET NULL so it doesn't need to be listed here.
+_USER_OWNED_TABLES = [
+    'user_settings', 'user_simulation_history', 'custom_strategies',
+    'strategy_evaluations', 'subscription_history', 'ai_credit_usage',
+    'logs', 'simulations_old', 'user_hidden_items', 'strategy_generation_runs',
+]
+
+
 class UsersMixin:
     """User accounts, access management, tiers, and login requests. Mixed into PostgreSQLDatabase."""
 
@@ -137,38 +147,76 @@ class UsersMixin:
             logging.error(f"Failed to remove allowed user: {e}", exc_info=True)
 
     @log_db_call
-    def delete_user(self, email):
+    def delete_users_by_id(self, user_ids):
         """
-        Completely delete a user and all their associated data.
-        Cascades to:
-        - Simulations, Strategies (via Foreign Key on USERS)
-        - Allowed Users entry
-        - Login Requests
-        - Subscription History
+        Completely delete users and all their associated data, by id.
+
+        None of the USERS(id) foreign keys are ON DELETE CASCADE, and a DB
+        trigger refuses to delete a public/leaderboard-published strategy —
+        so a bare `DELETE FROM users` fails for any user with real data.
+        This unpublishes strategies first, then clears dependents in the
+        right order, then the user rows themselves. Safe to call with an
+        empty list (no-op).
         """
-        email_lower = email.lower()
+        if not user_ids:
+            return 0
         try:
             with self._connection_cursor() as cursor:
-                # 1. Delete from Login Requests
-                cursor.execute("DELETE FROM login_requests WHERE email = %s", (email_lower,))
+                cursor.execute(
+                    "UPDATE custom_strategies SET is_public = false, is_published_to_leaderboard = false "
+                    "WHERE user_id = ANY(%s) AND (is_public OR is_published_to_leaderboard)",
+                    (user_ids,))
+                if cursor.rowcount:
+                    try:
+                        from db.cache import get_leaderboard_with_profile_cached
+                        get_leaderboard_with_profile_cached.clear()
+                    except Exception as cache_error:
+                        logging.warning(f"Failed to clear leaderboard cache: {cache_error}")
 
-                # 2. Delete from Subscription History
-                # Need user_id first to be safe, or join?
-                # Sub history links to user_id.
+                # strategy_versions.created_by_user_id has no FK to users (a
+                # version node outlives any one strategy by design), so it
+                # never blocks the deletes below but also never cascades.
+                cursor.execute(
+                    "DELETE FROM strategy_versions WHERE created_by_user_id = ANY(%s)",
+                    (user_ids,))
+
+                for table in _USER_OWNED_TABLES:
+                    cursor.execute(f"DELETE FROM {table} WHERE user_id = ANY(%s)", (user_ids,))
+
+                # login_requests/allowed_users are keyed by email, not user_id.
+                cursor.execute(
+                    "DELETE FROM login_requests WHERE email IN (SELECT email FROM users WHERE id = ANY(%s))",
+                    (user_ids,))
+                cursor.execute(
+                    "DELETE FROM allowed_users WHERE email IN (SELECT email FROM users WHERE id = ANY(%s))",
+                    (user_ids,))
+
+                cursor.execute("DELETE FROM users WHERE id = ANY(%s)", (user_ids,))
+                deleted = cursor.rowcount
+
+            logging.info(f"Deleted {deleted} user(s) and their dependent data")
+            return deleted
+
+        except Exception as e:
+            logging.error(f"Failed to delete users {user_ids}: {e}", exc_info=True)
+            return 0
+
+    @log_db_call
+    def delete_user(self, email):
+        """Completely delete a user (by email) and all their associated data."""
+        email_lower = email.lower()
+        try:
+            with self._connection_cursor(commit=False) as cursor:
                 cursor.execute("SELECT id FROM users WHERE email = %s", (email_lower,))
                 row = cursor.fetchone()
-                if row:
-                    user_id = row[0]
-                    cursor.execute("DELETE FROM subscription_history WHERE user_id = %s", (user_id,))
+            if not row:
+                logging.info(f"delete_user: no such user {email}")
+                return False
 
-                # 3. Delete from Allowed Users
-                cursor.execute("DELETE FROM allowed_users WHERE email = %s", (email_lower,))
-
-                # 4. Delete from Users (Cascades to Sims, Strategies)
-                cursor.execute("DELETE FROM users WHERE email = %s", (email_lower,))
-
-            logging.info(f"Successfully deleted user: {email}")
-            return True
+            deleted = self.delete_users_by_id([row[0]])
+            if deleted:
+                logging.info(f"Successfully deleted user: {email}")
+            return bool(deleted)
 
         except Exception as e:
             logging.error(f"Failed to delete user {email}: {e}", exc_info=True)
