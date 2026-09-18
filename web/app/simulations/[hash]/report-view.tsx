@@ -8,6 +8,7 @@
  * collapsible sections, Appendices sub-sections, per-type renderers.
  */
 import { useMemo } from "react";
+import { Info } from "lucide-react";
 import type { Data, Layout } from "plotly.js";
 
 import {
@@ -24,6 +25,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { WarningBox } from "@/components/info-box";
 import { Chart } from "@/components/chart";
 import { Markdown } from "@/components/markdown";
@@ -66,7 +72,7 @@ function MetricsTable({
   metrics,
   title,
 }: {
-  metrics: { label: string; value: string }[];
+  metrics: { label: string; value: string; tooltip?: string | null }[];
   title?: string | null;
 }) {
   return (
@@ -78,7 +84,19 @@ function MetricsTable({
             {metrics.map((m, i) => (
               <TableRow key={i}>
                 <TableCell className="w-1/3 align-top text-sm font-medium">
-                  {m.label}
+                  <span className="inline-flex items-center gap-1">
+                    {m.label}
+                    {m.tooltip && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="size-3.5 shrink-0 text-muted-foreground" />
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs whitespace-normal">
+                          {m.tooltip}
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </span>
                 </TableCell>
                 <TableCell className="text-sm">
                   <Markdown>{String(m.value ?? "")}</Markdown>
@@ -162,7 +180,7 @@ function PlotlyItem({ item }: { item: ReportItem }) {
         className="w-full"
         data={fig.data}
         layout={{ ...fig.layout, autosize: true, width: undefined, height }}
-        config={{ displayModeBar: false, responsive: true }}
+        config={{ displayModeBar: "hover", displaylogo: false }}
       />
       {item.description && (
         <p className="mt-1 text-sm italic text-muted-foreground">
@@ -280,7 +298,7 @@ function RenderItem({ item }: { item: ReportItem }) {
     case "settings_table": {
       const sections = item.data as {
         title: string;
-        metrics: { label: string; value: string }[];
+        metrics: { label: string; value: string; tooltip?: string | null }[];
       }[];
       return (
         <div>
@@ -297,7 +315,13 @@ function RenderItem({ item }: { item: ReportItem }) {
       return (
         <MetricsTable
           title={item.caption}
-          metrics={item.data as { label: string; value: string }[]}
+          metrics={
+            item.data as {
+              label: string;
+              value: string;
+              tooltip?: string | null;
+            }[]
+          }
         />
       );
     case "advanced_stats_table":
@@ -318,6 +342,9 @@ function RenderItem({ item }: { item: ReportItem }) {
     case "error":
       return <WarningBox>❌ {String(item.data)}</WarningBox>;
     default:
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`Unhandled report item type: "${item.type}"`, item);
+      }
       return null;
   }
 }
@@ -352,11 +379,31 @@ export function ReportView({ items }: { items: ReportItem[] }) {
   return (
     <div className="flex flex-col gap-3">
       {warnings.map((w, i) => {
-        const data = w.data as { title?: string; body?: string };
+        const data = w.data as {
+          title?: string;
+          body?: string;
+          components?: string[];
+        };
         return (
           <WarningBox key={i}>
             ⚠️ <strong>{data.title ?? "Warning"}</strong>{" "}
             {data.body ?? String(w.data)}
+            {data.components && data.components.length > 0 && (
+              <Accordion type="single" collapsible className="mt-1">
+                <AccordionItem value="changed-components" className="border-0">
+                  <AccordionTrigger className="py-1 text-sm">
+                    Changed Components
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <ul className="list-disc pl-5">
+                      {data.components.map((c) => (
+                        <li key={c}>{c}</li>
+                      ))}
+                    </ul>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            )}
           </WarningBox>
         );
       })}
@@ -387,26 +434,38 @@ export function ReportView({ items }: { items: ReportItem[] }) {
   );
 }
 
+function IntroText({ item }: { item: ReportItem }) {
+  if (!item.data) return null;
+  return (
+    <p className="mb-3 border-b pb-3 text-sm italic text-muted-foreground">
+      {String(item.data)}
+    </p>
+  );
+}
+
 function SectionBody({
   section,
 }: {
   section: { name: string; items: ReportItem[] };
 }) {
-  const intro = section.items.find((i) => i.type === "intro");
-  const rest = section.items.filter((i) => i.type !== "intro");
+  // Only the section-level intro (no sub_section) is pulled out here — a
+  // sub-section's own intro (type "intro" + sub_section set) stays in `rest`
+  // so it reaches its sub-section below instead of being dropped.
+  const intro = section.items.find(
+    (i) => i.type === "intro" && !i.sub_section,
+  );
+  const rest = section.items.filter((i) => i !== intro);
   const hasSubs = rest.some((i) => i.sub_section);
 
   if (!hasSubs) {
     return (
       <div>
-        {intro && (
-          <p className="mb-3 border-b pb-3 text-sm italic text-muted-foreground">
-            {String(intro.data)}
-          </p>
-        )}
-        {rest.map((item, i) => (
-          <RenderItem key={i} item={item} />
-        ))}
+        {intro && <IntroText item={intro} />}
+        {rest
+          .filter((i) => i.type !== "intro")
+          .map((item, i) => (
+            <RenderItem key={i} item={item} />
+          ))}
       </div>
     );
   }
@@ -424,24 +483,27 @@ function SectionBody({
 
   return (
     <div>
-      {intro && (
-        <p className="mb-3 border-b pb-3 text-sm italic text-muted-foreground">
-          {String(intro.data)}
-        </p>
-      )}
+      {intro && <IntroText item={intro} />}
       <Accordion type="multiple" className="flex flex-col gap-1">
-        {ordered.map((name) => (
-          <AccordionItem key={name} value={name}>
-            <AccordionTrigger className="py-2 text-sm font-medium">
-              {name}
-            </AccordionTrigger>
-            <AccordionContent>
-              {subs.get(name)!.map((item, i) => (
-                <RenderItem key={i} item={item} />
-              ))}
-            </AccordionContent>
-          </AccordionItem>
-        ))}
+        {ordered.map((name) => {
+          const subItems = subs.get(name)!;
+          const subIntro = subItems.find((i) => i.type === "intro");
+          return (
+            <AccordionItem key={name} value={name}>
+              <AccordionTrigger className="py-2 text-sm font-medium">
+                {name}
+              </AccordionTrigger>
+              <AccordionContent>
+                {subIntro && <IntroText item={subIntro} />}
+                {subItems
+                  .filter((i) => i.type !== "intro")
+                  .map((item, i) => (
+                    <RenderItem key={i} item={item} />
+                  ))}
+              </AccordionContent>
+            </AccordionItem>
+          );
+        })}
       </Accordion>
     </div>
   );

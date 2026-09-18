@@ -550,6 +550,9 @@ def _render_report_json_singleflight(simulation_hash: str, viewer_is_admin: bool
         return _render_report_json(simulation_hash, viewer_is_admin)
 
 
+def _png_data_uri(b64: str) -> str:
+    return f"data:image/png;base64,{b64}"
+
 @ttl_cache(ttl=600, maxsize=16)
 def _render_report_json(simulation_hash: str, viewer_is_admin: bool) -> str:
     import base64
@@ -587,8 +590,16 @@ def _render_report_json(simulation_hash: str, viewer_is_admin: bool) -> str:
                 if path and os.path.exists(str(path)):
                     with open(path, "rb") as f:
                         b64 = base64.b64encode(f.read()).decode()
-                    item["data"] = f"data:image/png;base64,{b64}"
+                    item["data"] = _png_data_uri(b64)
                     item["type"] = "image"
+                else:
+                    continue
+            elif kind == "image":
+                # Already base64-encoded PNG bytes (e.g. the methodology
+                # flowchart) → data URI
+                data = item.get("data")
+                if isinstance(data, str) and data:
+                    item["data"] = data if data.startswith("data:") else _png_data_uri(data)
                 else:
                     continue
             else:

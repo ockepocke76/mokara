@@ -22,7 +22,7 @@ from db.utils import _sanitize_for_json
 from reporting.content import (
     get_disclaimer_text, get_methodology_description, get_strategic_analysis_content,
     get_section_intro, get_plot_description, get_structured_settings,
-    get_structured_advanced_stats, get_glossary_data
+    get_structured_advanced_stats, get_glossary_data, get_flat_glossary_lookup
 )
 from reporting.interactive_plotting import (
     plot_price_history_interactive, plot_yearly_returns_interactive,
@@ -447,6 +447,23 @@ def run_and_save_simulation(ui_params, full_sim_params, simulation_hash, progres
         send_progress(1.0, f"Error: {e}")
         return False, None
 
+def _enrich_metric_tooltips(metrics, tooltip_lookup):
+    """
+    Adds a 'tooltip' key (glossary definition) to each metric dict that
+    doesn't already carry one, by exact label lookup against a pre-built
+    lookup (see get_flat_glossary_lookup — built once per report render
+    and passed in, rather than re-fetched per label). Metrics with no
+    matching glossary entry, or that aren't plain dicts, are left unchanged.
+    """
+    enriched = []
+    for metric in metrics:
+        if not isinstance(metric, dict) or 'tooltip' in metric:
+            enriched.append(metric)
+            continue
+        tooltip = tooltip_lookup.get(metric.get('label', ''))
+        enriched.append({**metric, 'tooltip': tooltip} if tooltip else metric)
+    return enriched
+
 def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=None, process_key=None, process_start_time=None, thread_key=None, thread_start_time=None, viewer_is_admin=False):
     """
     Regenerates all UI components (plots, tables, text) for a given simulation_id
@@ -518,6 +535,11 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
             logging.debug(f"send_special_result: type='{res_type}'")
             results_queue.put({'type': res_type, 'data': data})
 
+    # Built once per render (not per metric label) — get_flat_glossary_lookup
+    # is ttl_cached but still deep-copies its return value on every call, and
+    # a report can enrich a few dozen metric rows across several tables.
+    tooltip_lookup = get_flat_glossary_lookup()
+
     def send_result(res_type, data, caption=None, section=None, sub_section=None, description=None):
         if results_queue:
             logging.debug(f"send_result: type='{res_type}', caption='{caption}', section='{section}', sub_section='{sub_section}'")
@@ -528,6 +550,14 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
                 sanitized_data = data.to_json(orient='split')
             else:
                 sanitized_data = data if res_type in ['plotly', 'plot'] else _sanitize_for_json(data)
+            # Auto-enrich metric tables with glossary tooltips (parity with
+            # the old UI's render_metrics_table, which did this on render).
+            if res_type in ('key_value_table', 'key_stats_table') and isinstance(sanitized_data, list):
+                sanitized_data = _enrich_metric_tooltips(sanitized_data, tooltip_lookup)
+            elif res_type == 'settings_table' and isinstance(sanitized_data, list):
+                for group in sanitized_data:
+                    if isinstance(group, dict) and isinstance(group.get('metrics'), list):
+                        group['metrics'] = _enrich_metric_tooltips(group['metrics'], tooltip_lookup)
             results_queue.put({
                 'type': res_type, 'data': sanitized_data, 'caption': _sanitize_for_json(caption),
                 'section': _sanitize_for_json(section), 'sub_section': _sanitize_for_json(sub_section),
