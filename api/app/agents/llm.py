@@ -22,7 +22,7 @@ class LLMError(RuntimeError):
 
 def _model_for(tier: str) -> str:
     if tier == 'strong':
-        return os.environ.get('GEMINI_MODEL_STRONG', 'gemini-2.5-pro')
+        return os.environ.get('GEMINI_MODEL_STRONG', 'gemini-3.8-flash')
     return os.environ.get('GEMINI_MODEL_FAST', 'gemini-2.5-flash')
 
 
