@@ -12,16 +12,6 @@ import os
 import pytest
 
 
-# Tables with a NOT NULL/NO ACTION user_id FK to users.id — must be cleared
-# before the user row itself can go. background_jobs uses ON DELETE SET NULL
-# so it doesn't need to be listed here.
-_USER_OWNED_TABLES = [
-    'user_settings', 'user_simulation_history', 'custom_strategies',
-    'strategy_evaluations', 'subscription_history', 'ai_credit_usage',
-    'logs', 'simulations_old', 'user_hidden_items', 'strategy_generation_runs',
-]
-
-
 def _purge_test_users() -> None:
     # Only ever touch the local dev/CI database (or an explicit *_test DB) —
     # never whatever a stray .env might point at.
@@ -39,53 +29,37 @@ def _purge_test_users() -> None:
         conn = db.get_connection()
         try:
             cursor = db._get_cursor(conn)
+            # Independent of the users purge below: an allowlist entry can
+            # exist with no matching `users` row yet (approved but never
+            # signed up), so this can't be folded into delete_users_by_id.
             cursor.execute(
                 "DELETE FROM allowed_users WHERE email LIKE '%@example.com'")
             if cursor.rowcount:
                 logging.info("conftest: removed %d @example.com beta users",
                              cursor.rowcount)
-            # Committed independently: the users purge below touches far more
-            # tables and must not be able to roll this back if it fails.
             conn.commit()
 
             # Test users accumulate in `users` itself too (custom strategies,
-            # evaluations, etc. all hang off user_id). Clear those out the
-            # same way the one-off 2026-09-18 cleanup did: unpublish any
-            # public/leaderboard strategies first (the DB trigger refuses to
-            # delete those), then delete dependents, then the users. id 0/1
-            # (system account, real admin) are never @example.com but are
-            # excluded explicitly as a belt-and-suspenders guard.
+            # evaluations, etc. all hang off user_id). id 0/1 (system
+            # account, real admin) are never @example.com but are excluded
+            # explicitly as a belt-and-suspenders guard.
             cursor.execute(
                 "SELECT id FROM users WHERE email LIKE '%@example.com' AND id NOT IN (0, 1)")
             test_user_ids = [row[0] for row in cursor.fetchall()]
-            if test_user_ids:
-                cursor.execute(
-                    "UPDATE custom_strategies SET is_public = false, is_published_to_leaderboard = false "
-                    "WHERE user_id = ANY(%s) AND (is_public OR is_published_to_leaderboard)",
-                    (test_user_ids,))
-                if cursor.rowcount:
-                    try:
-                        from db.cache import get_leaderboard_with_profile_cached
-                        get_leaderboard_with_profile_cached.clear()
-                    except Exception:
-                        logging.exception("conftest: failed to clear leaderboard cache")
-                # strategy_versions.created_by_user_id has no FK to users (it
-                # outlives any one strategy by design), so it never blocks
-                # this delete but also never gets cleared on its own.
-                cursor.execute(
-                    "DELETE FROM strategy_versions WHERE created_by_user_id = ANY(%s)",
-                    (test_user_ids,))
-                for table in _USER_OWNED_TABLES:
-                    cursor.execute(
-                        f"DELETE FROM {table} WHERE user_id = ANY(%s)", (test_user_ids,))
-                cursor.execute(
-                    "DELETE FROM users WHERE id = ANY(%s)", (test_user_ids,))
-                logging.info("conftest: removed %d @example.com test users",
-                             len(test_user_ids))
-
-            conn.commit()
         finally:
             db.release_connection(conn)
+
+        deleted = db.delete_users_by_id(test_user_ids)
+        if deleted:
+            logging.info("conftest: removed %d @example.com test users", deleted)
+        elif test_user_ids:
+            # delete_users_by_id() returns 0 for both "nothing to do" and "it
+            # failed" (logging its own error) — test_user_ids being non-empty
+            # here means it's the latter.
+            logging.warning(
+                "conftest: expected to purge %d @example.com test users but "
+                "0 were deleted; see the delete_users_by_id error logged above",
+                len(test_user_ids))
     except Exception:
         logging.exception("conftest: test-user purge failed; continuing")
 

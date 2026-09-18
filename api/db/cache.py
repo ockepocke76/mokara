@@ -5,6 +5,8 @@ Provides cached versions of expensive database queries to improve performance.
 All caches use short TTL to balance performance with data freshness.
 """
 
+import logging
+
 from core.cache import ttl_cache
 from db.database import db
 
@@ -40,11 +42,21 @@ def get_leaderboard_with_profile_cached(profile_key='balanced', category=None, l
     """
     Cached wrapper for get_leaderboard_with_profile.
     Uses pre-calculated profile scores from STRATEGY_PROFILE_SCORES table.
-    
+
     TTL: 5 minutes
     Impact: Eliminates client-side score recalculation (saves ~100-500ms per profile switch)
     """
     return db.get_leaderboard_with_profile(profile_key=profile_key, category=category, limit=limit)
+
+
+def clear_leaderboard_cache(context=""):
+    """Invalidate the leaderboard cache after anything changes a strategy's
+    publish status (single publish/unpublish, or a bulk user purge/delete)."""
+    try:
+        get_leaderboard_with_profile_cached.clear()
+        logging.info(f"Cleared leaderboard cache{f' ({context})' if context else ''}")
+    except Exception:
+        logging.exception("Failed to clear leaderboard cache")
 
 
 

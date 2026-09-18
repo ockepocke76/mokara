@@ -944,12 +944,9 @@ class StrategiesMixin:
 
             # Clear leaderboard cache when publish status changes
             if success:
-                try:
-                    from db.cache import get_leaderboard_with_profile_cached
-                    get_leaderboard_with_profile_cached.clear()
-                    logging.info(f"Cleared leaderboard cache after {'publishing' if is_published else 'unpublishing'} strategy {strategy_id}")
-                except Exception as cache_error:
-                    logging.warning(f"Failed to clear leaderboard cache: {cache_error}")
+                from db.cache import clear_leaderboard_cache
+                clear_leaderboard_cache(
+                    f"{'publishing' if is_published else 'unpublishing'} strategy {strategy_id}")
 
             return success
         except Exception as e:
