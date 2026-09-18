@@ -272,12 +272,14 @@ def test_history_records_evolution():
 
     r = client.get(f"/strategies/{strategy_id}/history", headers=headers)
     body = r.json()
-    assert len(body["history"]) == 1
+    # The legacy V37 timeline is retired (V40) — nothing new lands there
+    assert body["history"] == []
     # An evolve refine folds the follow-up into the recorded request, so the
-    # timeline carries the full ask, not just the opening message.
-    assert body["history"][0]["request"].startswith("make the withdrawal rate 5%")
-    assert "round the withdrawal to whole dollars" in body["history"][0]["request"]
-    assert body["history"][0]["timestamp"]
+    # version node carries the full ask, not just the opening message.
+    r = client.get(f"/strategies/{strategy_id}/versions", headers=headers)
+    head = r.json()["versions"][0]
+    assert head["request"].startswith("make the withdrawal rate 5%")
+    assert "round the withdrawal to whole dollars" in head["request"]
     runs = body["runs"]
     assert [x["kind"] for x in runs] == ["create", "evolve"]
     evolve = runs[1]
@@ -299,6 +301,9 @@ def test_history_records_evolution():
     r = client.get(f"/strategies/{strategy_id}/history", headers=other)
     assert r.status_code == 200
     assert r.json()["runs"] == []
+    # ...and no legacy timeline either — those entries carry verbatim evolve
+    # prompts, which viewing a public strategy never grants
+    assert r.json()["history"] == []
 
 
 def test_versions_endpoint_and_revert_flow():

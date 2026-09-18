@@ -87,9 +87,9 @@ def test_revert_is_append_only_and_restores_content():
     versions = db.get_strategy_versions(sid, user_id)
     assert [v['source'] for v in versions] == ['revert', 'evolve', 'create']
     assert versions[0]['content_hash'] == v_create['content_hash']
-    # The restore shows up on the human timeline too
-    history = db.get_strategy_evolution_history(sid)
-    assert history and history[-1]['request'] == 'Restored an earlier version'
+    # The restore lives in the version chain alone — the legacy V37
+    # timeline is retired (V40) and stays untouched
+    assert db.get_strategy_evolution_history(sid) == []
 
 
 def test_revert_refuses_foreign_users_and_foreign_versions():
@@ -368,3 +368,47 @@ def test_backfill_reconstructs_legacy_rows():
     # revert above legitimately appended one node)
     assert backfill_strategy_versions(db) == 0
     assert len(db.get_strategy_versions(sid, user_id)) == 3
+
+
+def test_v40_migration_strips_snapshots_only_from_versioned_rows():
+    """The V40 SQL removes previous_code blobs from rows that have a version
+    head (the DAG holds their code) and keeps the light timeline fields; a
+    headless row keeps its snapshots — they are the startup backfill's input."""
+    from pathlib import Path
+
+    sql = (Path(__file__).parent.parent / 'db' / 'migrations' / 'postgresql'
+           / 'V40__retire_evolution_snapshots.sql').read_text()
+
+    user_id = _new_user()
+    versioned = _save(user_id, "V40 Versioned", CODE_V1)
+    headless = _save(user_id, "V40 Headless", CODE_V1)
+    entries = [{'timestamp': '2026-09-15T00:00:00+00:00', 'request': 'legacy',
+                'user_id': user_id, 'commit_sha': 'x',
+                'previous_code': CODE_V2},
+               {'timestamp': '2026-09-16T00:00:00+00:00', 'request': 'later',
+                'user_id': user_id, 'commit_sha': 'y'}]
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE CUSTOM_STRATEGIES SET evolution_history = %s::jsonb "
+            "WHERE id IN (%s, %s)",
+            (json.dumps(entries), versioned, headless))
+        cursor.execute(
+            "UPDATE CUSTOM_STRATEGIES SET head_version_id = NULL WHERE id = %s",
+            (headless,))
+        cursor.execute(sql)
+        conn.commit()
+        cursor.execute(
+            "SELECT id, evolution_history FROM CUSTOM_STRATEGIES "
+            "WHERE id IN (%s, %s)", (versioned, headless))
+        rows = dict(cursor.fetchall())
+    finally:
+        db.release_connection(conn)
+
+    stripped = rows[versioned]
+    assert [e.get('request') for e in stripped] == ['legacy', 'later']
+    assert all('previous_code' not in e for e in stripped)
+    assert stripped[0]['timestamp'] == '2026-09-15T00:00:00+00:00'
+    kept = rows[headless]
+    assert kept[0]['previous_code'] == CODE_V2  # backfill input, untouched

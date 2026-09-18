@@ -328,8 +328,10 @@ def strategy_history(strategy_id: int,
     input) carries every generation run that produced or evolved this
     strategy, each with the verbatim request and the inputs typed during it.
     `genesis` is the ORIGINAL user request from the create run — not the
-    AI-written description. `history` keeps the legacy evolution entries as
-    a fallback for strategies with no recorded runs.
+    AI-written description. `history` keeps the legacy (V37, frozen since
+    V40) evolution entries as a fallback for strategies with no recorded
+    runs — owner-only, like `runs`: they carry verbatim evolve requests,
+    which viewing a public strategy never grants.
     """
     from db import strategy_generation as sg
     from db.database import db
@@ -367,7 +369,9 @@ def strategy_history(strategy_id: int,
 
     # previous_code snapshots stay server-side (revert material, not UI) —
     # the DB strips them unless include_code=True is asked for.
-    history = db.get_strategy_evolution_history(strategy_id) or []
+    history = []
+    if strategy['user_id'] == user['id']:
+        history = db.get_strategy_evolution_history(strategy_id) or []
     return {
         'history': [_stringify_dates(dict(h)) for h in history],
         'runs': runs,

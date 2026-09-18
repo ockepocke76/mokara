@@ -199,21 +199,22 @@ class StrategiesMixin:
                         request=evolution_request, user_id=user_id,
                         prior_code=previous_code)
 
-                if evolution_request:
-                    # DB-native evolution history (V37) — the human-request
-                    # timeline. Savepoint: recording the timeline must never
-                    # fail the save itself (e.g. V37 not applied). Code
-                    # snapshots live in STRATEGY_VERSIONS (V39), not here —
-                    # EXCEPT on a pre-V39 database, where the legacy snapshot
-                    # is the only recovery material until the backfill runs.
+                if (evolution_request and code and not is_clone_unedited
+                        and version_id is None):
+                    # Transitional, pre-V39 schema only: the version store
+                    # couldn't record this evolve, so the legacy V37 timeline
+                    # keeps the previous_code snapshot — the only recovery
+                    # material until the startup backfill runs. On migrated
+                    # databases the legacy timeline is retired (V40): requests
+                    # live in STRATEGY_VERSIONS and the generation runs.
+                    # Savepoint: recording it must never fail the save itself.
                     entry = {
                         'timestamp': datetime.now(timezone.utc).isoformat(),
                         'request': evolution_request,
                         'user_id': user_id,
                         'commit_sha': git_commit_sha,
+                        'previous_code': previous_code,
                     }
-                    if code and not is_clone_unedited and version_id is None:
-                        entry['previous_code'] = previous_code
                     cursor.execute("SAVEPOINT evolution_append")
                     try:
                         cursor.execute("""
@@ -900,22 +901,6 @@ class StrategiesMixin:
                 conn.rollback()
                 return {'success': False,
                         'error': 'Version store unavailable', 'version_id': None}
-            # The human timeline records the restore too (savepoint-guarded
-            # like every evolution append).
-            entry = {'timestamp': datetime.now(timezone.utc).isoformat(),
-                     'request': 'Restored an earlier version',
-                     'user_id': user_id, 'commit_sha': content_hash}
-            cursor.execute("SAVEPOINT evolution_append")
-            try:
-                cursor.execute("""
-                    UPDATE CUSTOM_STRATEGIES
-                    SET evolution_history = COALESCE(evolution_history, '[]'::jsonb) || %s::jsonb
-                    WHERE id = %s
-                """, (json.dumps([entry]), strategy_id))
-                cursor.execute("RELEASE SAVEPOINT evolution_append")
-            except Exception:
-                logging.exception("Evolution-history append failed; reverting without it")
-                cursor.execute("ROLLBACK TO SAVEPOINT evolution_append")
             conn.commit()
             return {'success': True, 'error': None, 'version_id': new_version_id}
         except Exception as e:
