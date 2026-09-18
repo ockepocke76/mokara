@@ -22,7 +22,7 @@ from db.utils import _sanitize_for_json
 from reporting.content import (
     get_disclaimer_text, get_methodology_description, get_strategic_analysis_content,
     get_section_intro, get_plot_description, get_structured_settings,
-    get_structured_advanced_stats, get_glossary_data
+    get_structured_advanced_stats, get_glossary_data, get_metric_tooltip
 )
 from reporting.interactive_plotting import (
     plot_price_history_interactive, plot_yearly_returns_interactive,
@@ -447,6 +447,21 @@ def run_and_save_simulation(ui_params, full_sim_params, simulation_hash, progres
         send_progress(1.0, f"Error: {e}")
         return False, None
 
+def _enrich_metric_tooltips(metrics):
+    """
+    Adds a 'tooltip' key (glossary definition) to each metric dict that
+    doesn't already carry one, by exact label lookup. Metrics with no
+    matching glossary entry are left unchanged.
+    """
+    enriched = []
+    for metric in metrics:
+        if 'tooltip' in metric:
+            enriched.append(metric)
+            continue
+        tooltip = get_metric_tooltip(metric.get('label', ''))
+        enriched.append({**metric, 'tooltip': tooltip} if tooltip else metric)
+    return enriched
+
 def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=None, process_key=None, process_start_time=None, thread_key=None, thread_start_time=None, viewer_is_admin=False):
     """
     Regenerates all UI components (plots, tables, text) for a given simulation_id
@@ -528,6 +543,16 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
                 sanitized_data = data.to_json(orient='split')
             else:
                 sanitized_data = data if res_type in ['plotly', 'plot'] else _sanitize_for_json(data)
+            # Auto-enrich metric tables with glossary tooltips (parity with
+            # the old UI's render_metrics_table, which did this on render).
+            if res_type in ('key_value_table', 'key_stats_table') and isinstance(sanitized_data, list):
+                sanitized_data = _enrich_metric_tooltips(sanitized_data)
+            elif res_type == 'settings_table' and isinstance(sanitized_data, list):
+                sanitized_data = [
+                    {**section, 'metrics': _enrich_metric_tooltips(section.get('metrics', []))}
+                    if isinstance(section.get('metrics'), list) else section
+                    for section in sanitized_data
+                ]
             results_queue.put({
                 'type': res_type, 'data': sanitized_data, 'caption': _sanitize_for_json(caption),
                 'section': _sanitize_for_json(section), 'sub_section': _sanitize_for_json(sub_section),

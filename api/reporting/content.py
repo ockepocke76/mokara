@@ -622,6 +622,19 @@ def get_glossary_data():
         }
     }
 
+def get_metric_tooltip(label):
+    """
+    Looks up a metric's glossary definition by exact label match, for
+    enriching key/value report tables with hover tooltips.
+
+    Returns the tooltip text, or None if the label has no glossary entry.
+    """
+    glossary = get_glossary_data()
+    for terms in glossary.values():
+        if label in terms:
+            return terms[label]
+    return None
+
 @ttl_cache(ttl=3600)
 def get_methodology_flowchart_description():
     """

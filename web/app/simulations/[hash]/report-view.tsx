@@ -8,6 +8,7 @@
  * collapsible sections, Appendices sub-sections, per-type renderers.
  */
 import { useMemo } from "react";
+import { Info } from "lucide-react";
 import type { Data, Layout } from "plotly.js";
 
 import {
@@ -24,6 +25,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { WarningBox } from "@/components/info-box";
 import { Chart } from "@/components/chart";
 import { Markdown } from "@/components/markdown";
@@ -66,7 +72,7 @@ function MetricsTable({
   metrics,
   title,
 }: {
-  metrics: { label: string; value: string }[];
+  metrics: { label: string; value: string; tooltip?: string | null }[];
   title?: string | null;
 }) {
   return (
@@ -78,7 +84,19 @@ function MetricsTable({
             {metrics.map((m, i) => (
               <TableRow key={i}>
                 <TableCell className="w-1/3 align-top text-sm font-medium">
-                  {m.label}
+                  <span className="inline-flex items-center gap-1">
+                    {m.label}
+                    {m.tooltip && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="size-3.5 shrink-0 text-muted-foreground" />
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs whitespace-normal">
+                          {m.tooltip}
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </span>
                 </TableCell>
                 <TableCell className="text-sm">
                   <Markdown>{String(m.value ?? "")}</Markdown>
@@ -279,7 +297,7 @@ function RenderItem({ item }: { item: ReportItem }) {
     case "settings_table": {
       const sections = item.data as {
         title: string;
-        metrics: { label: string; value: string }[];
+        metrics: { label: string; value: string; tooltip?: string | null }[];
       }[];
       return (
         <div>
@@ -296,7 +314,13 @@ function RenderItem({ item }: { item: ReportItem }) {
       return (
         <MetricsTable
           title={item.caption}
-          metrics={item.data as { label: string; value: string }[]}
+          metrics={
+            item.data as {
+              label: string;
+              value: string;
+              tooltip?: string | null;
+            }[]
+          }
         />
       );
     case "advanced_stats_table":
