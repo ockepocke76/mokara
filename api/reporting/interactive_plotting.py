@@ -4,6 +4,7 @@ import plotly.io as pio
 import logging
 from core.stats import get_final_outcomes_quantiles
 from reporting.color_scheme import ChartColors, get_chart_colors, get_chart_theme, get_plotly_theme_template
+from utils.helpers import clamp_for_log_viz, compute_log_scale_histogram
 
 import pandas as pd
 import numpy as np
@@ -376,16 +377,7 @@ def plot_final_net_worth_distribution_interactive(results_df=None, params=None, 
         # Fallback for live runs or old data. Bin manually with log-spaced edges
         # (matching the pre-calculated path) instead of go.Histogram's linear
         # auto-binning, which would look uneven once the x-axis is log-scaled.
-        # Non-positive net worth (Assets - Debt <= 0) is clamped to $1 for this
-        # chart only, so those outcomes stay visible instead of vanishing off a log axis.
-        clamped_worths = np.clip(final_net_worths, 1, None)
-        bin_p1 = np.percentile(clamped_worths, 1)
-        bin_p99 = np.percentile(clamped_worths, 99)
-        if bin_p99 <= bin_p1:
-            bin_p99 = bin_p1 + 1
-        num_bins = int(np.clip(np.sqrt(len(clamped_worths)), 30, 100))
-        log_bin_edges = np.geomspace(bin_p1, bin_p99, num_bins + 1)
-        counts, bin_edges = np.histogram(clamped_worths, bins=log_bin_edges)
+        counts, bin_edges = compute_log_scale_histogram(final_net_worths)
 
         x_coords = []
         y_coords = []
@@ -405,16 +397,17 @@ def plot_final_net_worth_distribution_interactive(results_df=None, params=None, 
 
     # --- Add Vertical Lines and Legend Entries ---
     # The x-axis is log-scale (see update_layout below); clamp reference values to $1
-    # so a strategy whose median/percentiles go non-positive doesn't break log10() below.
-    median_val = max(final_stats.get('median_final_net_worth', 0), 1)
+    # so a strategy whose median/percentiles are non-positive (or None/NaN, e.g. a
+    # nullable DB stat) doesn't break log10() below.
+    median_val = clamp_for_log_viz(final_stats.get('median_final_net_worth'))
 
     fig.add_vline(x=median_val, line_dash="dash", line_color=Colors.MEDIAN)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name=f"Median: {int(median_val):,} {currency}", line=dict(color=Colors.MEDIAN, dash='dash')))
     fig.add_annotation(x=median_val, y=0.95, yref='paper', text=f"Median", showarrow=False, xanchor='left', bgcolor='rgba(231, 76, 60, 0.7)')
 
     # Consistently show the IQR (25th and 75th percentiles) for all strategies
-    p25_val = max(final_stats.get('p25_final_net_worth', 0), 1)
-    p75_val = max(final_stats.get('p75_final_net_worth', 0), 1)
+    p25_val = clamp_for_log_viz(final_stats.get('p25_final_net_worth'))
+    p75_val = clamp_for_log_viz(final_stats.get('p75_final_net_worth'))
 
     fig.add_vline(x=p25_val, line_dash="dot", line_color=Colors.P25)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name=f"25th Pctl: {int(p25_val):,} {currency}", line=dict(color=Colors.P25, dash='dot')))
@@ -427,8 +420,8 @@ def plot_final_net_worth_distribution_interactive(results_df=None, params=None, 
     # Set the x-axis range to focus on the 10th to 90th percentile.
     # A log-scale axis's `range` must be given in log10 units (unlike shapes/annotations,
     # which take raw data values and are transformed internally by Plotly).
-    p10_val = max(final_stats.get('p10_final_net_worth', 1) or 1, 1)
-    p90_val = max(final_stats.get('p90_final_net_worth', 1) or 1, 1)
+    p10_val = clamp_for_log_viz(final_stats.get('p10_final_net_worth'))
+    p90_val = clamp_for_log_viz(final_stats.get('p90_final_net_worth'))
     if p90_val <= p10_val:
         p90_val = p10_val + 1
     axis_range = [np.log10(p10_val), np.log10(p90_val)]
