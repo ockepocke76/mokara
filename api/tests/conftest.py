@@ -44,6 +44,9 @@ def _purge_test_users() -> None:
             if cursor.rowcount:
                 logging.info("conftest: removed %d @example.com beta users",
                              cursor.rowcount)
+            # Committed independently: the users purge below touches far more
+            # tables and must not be able to roll this back if it fails.
+            conn.commit()
 
             # Test users accumulate in `users` itself too (custom strategies,
             # evaluations, etc. all hang off user_id). Clear those out the
@@ -59,6 +62,18 @@ def _purge_test_users() -> None:
                 cursor.execute(
                     "UPDATE custom_strategies SET is_public = false, is_published_to_leaderboard = false "
                     "WHERE user_id = ANY(%s) AND (is_public OR is_published_to_leaderboard)",
+                    (test_user_ids,))
+                if cursor.rowcount:
+                    try:
+                        from db.cache import get_leaderboard_with_profile_cached
+                        get_leaderboard_with_profile_cached.clear()
+                    except Exception:
+                        logging.exception("conftest: failed to clear leaderboard cache")
+                # strategy_versions.created_by_user_id has no FK to users (it
+                # outlives any one strategy by design), so it never blocks
+                # this delete but also never gets cleared on its own.
+                cursor.execute(
+                    "DELETE FROM strategy_versions WHERE created_by_user_id = ANY(%s)",
                     (test_user_ids,))
                 for table in _USER_OWNED_TABLES:
                     cursor.execute(
