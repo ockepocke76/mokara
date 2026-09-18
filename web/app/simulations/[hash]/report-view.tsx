@@ -162,7 +162,6 @@ function PlotlyItem({ item }: { item: ReportItem }) {
         className="w-full"
         data={fig.data}
         layout={{ ...fig.layout, autosize: true, width: undefined, height }}
-        config={{ displayModeBar: false, responsive: true }}
       />
       {item.description && (
         <p className="mt-1 text-sm italic text-muted-foreground">
