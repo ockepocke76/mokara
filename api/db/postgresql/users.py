@@ -167,11 +167,8 @@ class UsersMixin:
                     "WHERE user_id = ANY(%s) AND (is_public OR is_published_to_leaderboard)",
                     (user_ids,))
                 if cursor.rowcount:
-                    try:
-                        from db.cache import get_leaderboard_with_profile_cached
-                        get_leaderboard_with_profile_cached.clear()
-                    except Exception as cache_error:
-                        logging.warning(f"Failed to clear leaderboard cache: {cache_error}")
+                    from db.cache import clear_leaderboard_cache
+                    clear_leaderboard_cache(f"deleting {len(user_ids)} user(s)")
 
                 # strategy_versions.created_by_user_id has no FK to users (a
                 # version node outlives any one strategy by design), so it
@@ -183,12 +180,16 @@ class UsersMixin:
                 for table in _USER_OWNED_TABLES:
                     cursor.execute(f"DELETE FROM {table} WHERE user_id = ANY(%s)", (user_ids,))
 
-                # login_requests/allowed_users are keyed by email, not user_id.
+                # login_requests/allowed_users are keyed by (lowercased) email,
+                # not user_id — matched case-insensitively since users.email
+                # isn't normalized to lowercase on insert.
                 cursor.execute(
-                    "DELETE FROM login_requests WHERE email IN (SELECT email FROM users WHERE id = ANY(%s))",
+                    "DELETE FROM login_requests WHERE lower(email) IN "
+                    "(SELECT lower(email) FROM users WHERE id = ANY(%s))",
                     (user_ids,))
                 cursor.execute(
-                    "DELETE FROM allowed_users WHERE email IN (SELECT email FROM users WHERE id = ANY(%s))",
+                    "DELETE FROM allowed_users WHERE lower(email) IN "
+                    "(SELECT lower(email) FROM users WHERE id = ANY(%s))",
                     (user_ids,))
 
                 cursor.execute("DELETE FROM users WHERE id = ANY(%s)", (user_ids,))
@@ -198,19 +199,27 @@ class UsersMixin:
             return deleted
 
         except Exception as e:
-            logging.error(f"Failed to delete users {user_ids}: {e}", exc_info=True)
+            logging.error(f"Failed to delete users ({len(user_ids)} ids): {e}", exc_info=True)
             return 0
 
     @log_db_call
     def delete_user(self, email):
-        """Completely delete a user (by email) and all their associated data."""
+        """Completely delete a user (by email) and all their associated data.
+
+        Also clears any login_requests/allowed_users entry for the email even
+        if no `users` row exists yet (allow-listed or attempted login, but
+        never completed signup).
+        """
         email_lower = email.lower()
         try:
-            with self._connection_cursor(commit=False) as cursor:
-                cursor.execute("SELECT id FROM users WHERE email = %s", (email_lower,))
+            with self._connection_cursor() as cursor:
+                cursor.execute("DELETE FROM login_requests WHERE lower(email) = %s", (email_lower,))
+                cursor.execute("DELETE FROM allowed_users WHERE lower(email) = %s", (email_lower,))
+                cursor.execute("SELECT id FROM users WHERE lower(email) = %s", (email_lower,))
                 row = cursor.fetchone()
+
             if not row:
-                logging.info(f"delete_user: no such user {email}")
+                logging.info(f"delete_user: no users row for {email}; cleared login_requests/allowed_users only")
                 return False
 
             deleted = self.delete_users_by_id([row[0]])

@@ -52,6 +52,14 @@ def _purge_test_users() -> None:
         deleted = db.delete_users_by_id(test_user_ids)
         if deleted:
             logging.info("conftest: removed %d @example.com test users", deleted)
+        elif test_user_ids:
+            # delete_users_by_id() returns 0 for both "nothing to do" and "it
+            # failed" (logging its own error) — test_user_ids being non-empty
+            # here means it's the latter.
+            logging.warning(
+                "conftest: expected to purge %d @example.com test users but "
+                "0 were deleted; see the delete_users_by_id error logged above",
+                len(test_user_ids))
     except Exception:
         logging.exception("conftest: test-user purge failed; continuing")
 
