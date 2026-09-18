@@ -103,6 +103,13 @@ export function EntryCard({
     usageBadges.push(`🔗 ${entry.usage_clone_count}`);
   if (entry.usage_fork_count > 0)
     usageBadges.push(`🔱 ${entry.usage_fork_count}`);
+  // Multi-generation lineage: only shown when it says more than the direct
+  // clone/fork counts already do. The family tree lives on the strategy page.
+  if (
+    entry.descendant_count >
+    entry.usage_clone_count + entry.usage_fork_count
+  )
+    usageBadges.push(`🌳 ${entry.descendant_count}`);
 
   return (
     <Card>

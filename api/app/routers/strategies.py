@@ -44,7 +44,14 @@ def _owned_strategy(strategy_id: int, user: dict) -> dict:
     strategy = db.get_custom_strategy(strategy_id)
     if not strategy or strategy.get('deleted_at'):
         raise HTTPException(status_code=404, detail="Strategy not found")
-    if strategy['user_id'] != user['id'] and not strategy.get('is_public'):
+    if strategy['user_id'] != user['id'] and not (
+            strategy.get('is_public')
+            or strategy.get('is_published_to_leaderboard')):
+        # Publishing to the leaderboard IS the product's "make public" action
+        # (nothing else sets is_public for user strategies); the leaderboard
+        # already exposes these strategies' details, and clone hands over
+        # their code, so the read endpoints admit them too. Every mutating
+        # endpoint re-checks ownership explicitly.
         raise HTTPException(status_code=404, detail="Strategy not found")
     return strategy
 
@@ -436,6 +443,38 @@ def revert_strategy(strategy_id: int, body: RevertRequest,
         raise HTTPException(status_code=422,
                             detail=result.get('error') or 'Revert failed')
     return {'reverted': True, 'version_id': result.get('version_id')}
+
+
+@router.get("/strategies/{strategy_id}/family")
+def strategy_family(strategy_id: int,
+                    user: Optional[dict] = Depends(get_current_user)) -> dict:
+    """The strategy-level family tree (clone lineage) — visible to anyone who
+    can view the strategy. Only public/built-in/own strategies appear;
+    others are aggregated into per-node hidden-fork counts."""
+    from db.database import db
+
+    user = _require_user(user)
+    _owned_strategy(strategy_id, user)  # owner or public/published — else 404
+    rows = db.get_strategy_family(strategy_id, user['id']) or []
+    truncated = len(rows) > 200
+    rows = rows[:200]
+    visible_ids = {r['id'] for r in rows}
+    return {'truncated': truncated,
+            'nodes': [
+        {'id': r['id'],
+         # never ship a pointer to a strategy the viewer can't see
+         'parent_id': (r['parent_strategy_id']
+                       if r['parent_strategy_id'] in visible_ids else None),
+         'name': r['strategy_name'],
+         'owner': r['owner_name'],
+         'is_builtin': bool(r['is_builtin']),
+         'is_own': bool(r['is_own']),
+         'is_private': bool(r['is_private']),
+         'is_deleted': bool(r['strategy_deleted']),
+         'is_self': r['id'] == strategy_id,
+         'score': r['excellence_score'],
+         'hidden_forks': r['hidden_forks']}
+        for r in rows]}
 
 
 @router.post("/strategies/{strategy_id}/publish")

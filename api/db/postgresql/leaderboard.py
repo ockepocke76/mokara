@@ -72,8 +72,16 @@ class LeaderboardMixin:
         """
         try:
             with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
-                if category and category != 'All':
-                    cursor.execute("""
+                # One query for both the filtered and the all-categories views
+                # (the two branches drifted apart once already), shaped
+                # page-first: the lineage counts below run per RETURNED row,
+                # not per candidate row — interactive paths fetch limit=500.
+                # bs resolves a built-in evaluation row to its strategies row
+                # so built-ins get lineage counts too. All counts ignore
+                # soft-deleted rows; the descendant walk passes THROUGH them
+                # so a trashed intermediate never hides live grandchildren.
+                cursor.execute("""
+                    WITH page AS (
                         SELECT
                             e.*,
                             sps.excellence_score as profile_excellence_score,
@@ -82,35 +90,49 @@ class LeaderboardMixin:
                             cs.is_published_to_leaderboard,
                             COALESCE(u.display_name, u.email) as user_name,
                             u.email as user_email,
-                            (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = TRUE) as usage_clone_count,
-                            (SELECT COUNT(*) FROM CUSTOM_STRATEGIES WHERE parent_strategy_id = cs.id AND is_clone_unedited = FALSE) as usage_fork_count
+                            COALESCE(cs.id, bs.id) as lineage_id
                         FROM STRATEGY_EVALUATIONS e
-                        LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %s
+                        LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %(profile_key)s
                         LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
-                        LEFT JOIN USERS u ON cs.user_id = u.id
-                        WHERE e.strategy_category = %s
-                          AND (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
-                        ORDER BY COALESCE(sps.excellence_score, e.excellence_score) DESC
-                        LIMIT %s
-                    """, (profile_key, category, limit))
-                else:
-                    cursor.execute("""
-                        SELECT
-                            e.*,
-                            sps.excellence_score as profile_excellence_score,
-                            cs.ai_description,
-                            cs.description as custom_description,
-                            cs.is_published_to_leaderboard,
-                            COALESCE(u.display_name, u.email) as user_name,
-                            u.email as user_email
-                        FROM STRATEGY_EVALUATIONS e
-                        LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %s
-                        LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
+                        LEFT JOIN CUSTOM_STRATEGIES bs ON e.is_custom = FALSE AND bs.user_id = 0 AND bs.strategy_name = e.strategy_name
                         LEFT JOIN USERS u ON cs.user_id = u.id
                         WHERE (e.is_custom = FALSE OR cs.is_published_to_leaderboard = TRUE)
+                          AND (%(category)s::text IS NULL OR e.strategy_category = %(category)s)
                         ORDER BY COALESCE(sps.excellence_score, e.excellence_score) DESC
-                        LIMIT %s
-                    """, (profile_key, limit))
+                        LIMIT %(limit)s
+                    )
+                    SELECT page.*,
+                           COALESCE(counts.usage_clone_count, 0) as usage_clone_count,
+                           COALESCE(counts.usage_fork_count, 0) as usage_fork_count,
+                           COALESCE(counts.descendant_count, 0) as descendant_count
+                    FROM page
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            COUNT(*) FILTER (WHERE d.depth = 1 AND d.unedited AND d.live) as usage_clone_count,
+                            COUNT(*) FILTER (WHERE d.depth = 1 AND NOT d.unedited AND d.live) as usage_fork_count,
+                            COUNT(*) FILTER (WHERE d.live) as descendant_count
+                        FROM (
+                            WITH RECURSIVE d AS (
+                                SELECT dc.id,
+                                       COALESCE(dc.is_clone_unedited, FALSE) as unedited,
+                                       (dc.deleted_at IS NULL) as live, 1 as depth
+                                FROM CUSTOM_STRATEGIES dc
+                                WHERE dc.parent_strategy_id = page.lineage_id
+                                UNION ALL
+                                SELECT c2.id,
+                                       COALESCE(c2.is_clone_unedited, FALSE),
+                                       (c2.deleted_at IS NULL), d.depth + 1
+                                FROM CUSTOM_STRATEGIES c2
+                                JOIN d ON c2.parent_strategy_id = d.id
+                                WHERE c2.id != d.id AND d.depth < 50
+                            ) SELECT * FROM d
+                        ) d
+                    ) counts ON TRUE
+                    ORDER BY COALESCE(page.profile_excellence_score, page.excellence_score) DESC
+                """, {'profile_key': profile_key,
+                      'category': (category if category and category != 'All'
+                                   else None),
+                      'limit': limit})
 
                 return cursor.fetchall()
         except Exception as e:

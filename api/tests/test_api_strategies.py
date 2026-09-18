@@ -349,6 +349,33 @@ def test_versions_endpoint_and_revert_flow():
     assert r.status_code == 422
 
 
+def test_family_endpoint():
+    headers = _auth()
+    _, strategy_id = _generate_and_save(headers)
+
+    # Clone your own strategy (name gets suffixed) → a 2-node family
+    r = client.post(f"/strategies/{strategy_id}/clone", headers=headers)
+    assert r.status_code == 200, r.text
+    clone_id = r.json()["strategy_id"]
+
+    r = client.get(f"/strategies/{clone_id}/family", headers=headers)
+    assert r.status_code == 200
+    nodes = r.json()["nodes"]
+    assert [n["id"] for n in nodes] == [strategy_id, clone_id]
+    root, clone = nodes
+    assert root["parent_id"] is None and clone["parent_id"] == strategy_id
+    assert clone["is_self"] and not root["is_self"]
+    assert clone["is_own"] and clone["is_private"]
+    # No code, no email-shaped owner strings
+    assert "code" not in root
+    assert "@" not in (root["owner"] or "")
+
+    # Another user can't see a private strategy's family at all
+    other = _auth()
+    assert client.get(f"/strategies/{clone_id}/family",
+                      headers=other).status_code == 404
+
+
 def test_version_serializer_redacts_foreign_nodes():
     """A clone-boundary node (owned=False) must never ship its parent id (a
     pointer into the donor's private chain) or the donor's strategy name."""

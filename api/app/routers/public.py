@@ -270,6 +270,8 @@ def leaderboard(
                 "scenario_results": scenario_results,
                 "usage_clone_count": row.get("usage_clone_count") or 0,
                 "usage_fork_count": row.get("usage_fork_count") or 0,
+                # all-generations count (clones of clones), for the family badge
+                "descendant_count": row.get("descendant_count") or 0,
                 "clone_target_id": clone_target_id,
                 "in_library": in_library,
                 "created_at": row.get("created_at"),

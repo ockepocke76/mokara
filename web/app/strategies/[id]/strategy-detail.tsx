@@ -32,6 +32,7 @@ import { Markdown } from "@/components/markdown";
 import { TestFlightCard } from "../new/cards";
 import { TestArtifact } from "../model";
 import { EvaluationTab } from "./evaluation-tab";
+import { FamilyTree } from "./family-tree";
 import { HistoryTab } from "./history-tab";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -320,6 +321,15 @@ function OverviewTab({
           </CardContent>
         </Card>
       )}
+
+      <FamilyTree
+        strategyId={strategy.id}
+        mayHaveFamily={
+          Boolean(strategy.parent_strategy_id) ||
+          strategy.is_builtin ||
+          (strategy.usage_clone_count ?? 0) + (strategy.usage_fork_count ?? 0) > 0
+        }
+      />
     </div>
   );
 }
