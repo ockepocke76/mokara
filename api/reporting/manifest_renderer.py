@@ -173,17 +173,18 @@ def render_item_for_ui(item, context, send_result, section_name):
         elif item_type == 'dataframe':
             if key == 'average_results' and context.get('average_results') is not None:
                 df_for_ui = context['average_results'].to_json(orient='split')
-                send_result('dataframe', df_for_ui, 
-                           caption=f"All values are shown in thousands of {context['currency']} for improved readability...",
+                send_result('dataframe', df_for_ui,
+                           caption=f"All values are shown in thousands of {context['currency']} for improved readability, representing the average state of the portfolio at the end of each year, after all transactions have been completed. NOTE: Average results are heavily affected by outliers, look at median table to understand typical outcomes.",
                            section='Appendices', sub_section='Average Yearly Results')
             elif key == 'median_results' and context.get('median_results') is not None:
                 df_for_ui = context['median_results'].to_json(orient='split')
                 send_result('dataframe', df_for_ui,
-                           caption=f"All values are shown in thousands of {context['currency']} for improved readability...",
+                           caption=f"All values are shown in thousands of {context['currency']} for improved readability, representing the median state of the portfolio at the end of each year, after all transactions have been completed.",
                            section='Appendices', sub_section='Median Yearly Results')
             elif key == 'example_path' and context.get('example_path') is not None:
+                caption = context.get('caption') or f"All values are shown in thousands of {context['currency']} for improved readability..."
                 send_result('dataframe', context['example_path'].to_json(orient='split'),
-                           caption="Detailed year-by-year breakdown...",
+                           caption=caption,
                            section='Appendices', sub_section='Example Simulation Path')
                            
         elif item_type == 'glossary':

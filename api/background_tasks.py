@@ -985,30 +985,20 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
 
     average_results_df = precalculated_data.get('average_results_df')
     if average_results_df is not None and not average_results_df.empty:
-        # Use the centralized function to format the table
         # === Average Yearly Results Appendix ===
-        # OLD CODE - Being replaced by manifest-driven approach
-        # df_for_ui = prepare_average_results_table(average_results_df)
-        # send_result('dataframe', df_for_ui, caption=f"All values are shown in thousands of {simulation_currency} for improved readability, representing the average state of the portfolio at the end of each year, after all transactions have been completed. NOTE: Average results are heavily affected by outliers, look at median table to understand typical outcomes.", section='Appendices', sub_section='Average Yearly Results')
-        
-        # NEW: Manifest-driven rendering
         section_name = 'Appendices: Average Yearly Results'
         if section_name in REPORT_STRUCTURE:
-            context_avg = {'average_results': average_results_df, 'currency': simulation_currency}
+            df_for_ui = prepare_average_results_table(average_results_df)
+            context_avg = {'average_results': df_for_ui, 'currency': simulation_currency}
             render_section_for_ui(section_name, REPORT_STRUCTURE[section_name], context_avg, send_result)
 
     median_yearly_results_df = precalculated_data.get('median_yearly_results_df')
     if median_yearly_results_df is not None and not median_yearly_results_df.empty:
-        # Use the centralized function to format the table
         # === Median Yearly Results Appendix ===
-        # OLD CODE - Being replaced by manifest-driven approach
-        # df_for_ui = prepare_median_yearly_results_table(median_yearly_results_df)
-        # send_result('dataframe', df_for_ui, caption=f"All values are shown in thousands of {simulation_currency} for improved readability, representing the median state of the portfolio at the end of each year, after all transactions have been completed.", section='Appendices', sub_section='Median Yearly Results')
-        
-        # NEW: Manifest-driven rendering
         section_name = 'Appendices: Median Yearly Results'
         if section_name in REPORT_STRUCTURE:
-            context_median = {'median_results': median_yearly_results_df, 'currency': simulation_currency}
+            df_for_ui = prepare_median_yearly_results_table(median_yearly_results_df)
+            context_median = {'median_results': df_for_ui, 'currency': simulation_currency}
             render_section_for_ui(section_name, REPORT_STRUCTURE[section_name], context_median, send_result)
 
     record_timing("Appendix: Average Yearly Results")
@@ -1035,7 +1025,7 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
         # NEW: Manifest-driven rendering
         section_name = 'Appendices: Example Simulation Path'
         if section_name in REPORT_STRUCTURE:
-            context_example = {'example_path': example_table_df, 'currency': simulation_currency}
+            context_example = {'example_path': example_table_df, 'currency': simulation_currency, 'caption': caption}
             render_section_for_ui(section_name, REPORT_STRUCTURE[section_name], context_example, send_result)
 
     # --- Input Data Analysis Appendix (Technical Charts) ---
