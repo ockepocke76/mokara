@@ -107,25 +107,31 @@ class StrategiesMixin:
                 
             cursor = self._get_cursor(conn)
 
-            # Check for existence (code fetched too: an evolve snapshots the
-            # pre-change code into evolution_history before overwriting it).
-            # COALESCE from the parent: a pure-reference clone's own code is
-            # NULL but its effective pre-change code is the parent's.
+            # Intent is EXPLICIT: a strategy_id means update that row, no
+            # strategy_id means create a new one. (The old behavior matched
+            # by (user_id, strategy_name) — soft-deleted rows included — so
+            # a same-named create silently overwrote, or resurrected and
+            # overwrote, an existing strategy.)
+            row = None
             if strategy_id:
+                # Code fetched too (pre-change state for the version DAG's
+                # transitional pre-V39 snapshot). COALESCE from the parent:
+                # a pure-reference clone's own code is NULL but its
+                # effective pre-change code is the parent's.
                 cursor.execute("""
                     SELECT cs.id, COALESCE(cs.code, p.code)
                     FROM CUSTOM_STRATEGIES cs
                     LEFT JOIN CUSTOM_STRATEGIES p ON p.id = cs.parent_strategy_id
                     WHERE cs.id = %s
                 """, (strategy_id,))
-            else:
-                cursor.execute("""
-                    SELECT cs.id, COALESCE(cs.code, p.code)
-                    FROM CUSTOM_STRATEGIES cs
-                    LEFT JOIN CUSTOM_STRATEGIES p ON p.id = cs.parent_strategy_id
-                    WHERE cs.user_id = %s AND cs.strategy_name = %s
-                """, (user_id, strategy_name))
-            row = cursor.fetchone()
+                row = cursor.fetchone()
+                if row is None:
+                    # Update intent against a row that doesn't exist must
+                    # not quietly become a create under the caller's name.
+                    logging.error(
+                        f"save_custom_strategy: strategy {strategy_id} not found for update")
+                    conn.rollback()
+                    return False
             previous_code = row[1] if row else None
 
             if row:
@@ -229,6 +235,20 @@ class StrategiesMixin:
 
             else:
                 # === INSERT NEW STRATEGY ===
+
+                # A colliding LIVE name gets suffixed (deleted names don't
+                # conflict — nothing is resurrected on this path anymore).
+                # V41's partial unique index turns any remaining race into a
+                # clean failed save instead of a corrupted row.
+                cursor.execute(
+                    "SELECT strategy_name FROM CUSTOM_STRATEGIES "
+                    "WHERE user_id = %s AND deleted_at IS NULL", (user_id,))
+                existing = {r[0] for r in cursor.fetchall()}
+                if strategy_name in existing:
+                    n = 2
+                    while f"{strategy_name} ({n})" in existing:
+                        n += 1
+                    strategy_name = f"{strategy_name} ({n})"
 
                 # Logic: If parent_strategy_id is set, and code is None -> Pure Clone (Pointer)
                 # Logic: If code is provided -> Independent Strategy
@@ -361,15 +381,14 @@ class StrategiesMixin:
 
     @log_db_call
     def get_user_strategy_names(self, user_id):
-        """ALL of the user's strategy names, soft-deleted included — the same
-        universe save_custom_strategy's (user_id, strategy_name) upsert
-        matches against (its lookup has no deleted_at filter and the update
-        resurrects), so collision guards must use this, not a live-only
-        listing."""
+        """The user's LIVE strategy names — the universe new names must be
+        unique within (V41 partial index; soft-deleted names are free to
+        reuse, nothing resurrects them on the create path anymore)."""
         try:
             with self._connection_cursor(commit=False) as cursor:
                 cursor.execute(
-                    "SELECT strategy_name FROM CUSTOM_STRATEGIES WHERE user_id = %s",
+                    "SELECT strategy_name FROM CUSTOM_STRATEGIES "
+                    "WHERE user_id = %s AND deleted_at IS NULL",
                     (user_id,))
                 return {row[0] for row in cursor.fetchall()}
         except Exception as e:

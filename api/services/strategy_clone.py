@@ -75,12 +75,11 @@ def clone_strategy(
             }
         
         # Determine clone name (use original name if not specified). If the
-        # user already HAS a strategy with that name — soft-deleted ones
-        # included, because save_custom_strategy's (user_id, strategy_name)
-        # upsert matches and resurrects those too — suffix it: a colliding
-        # clone would UPDATE that row, and with is_clone_unedited=True that
-        # nulls its code (cloning your own strategy used to destroy it this
-        # way).
+        # user already has a LIVE strategy with that name, suffix it with
+        # "(clone)" — friendlier than the generic "(2)" the save layer would
+        # otherwise apply. (Historically this guard also prevented the old
+        # name-keyed upsert from destroying the original row; the save layer
+        # is insert-intent now and never matches by name.)
         final_clone_name = clone_name or parent_strategy['strategy_name']
         existing = db.get_user_strategy_names(user_id)
         if final_clone_name in existing:

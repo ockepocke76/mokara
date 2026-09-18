@@ -198,8 +198,8 @@ def test_cloning_your_own_strategy_never_destroys_it():
 
 
 def test_cloning_over_a_soft_deleted_name_never_resurrects_it():
-    """The upsert's name lookup matches soft-deleted rows too (and its UPDATE
-    resurrects them), so the collision guard must see deleted names."""
+    """A create (clone included) never matches an existing row by name —
+    a soft-deleted namesake stays deleted and its name is free to reuse."""
     from services.strategy_clone import clone_strategy
 
     user_id = _new_user()
@@ -221,7 +221,8 @@ def test_cloning_over_a_soft_deleted_name_never_resurrects_it():
     assert res['success'], res
     assert res['strategy_id'] not in (sid, donor)
     clone = db.get_custom_strategy(res['strategy_id'])
-    assert clone['strategy_name'] == "Trash Test (clone)"
+    # The deleted namesake doesn't block the name — no suffix needed
+    assert clone['strategy_name'] == "Trash Test"
     # The soft-deleted row stays deleted and untouched
     trashed = db.get_custom_strategy(sid)
     assert trashed['deleted_at'] is not None
@@ -412,3 +413,30 @@ def test_v40_migration_strips_snapshots_only_from_versioned_rows():
     assert stripped[0]['timestamp'] == '2026-09-15T00:00:00+00:00'
     kept = rows[headless]
     assert kept[0]['previous_code'] == CODE_V2  # backfill input, untouched
+
+
+def test_create_with_duplicate_name_never_overwrites():
+    """Root fix for the name-keyed upsert: a create (no strategy_id) is an
+    INSERT — a colliding live name gets suffixed, the original row is never
+    touched, and V41's partial unique index backstops the race."""
+    user_id = _new_user()
+    sid = _save(user_id, "Dup Name", CODE_V1)
+    sid2 = _save(user_id, "Dup Name", CODE_V2)
+    assert sid2 != sid
+    assert db.get_custom_strategy(sid)['code'] == CODE_V1  # untouched
+    row2 = db.get_custom_strategy(sid2)
+    assert row2['strategy_name'] == "Dup Name (2)"
+    assert row2['code'] == CODE_V2
+    sid3 = _save(user_id, "Dup Name", CODE_V3)
+    assert db.get_custom_strategy(sid3)['strategy_name'] == "Dup Name (3)"
+
+
+def test_update_of_missing_strategy_id_fails_loudly():
+    """Update intent against a nonexistent row must not quietly become a
+    create under the caller's name."""
+    user_id = _new_user()
+    assert db.save_custom_strategy(
+        user_id=user_id, strategy_name="Ghost", class_name="VersionedStrategy",
+        description='', ai_description='', code=CODE_V1, parameters_json={},
+        validation_status='validated', strategy_id=999999999) is False
+    assert "Ghost" not in db.get_user_strategy_names(user_id)
