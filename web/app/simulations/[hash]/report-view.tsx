@@ -341,6 +341,9 @@ function RenderItem({ item }: { item: ReportItem }) {
     case "error":
       return <WarningBox>❌ {String(item.data)}</WarningBox>;
     default:
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`Unhandled report item type: "${item.type}"`, item);
+      }
       return null;
   }
 }
@@ -430,26 +433,38 @@ export function ReportView({ items }: { items: ReportItem[] }) {
   );
 }
 
+function IntroText({ item }: { item: ReportItem }) {
+  if (!item.data) return null;
+  return (
+    <p className="mb-3 border-b pb-3 text-sm italic text-muted-foreground">
+      {String(item.data)}
+    </p>
+  );
+}
+
 function SectionBody({
   section,
 }: {
   section: { name: string; items: ReportItem[] };
 }) {
-  const intro = section.items.find((i) => i.type === "intro");
-  const rest = section.items.filter((i) => i.type !== "intro");
+  // Only the section-level intro (no sub_section) is pulled out here — a
+  // sub-section's own intro (type "intro" + sub_section set) stays in `rest`
+  // so it reaches its sub-section below instead of being dropped.
+  const intro = section.items.find(
+    (i) => i.type === "intro" && !i.sub_section,
+  );
+  const rest = section.items.filter((i) => i !== intro);
   const hasSubs = rest.some((i) => i.sub_section);
 
   if (!hasSubs) {
     return (
       <div>
-        {intro && (
-          <p className="mb-3 border-b pb-3 text-sm italic text-muted-foreground">
-            {String(intro.data)}
-          </p>
-        )}
-        {rest.map((item, i) => (
-          <RenderItem key={i} item={item} />
-        ))}
+        {intro && <IntroText item={intro} />}
+        {rest
+          .filter((i) => i.type !== "intro")
+          .map((item, i) => (
+            <RenderItem key={i} item={item} />
+          ))}
       </div>
     );
   }
@@ -467,24 +482,27 @@ function SectionBody({
 
   return (
     <div>
-      {intro && (
-        <p className="mb-3 border-b pb-3 text-sm italic text-muted-foreground">
-          {String(intro.data)}
-        </p>
-      )}
+      {intro && <IntroText item={intro} />}
       <Accordion type="multiple" className="flex flex-col gap-1">
-        {ordered.map((name) => (
-          <AccordionItem key={name} value={name}>
-            <AccordionTrigger className="py-2 text-sm font-medium">
-              {name}
-            </AccordionTrigger>
-            <AccordionContent>
-              {subs.get(name)!.map((item, i) => (
-                <RenderItem key={i} item={item} />
-              ))}
-            </AccordionContent>
-          </AccordionItem>
-        ))}
+        {ordered.map((name) => {
+          const subItems = subs.get(name)!;
+          const subIntro = subItems.find((i) => i.type === "intro");
+          return (
+            <AccordionItem key={name} value={name}>
+              <AccordionTrigger className="py-2 text-sm font-medium">
+                {name}
+              </AccordionTrigger>
+              <AccordionContent>
+                {subIntro && <IntroText item={subIntro} />}
+                {subItems
+                  .filter((i) => i.type !== "intro")
+                  .map((item, i) => (
+                    <RenderItem key={i} item={item} />
+                  ))}
+              </AccordionContent>
+            </AccordionItem>
+          );
+        })}
       </Accordion>
     </div>
   );
