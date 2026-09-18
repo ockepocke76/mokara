@@ -486,9 +486,19 @@ class SimulationsMixin:
                     })
 
                     final_net_worths_raw = net_worth_df.iloc[-1]
-                    p1 = np.percentile(final_net_worths_raw, 1)
-                    p99 = np.percentile(final_net_worths_raw, 99)
-                    counts, bin_edges = np.histogram(final_net_worths_raw, bins=200, range=(p1, p99))
+                    # Clamp non-positive net worth to $1 for histogram purposes only, so
+                    # debt-heavy outcomes (Assets - Debt <= 0) stay visible on the log-scale
+                    # x-axis instead of being dropped or breaking the log-spaced bins below.
+                    final_net_worths_for_hist = np.clip(final_net_worths_raw, 1, None)
+                    p1 = np.percentile(final_net_worths_for_hist, 1)
+                    p99 = np.percentile(final_net_worths_for_hist, 99)
+                    if p99 <= p1:
+                        p99 = p1 + 1
+                    # Scale bin count with sample size (sqrt rule) instead of a fixed 200,
+                    # since num_simulations can range from 1,000 to 10,000+.
+                    num_bins = int(np.clip(np.sqrt(len(final_net_worths_for_hist)), 30, 100))
+                    log_bin_edges = np.geomspace(p1, p99, num_bins + 1)
+                    counts, bin_edges = np.histogram(final_net_worths_for_hist, bins=log_bin_edges)
                     final_net_worths_hist_data = {'counts': counts, 'bin_edges': bin_edges}
 
                     num_sims = params.get('num_simulations', 10000)

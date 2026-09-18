@@ -373,24 +373,48 @@ def plot_final_net_worth_distribution_interactive(results_df=None, params=None, 
             mode='lines'
         ))
     elif 'final_net_worths' in locals() and not final_net_worths.empty:
-        # Fallback to Histogram for live runs or old data
-        fig.add_trace(go.Histogram(
-            x=final_net_worths,
+        # Fallback for live runs or old data. Bin manually with log-spaced edges
+        # (matching the pre-calculated path) instead of go.Histogram's linear
+        # auto-binning, which would look uneven once the x-axis is log-scaled.
+        # Non-positive net worth (Assets - Debt <= 0) is clamped to $1 for this
+        # chart only, so those outcomes stay visible instead of vanishing off a log axis.
+        clamped_worths = np.clip(final_net_worths, 1, None)
+        bin_p1 = np.percentile(clamped_worths, 1)
+        bin_p99 = np.percentile(clamped_worths, 99)
+        if bin_p99 <= bin_p1:
+            bin_p99 = bin_p1 + 1
+        num_bins = int(np.clip(np.sqrt(len(clamped_worths)), 30, 100))
+        log_bin_edges = np.geomspace(bin_p1, bin_p99, num_bins + 1)
+        counts, bin_edges = np.histogram(clamped_worths, bins=log_bin_edges)
+
+        x_coords = []
+        y_coords = []
+        for i in range(len(counts)):
+            x_coords.extend([bin_edges[i], bin_edges[i+1]])
+            y_coords.extend([counts[i], counts[i]])
+
+        fig.add_trace(go.Scatter(
+            x=x_coords,
+            y=y_coords,
+            fill='tozeroy',
             name='Distribution',
-            marker_color=Colors.DISTRIBUTION,
-            opacity=0.75
+            line=dict(color=Colors.DISTRIBUTION, width=1),
+            fillcolor=Colors.DISTRIBUTION_FILL,
+            mode='lines'
         ))
 
     # --- Add Vertical Lines and Legend Entries ---
-    median_val = final_stats.get('median_final_net_worth', 0)
+    # The x-axis is log-scale (see update_layout below); clamp reference values to $1
+    # so a strategy whose median/percentiles go non-positive doesn't break log10() below.
+    median_val = max(final_stats.get('median_final_net_worth', 0), 1)
 
     fig.add_vline(x=median_val, line_dash="dash", line_color=Colors.MEDIAN)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name=f"Median: {int(median_val):,} {currency}", line=dict(color=Colors.MEDIAN, dash='dash')))
     fig.add_annotation(x=median_val, y=0.95, yref='paper', text=f"Median", showarrow=False, xanchor='left', bgcolor='rgba(231, 76, 60, 0.7)')
 
     # Consistently show the IQR (25th and 75th percentiles) for all strategies
-    p25_val = final_stats.get('p25_final_net_worth', 0)
-    p75_val = final_stats.get('p75_final_net_worth', 0)
+    p25_val = max(final_stats.get('p25_final_net_worth', 0), 1)
+    p75_val = max(final_stats.get('p75_final_net_worth', 0), 1)
 
     fig.add_vline(x=p25_val, line_dash="dot", line_color=Colors.P25)
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name=f"25th Pctl: {int(p25_val):,} {currency}", line=dict(color=Colors.P25, dash='dot')))
@@ -400,17 +424,22 @@ def plot_final_net_worth_distribution_interactive(results_df=None, params=None, 
     fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name=f"75th Pctl: {int(p75_val):,} {currency}", line=dict(color=Colors.P75, dash='dot')))
     fig.add_annotation(x=p75_val, y=0.95, yref='paper', text=f"75th Pctl", showarrow=False, xanchor='right', bgcolor='rgba(46, 204, 113, 0.7)')
 
-    # Set the x-axis range to focus on the 10th to 90th percentile
-    p10_val = final_stats.get('p10_final_net_worth', None)
-    p90_val = final_stats.get('p90_final_net_worth', None)
-    axis_range = [p10_val, p90_val] if p10_val is not None and p90_val is not None else None
+    # Set the x-axis range to focus on the 10th to 90th percentile.
+    # A log-scale axis's `range` must be given in log10 units (unlike shapes/annotations,
+    # which take raw data values and are transformed internally by Plotly).
+    p10_val = max(final_stats.get('p10_final_net_worth', 1) or 1, 1)
+    p90_val = max(final_stats.get('p90_final_net_worth', 1) or 1, 1)
+    if p90_val <= p10_val:
+        p90_val = p10_val + 1
+    axis_range = [np.log10(p10_val), np.log10(p90_val)]
 
     fig.update_layout(
         title=title_base,
         xaxis_title=f'Final Value ({currency})',
         yaxis_title='Frequency',
         bargap=0.01,
-        xaxis_range=axis_range, # Set the visible range
+        xaxis_type='log',
+        xaxis_range=axis_range, # Set the visible range (log10 units)
         updatemenus=[]
     )
     _apply_legend_style(fig, position='top-right')
