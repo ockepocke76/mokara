@@ -23,7 +23,7 @@ class LLMError(RuntimeError):
 def _model_for(tier: str) -> str:
     if tier == 'strong':
         return os.environ.get('GEMINI_MODEL_STRONG', 'gemini-3.8-flash')
-    return os.environ.get('GEMINI_MODEL_FAST', 'gemini-2.5-flash')
+    return os.environ.get('GEMINI_MODEL_FAST', 'gemini-3.5-flash-lite')
 
 
 def real_llm_call(prompt: str, tier: str = 'fast', json_mode: bool = False) -> str:
