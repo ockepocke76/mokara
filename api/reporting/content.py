@@ -622,6 +622,18 @@ def get_glossary_data():
         }
     }
 
+@ttl_cache(ttl=3600)
+def get_flat_glossary_lookup():
+    """
+    Flattens get_glossary_data()'s category groupings into one label ->
+    tooltip dict, for O(1) lookups when enriching many metric rows in a
+    single report render (a fresh linear scan per label is wasteful).
+    """
+    flat = {}
+    for terms in get_glossary_data().values():
+        flat.update(terms)
+    return flat
+
 def get_metric_tooltip(label):
     """
     Looks up a metric's glossary definition by exact label match, for
@@ -629,11 +641,7 @@ def get_metric_tooltip(label):
 
     Returns the tooltip text, or None if the label has no glossary entry.
     """
-    glossary = get_glossary_data()
-    for terms in glossary.values():
-        if label in terms:
-            return terms[label]
-    return None
+    return get_flat_glossary_lookup().get(label)
 
 @ttl_cache(ttl=3600)
 def get_methodology_flowchart_description():

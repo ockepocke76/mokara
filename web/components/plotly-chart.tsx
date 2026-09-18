@@ -43,12 +43,7 @@ export default function PlotlyChart({
       <Plot
         data={data}
         layout={{ ...BASE_LAYOUT, ...layout }}
-        config={{
-          displayModeBar: "hover",
-          displaylogo: false,
-          responsive: true,
-          ...config,
-        }}
+        config={{ displayModeBar: false, responsive: true, ...config }}
         useResizeHandler
         style={{ width: "100%", height: "100%" }}
       />
