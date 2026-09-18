@@ -25,8 +25,9 @@ class LeaderboardMixin:
                             cs.ai_description,
                             cs.description as custom_description,
                             cs.is_published_to_leaderboard,
-                            COALESCE(u.display_name, u.email) as user_name,
-                            u.email as user_email
+                            CASE WHEN u.id IS NOT NULL
+                                 THEN COALESCE(u.display_name, 'anonymous')
+                            END as user_name
                         FROM STRATEGY_EVALUATIONS e
                         LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
                         LEFT JOIN USERS u ON cs.user_id = u.id
@@ -42,8 +43,9 @@ class LeaderboardMixin:
                             cs.ai_description,
                             cs.description as custom_description,
                             cs.is_published_to_leaderboard,
-                            COALESCE(u.display_name, u.email) as user_name,
-                            u.email as user_email
+                            CASE WHEN u.id IS NOT NULL
+                                 THEN COALESCE(u.display_name, 'anonymous')
+                            END as user_name
                         FROM STRATEGY_EVALUATIONS e
                         LEFT JOIN CUSTOM_STRATEGIES cs ON e.is_custom = TRUE AND e.custom_strategy_id = cs.id
                         LEFT JOIN USERS u ON cs.user_id = u.id
@@ -88,8 +90,9 @@ class LeaderboardMixin:
                             cs.ai_description,
                             cs.description as custom_description,
                             cs.is_published_to_leaderboard,
-                            COALESCE(u.display_name, u.email) as user_name,
-                            u.email as user_email,
+                            CASE WHEN u.id IS NOT NULL
+                                 THEN COALESCE(u.display_name, 'anonymous')
+                            END as user_name,
                             COALESCE(cs.id, bs.id) as lineage_id
                         FROM STRATEGY_EVALUATIONS e
                         LEFT JOIN STRATEGY_PROFILE_SCORES sps ON e.id = sps.evaluation_id AND sps.profile_key = %(profile_key)s

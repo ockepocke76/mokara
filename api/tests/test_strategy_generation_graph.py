@@ -225,8 +225,9 @@ def test_evolve_parameter_change_is_minimal_edit():
     # Exactly the requested default changed; every other line survived verbatim
     assert saved['code'] == seed_code.replace("'default': 0.04", "'default': 0.05")
 
-    history = db.get_strategy_evolution_history(sid)
-    assert history and history[-1]['request'] == request
+    # The legacy V37 timeline is retired (V40): the request lives in the
+    # version node and the generation run, nowhere else.
+    assert db.get_strategy_evolution_history(sid, user_id) == []
     # The pre-change code lives in the version DAG, so a bad evolve is
     # recoverable: head is the evolve, its parent is the original create.
     versions = db.get_strategy_versions(sid, user_id)

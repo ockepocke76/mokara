@@ -674,9 +674,14 @@ def save(state: GenState, config) -> dict:
     )
     if not strategy_id:
         raise RuntimeError("save_custom_strategy failed")
-    sg.update_run(state['run_id'], status='completed', final_strategy_id=strategy_id)
+    # The save layer suffixes colliding names — report the name the row
+    # actually got, not the one we asked for.
+    saved_row = db.get_custom_strategy(strategy_id) or {}
+    saved_name = saved_row.get('strategy_name') or state['strategy_name']
+    sg.update_run(state['run_id'], status='completed',
+                  final_strategy_id=strategy_id, strategy_name=saved_name)
     _emit(state, 'run_completed', strategy_id=strategy_id,
-          strategy_name=state['strategy_name'])
+          strategy_name=saved_name)
     return {'outcome': 'saved', 'final_strategy_id': strategy_id}
 
 
@@ -691,9 +696,9 @@ def fail_run(run_id: str, state: dict, summary: str,
     """Shared failure path (retry cap AND unexpected crash — see runner):
     keep the last draft, be honest about what happened.
 
-    The draft gets a suffixed name: save_custom_strategy keys on
-    (user_id, strategy_name), and a failed evolve run reusing the seed's
-    name must never overwrite the user's working strategy with broken code.
+    The draft gets a suffixed name so it is recognizable as the failed
+    run's leftovers, distinct from the user's working strategy (the save
+    layer is insert-intent and would suffix a colliding name anyway).
     """
     from db.database import db
 

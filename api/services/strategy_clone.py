@@ -8,6 +8,8 @@ Ensures consistent clone behavior across all UI components.
 import logging
 from typing import Optional, Any
 
+from utils.strategy_utils import next_free_name
+
 
 def clone_strategy(
     strategy_id: int,
@@ -75,21 +77,14 @@ def clone_strategy(
             }
         
         # Determine clone name (use original name if not specified). If the
-        # user already HAS a strategy with that name — soft-deleted ones
-        # included, because save_custom_strategy's (user_id, strategy_name)
-        # upsert matches and resurrects those too — suffix it: a colliding
-        # clone would UPDATE that row, and with is_clone_unedited=True that
-        # nulls its code (cloning your own strategy used to destroy it this
-        # way).
-        final_clone_name = clone_name or parent_strategy['strategy_name']
-        existing = db.get_user_strategy_names(user_id)
-        if final_clone_name in existing:
-            base = final_clone_name
-            n = 2
-            final_clone_name = f"{base} (clone)"
-            while final_clone_name in existing:
-                final_clone_name = f"{base} (clone {n})"
-                n += 1
+        # user already has a LIVE strategy with that name, suffix it with
+        # "(clone)" — friendlier than the generic "(2)" the save layer would
+        # otherwise apply. (Historically this guard also prevented the old
+        # name-keyed upsert from destroying the original row; the save layer
+        # is insert-intent now and never matches by name.)
+        final_clone_name = next_free_name(
+            clone_name or parent_strategy['strategy_name'],
+            db.get_user_strategy_names(user_id), label='clone')
         
         # Extract parent metadata
         parent_sha = parent_strategy.get('git_commit_sha')
@@ -139,8 +134,12 @@ def clone_strategy(
         # Fallback verification (legacy or if DB didn't return ID directly)
         cloned_strategy = None
         if saved_id:
-             # We have the ID directly from the DB save
-             cloned_strategy = {'id': saved_id, 'strategy_name': final_clone_name}
+            # Read the name back from the row: the save layer may have
+            # suffixed it again if a namesake landed since our pre-check.
+            saved_row = db.get_custom_strategy(saved_id) or {}
+            cloned_strategy = {
+                'id': saved_id,
+                'strategy_name': saved_row.get('strategy_name', final_clone_name)}
         else:
             # Fallback: Fetch list (prone to caching issues, used only if DB returns bool)
             user_strategies = db.get_user_custom_strategies(user_id)

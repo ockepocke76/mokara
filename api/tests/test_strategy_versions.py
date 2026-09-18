@@ -87,9 +87,9 @@ def test_revert_is_append_only_and_restores_content():
     versions = db.get_strategy_versions(sid, user_id)
     assert [v['source'] for v in versions] == ['revert', 'evolve', 'create']
     assert versions[0]['content_hash'] == v_create['content_hash']
-    # The restore shows up on the human timeline too
-    history = db.get_strategy_evolution_history(sid)
-    assert history and history[-1]['request'] == 'Restored an earlier version'
+    # The restore lives in the version chain alone — the legacy V37
+    # timeline is retired (V40) and stays untouched
+    assert db.get_strategy_evolution_history(sid, user_id) == []
 
 
 def test_revert_refuses_foreign_users_and_foreign_versions():
@@ -176,10 +176,10 @@ def test_pure_clone_revert_is_refused():
 
 
 def test_cloning_your_own_strategy_never_destroys_it():
-    """Regression: save_custom_strategy upserts by (user_id, name), so a
-    same-name clone of your OWN strategy used to UPDATE the original row —
-    is_clone_unedited=True then nulled its code. The clone service now
-    suffixes colliding names."""
+    """Regression: save_custom_strategy USED to upsert by (user_id, name), so
+    a same-name clone of your OWN strategy would UPDATE the original row —
+    is_clone_unedited=True then nulled its code. The save layer is
+    insert-intent now and the clone service suffixes colliding names."""
     from services.strategy_clone import clone_strategy
 
     user_id = _new_user()
@@ -198,8 +198,8 @@ def test_cloning_your_own_strategy_never_destroys_it():
 
 
 def test_cloning_over_a_soft_deleted_name_never_resurrects_it():
-    """The upsert's name lookup matches soft-deleted rows too (and its UPDATE
-    resurrects them), so the collision guard must see deleted names."""
+    """A create (clone included) never matches an existing row by name —
+    a soft-deleted namesake stays deleted and its name is free to reuse."""
     from services.strategy_clone import clone_strategy
 
     user_id = _new_user()
@@ -221,7 +221,8 @@ def test_cloning_over_a_soft_deleted_name_never_resurrects_it():
     assert res['success'], res
     assert res['strategy_id'] not in (sid, donor)
     clone = db.get_custom_strategy(res['strategy_id'])
-    assert clone['strategy_name'] == "Trash Test (clone)"
+    # The deleted namesake doesn't block the name — no suffix needed
+    assert clone['strategy_name'] == "Trash Test"
     # The soft-deleted row stays deleted and untouched
     trashed = db.get_custom_strategy(sid)
     assert trashed['deleted_at'] is not None
@@ -368,3 +369,102 @@ def test_backfill_reconstructs_legacy_rows():
     # revert above legitimately appended one node)
     assert backfill_strategy_versions(db) == 0
     assert len(db.get_strategy_versions(sid, user_id)) == 3
+
+
+def test_v40_migration_strips_only_snapshots_the_dag_covers():
+    """The V40 SQL removes previous_code blobs only when EVERY snapshot
+    exists in the row's version chain (a head alone is no proof — a
+    self-healed row has a single synthesized parent). Headless rows and
+    rows with uncovered snapshots keep their blobs — recovery material."""
+    from pathlib import Path
+
+    sql = (Path(__file__).parent.parent / 'db' / 'migrations' / 'postgresql'
+           / 'V40__retire_evolution_snapshots.sql').read_text()
+
+    user_id = _new_user()
+    # Chain covers the snapshot: create(V2) then edit(V1)
+    covered = _save(user_id, "V40 Covered", CODE_V2)
+    _save(user_id, "V40 Covered", CODE_V1, strategy_id=covered)
+    # Head exists but the chain (create V1 only) never held CODE_V3
+    uncovered = _save(user_id, "V40 Uncovered", CODE_V1)
+    headless = _save(user_id, "V40 Headless", CODE_V1)
+    entries = [{'timestamp': '2026-09-15T00:00:00+00:00', 'request': 'legacy',
+                'user_id': user_id, 'commit_sha': 'x',
+                'previous_code': CODE_V2},
+               {'timestamp': '2026-09-16T00:00:00+00:00', 'request': 'later',
+                'user_id': user_id, 'commit_sha': 'y'}]
+    uncovered_entries = [dict(entries[0], previous_code=CODE_V3), entries[1]]
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE CUSTOM_STRATEGIES SET evolution_history = %s::jsonb "
+            "WHERE id IN (%s, %s)",
+            (json.dumps(entries), covered, headless))
+        cursor.execute(
+            "UPDATE CUSTOM_STRATEGIES SET evolution_history = %s::jsonb "
+            "WHERE id = %s", (json.dumps(uncovered_entries), uncovered))
+        cursor.execute(
+            "UPDATE CUSTOM_STRATEGIES SET head_version_id = NULL WHERE id = %s",
+            (headless,))
+        cursor.execute(sql)
+        conn.commit()
+        cursor.execute(
+            "SELECT id, evolution_history FROM CUSTOM_STRATEGIES "
+            "WHERE id IN (%s, %s, %s)", (covered, uncovered, headless))
+        rows = dict(cursor.fetchall())
+    finally:
+        db.release_connection(conn)
+
+    stripped = rows[covered]
+    assert [e.get('request') for e in stripped] == ['legacy', 'later']
+    assert all('previous_code' not in e for e in stripped)
+    assert stripped[0]['timestamp'] == '2026-09-15T00:00:00+00:00'
+    # Uncovered snapshot: the head is not proof, blobs stay
+    assert rows[uncovered][0]['previous_code'] == CODE_V3
+    # Headless: backfill input, untouched
+    assert rows[headless][0]['previous_code'] == CODE_V2
+
+
+def test_saving_into_a_trashed_strategy_keeps_it_trashed():
+    """Deletion wins over an in-flight save: an id-addressed save (an evolve
+    run seeded before the user trashed the row) must not resurrect it — and
+    must not collide with a live namesake created meanwhile."""
+    user_id = _new_user()
+    sid = _save(user_id, "Undelete Test", CODE_V1)
+    assert db.soft_delete_custom_strategy(sid, user_id)
+    namesake = _save(user_id, "Undelete Test", CODE_V2)  # deleted name is free
+
+    assert _save(user_id, "Undelete Test", CODE_V3, strategy_id=sid,
+                 evolution_request="late evolve") == sid
+    trashed = db.get_custom_strategy(sid)
+    assert trashed['deleted_at'] is not None  # still in the trash
+    assert trashed['code'] == CODE_V3  # the save itself landed
+    assert db.get_custom_strategy(namesake)['code'] == CODE_V2  # untouched
+
+
+def test_create_with_duplicate_name_never_overwrites():
+    """Root fix for the name-keyed upsert: a create (no strategy_id) is an
+    INSERT — a colliding live name gets suffixed, the original row is never
+    touched, and V41's partial unique index backstops the race."""
+    user_id = _new_user()
+    sid = _save(user_id, "Dup Name", CODE_V1)
+    sid2 = _save(user_id, "Dup Name", CODE_V2)
+    assert sid2 != sid
+    assert db.get_custom_strategy(sid)['code'] == CODE_V1  # untouched
+    row2 = db.get_custom_strategy(sid2)
+    assert row2['strategy_name'] == "Dup Name (2)"
+    assert row2['code'] == CODE_V2
+    sid3 = _save(user_id, "Dup Name", CODE_V3)
+    assert db.get_custom_strategy(sid3)['strategy_name'] == "Dup Name (3)"
+
+
+def test_update_of_missing_strategy_id_fails_loudly():
+    """Update intent against a nonexistent row must not quietly become a
+    create under the caller's name."""
+    user_id = _new_user()
+    assert db.save_custom_strategy(
+        user_id=user_id, strategy_name="Ghost", class_name="VersionedStrategy",
+        description='', ai_description='', code=CODE_V1, parameters_json={},
+        validation_status='validated', strategy_id=999999999) is False
+    assert "Ghost" not in db.get_user_strategy_names(user_id)
