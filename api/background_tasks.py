@@ -994,7 +994,8 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
         # NEW: Manifest-driven rendering
         section_name = 'Appendices: Average Yearly Results'
         if section_name in REPORT_STRUCTURE:
-            context_avg = {'average_results': average_results_df, 'currency': simulation_currency}
+            df_for_ui = prepare_average_results_table(average_results_df)
+            context_avg = {'average_results': df_for_ui, 'currency': simulation_currency}
             render_section_for_ui(section_name, REPORT_STRUCTURE[section_name], context_avg, send_result)
 
     median_yearly_results_df = precalculated_data.get('median_yearly_results_df')
@@ -1008,7 +1009,8 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
         # NEW: Manifest-driven rendering
         section_name = 'Appendices: Median Yearly Results'
         if section_name in REPORT_STRUCTURE:
-            context_median = {'median_results': median_yearly_results_df, 'currency': simulation_currency}
+            df_for_ui = prepare_median_yearly_results_table(median_yearly_results_df)
+            context_median = {'median_results': df_for_ui, 'currency': simulation_currency}
             render_section_for_ui(section_name, REPORT_STRUCTURE[section_name], context_median, send_result)
 
     record_timing("Appendix: Average Yearly Results")
@@ -1035,7 +1037,7 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
         # NEW: Manifest-driven rendering
         section_name = 'Appendices: Example Simulation Path'
         if section_name in REPORT_STRUCTURE:
-            context_example = {'example_path': example_table_df, 'currency': simulation_currency}
+            context_example = {'example_path': example_table_df, 'currency': simulation_currency, 'caption': caption}
             render_section_for_ui(section_name, REPORT_STRUCTURE[section_name], context_example, send_result)
 
     # --- Input Data Analysis Appendix (Technical Charts) ---

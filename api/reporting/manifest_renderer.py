@@ -183,7 +183,7 @@ def render_item_for_ui(item, context, send_result, section_name):
                            section='Appendices', sub_section='Median Yearly Results')
             elif key == 'example_path' and context.get('example_path') is not None:
                 send_result('dataframe', context['example_path'].to_json(orient='split'),
-                           caption="Detailed year-by-year breakdown...",
+                           caption=context.get('caption', f"All values are shown in thousands of {context['currency']} for improved readability..."),
                            section='Appendices', sub_section='Example Simulation Path')
                            
         elif item_type == 'glossary':
