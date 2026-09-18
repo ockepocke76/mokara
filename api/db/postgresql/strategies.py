@@ -7,9 +7,10 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from psycopg2 import errors as pg_errors
 from psycopg2 import extras
 
-from utils.strategy_utils import calculate_strategy_hash
+from utils.strategy_utils import calculate_strategy_hash, next_free_name
 
 from ..logging_utils import log_db_call
 
@@ -33,8 +34,6 @@ class StrategiesMixin:
         created first so the pre-change code is never lost — this makes the
         save path self-healing for rows the startup backfill missed.
         """
-        from psycopg2 import errors as pg_errors
-
         cursor.execute("SAVEPOINT strategy_version")
         try:
             cursor.execute(
@@ -118,6 +117,10 @@ class StrategiesMixin:
                 # transitional pre-V39 snapshot). COALESCE from the parent:
                 # a pure-reference clone's own code is NULL but its
                 # effective pre-change code is the parent's.
+                # NOTE: the update never touches deleted_at — deleting a
+                # strategy wins over an in-flight save (e.g. an evolve run
+                # seeded before the user trashed it): the row stays in the
+                # trash, restorable, and can't collide with a live namesake.
                 cursor.execute("""
                     SELECT cs.id, COALESCE(cs.code, p.code)
                     FROM CUSTOM_STRATEGIES cs
@@ -156,7 +159,6 @@ class StrategiesMixin:
                         last_validation_timestamp = %s, updated_at = CURRENT_TIMESTAMP,
                         git_branch_name = %s, git_repo_url = NULL,
                         last_synced_at = CURRENT_TIMESTAMP,
-                        deleted_at = NULL, -- Undelete if it was recycled
                         parent_strategy_id = COALESCE(parent_strategy_id, %s),
                         clone_source_commit_sha = COALESCE(clone_source_commit_sha, %s),
                         is_clone_unedited = COALESCE(is_clone_unedited, %s),
@@ -176,9 +178,8 @@ class StrategiesMixin:
                     cursor.execute("""
                         UPDATE CUSTOM_STRATEGIES 
                     SET class_name = %s, description = %s, ai_description = %s,
-                        parameters_json = %s, validation_status = %s, validation_error = %s, 
+                        parameters_json = %s, validation_status = %s, validation_error = %s,
                         last_validation_timestamp = %s, updated_at = CURRENT_TIMESTAMP,
-                        deleted_at = NULL, -- Undelete if it was recycled
                         parent_strategy_id = COALESCE(parent_strategy_id, %s),
                         clone_source_commit_sha = COALESCE(clone_source_commit_sha, %s),
                         is_clone_unedited = %s,
@@ -213,6 +214,10 @@ class StrategiesMixin:
                     # material until the startup backfill runs. On migrated
                     # databases the legacy timeline is retired (V40): requests
                     # live in STRATEGY_VERSIONS and the generation runs.
+                    # Reachable because the API process does NOT run
+                    # migrations (only the worker, the deploy script, and the
+                    # admin endpoint do) — an API container can serve saves
+                    # before the worker has applied V39.
                     # Savepoint: recording it must never fail the save itself.
                     entry = {
                         'timestamp': datetime.now(timezone.utc).isoformat(),
@@ -244,42 +249,45 @@ class StrategiesMixin:
                     "SELECT strategy_name FROM CUSTOM_STRATEGIES "
                     "WHERE user_id = %s AND deleted_at IS NULL", (user_id,))
                 existing = {r[0] for r in cursor.fetchall()}
-                if strategy_name in existing:
-                    n = 2
-                    while f"{strategy_name} ({n})" in existing:
-                        n += 1
-                    strategy_name = f"{strategy_name} ({n})"
+                base_name = strategy_name
+                strategy_name = next_free_name(base_name, existing)
 
-                # Logic: If parent_strategy_id is set, and code is None -> Pure Clone (Pointer)
-                # Logic: If code is provided -> Independent Strategy
-
-                if parent_strategy_id and (code is None):
-                     # === PURE REFERENCE CLONE ===
-                     cursor.execute("""
-                        INSERT INTO CUSTOM_STRATEGIES (
-                            user_id, strategy_name, class_name, description, ai_description, code, 
-                            parameters_json, validation_status, validation_error, last_validation_timestamp,
-                            parent_strategy_id, clone_source_commit_sha, fork_count, cloned_at
-                        ) VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, 0, CURRENT_TIMESTAMP)
-                        RETURNING id
-                    """, (user_id, strategy_name, class_name, description, ai_description, 
-                          parameters_json, validation_status, validation_error, last_validation_timestamp,
-                          parent_strategy_id, clone_source_commit_sha))
-                
-                else:
-                    # === STANDARD STRATEGY CREATION ===
-                    cursor.execute("""
-                        INSERT INTO CUSTOM_STRATEGIES (
-                            user_id, strategy_name, class_name, description, ai_description, code, 
-                            parameters_json, validation_status, validation_error, last_validation_timestamp,
-                            parent_strategy_id, clone_source_commit_sha, fork_count, cloned_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, CURRENT_TIMESTAMP)
-                        RETURNING id
-                    """, (user_id, strategy_name, class_name, description, ai_description, code, 
-                          parameters_json, validation_status, validation_error, last_validation_timestamp,
-                          parent_strategy_id, clone_source_commit_sha))
-
-                strategy_id = cursor.fetchone()[0]
+                # Pure reference clone (parent + no code) inserts a pointer
+                # row; anything else is an independent strategy. Retried on
+                # a unique-name race (two concurrent creates picking the same
+                # suffix): the loser re-suffixes instead of failing the save
+                # and discarding finished work.
+                code_column = "NULL" if (parent_strategy_id and code is None) else "%s"
+                insert_sql = f"""
+                    INSERT INTO CUSTOM_STRATEGIES (
+                        user_id, strategy_name, class_name, description, ai_description, code,
+                        parameters_json, validation_status, validation_error, last_validation_timestamp,
+                        parent_strategy_id, clone_source_commit_sha, fork_count, cloned_at
+                    ) VALUES (%s, %s, %s, %s, %s, {code_column}, %s, %s, %s, %s, %s, %s, 0, CURRENT_TIMESTAMP)
+                    RETURNING id
+                """
+                strategy_id = None
+                for _ in range(5):
+                    params = [user_id, strategy_name, class_name, description,
+                              ai_description]
+                    if code_column == "%s":
+                        params.append(code)
+                    params += [parameters_json, validation_status,
+                               validation_error, last_validation_timestamp,
+                               parent_strategy_id, clone_source_commit_sha]
+                    cursor.execute("SAVEPOINT strategy_insert")
+                    try:
+                        cursor.execute(insert_sql, params)
+                        strategy_id = cursor.fetchone()[0]
+                        cursor.execute("RELEASE SAVEPOINT strategy_insert")
+                        break
+                    except pg_errors.UniqueViolation:
+                        cursor.execute("ROLLBACK TO SAVEPOINT strategy_insert")
+                        existing.add(strategy_name)
+                        strategy_name = next_free_name(base_name, existing)
+                if strategy_id is None:
+                    raise RuntimeError(
+                        f"Could not find a free strategy name for user {user_id}")
 
                 if parent_strategy_id:
                     # Inline on the SAME cursor/connection: calling
@@ -524,38 +532,29 @@ class StrategiesMixin:
             return False
 
     @log_db_call
-    def get_strategy_evolution_history(self, strategy_id, include_code=False):
+    def get_strategy_evolution_history(self, strategy_id, user_id):
         """
-        Fetch evolution history from the DB (V37 evolution_history column).
-
-        Args:
-            strategy_id: Strategy ID
-            include_code: also return each entry's previous_code snapshot.
-                Default False strips them in SQL — the snapshots grow with
-                every evolve and the history timeline never renders code.
+        The legacy evolution timeline (V37 column, frozen since V40) —
+        OWNER-ONLY, enforced here in SQL like the version-DAG reads: the
+        entries carry verbatim evolve requests, which viewing a public
+        strategy never grants. Non-owners get []. previous_code snapshots
+        are stripped in SQL (post-V40 they only exist on rows the startup
+        backfill hasn't reconstructed yet — recovery material, never UI).
 
         Returns:
-            List of evolution entries with timestamp, request, commit_sha, user_id
-            (plus previous_code when include_code=True)
+            List of entries with timestamp, request, commit_sha, user_id.
         """
         try:
             with self._connection_cursor(commit=False) as cursor:
-                if include_code:
-                    cursor.execute("""
-                        SELECT evolution_history
-                        FROM CUSTOM_STRATEGIES
-                        WHERE id = %s
-                    """, (strategy_id,))
-                else:
-                    cursor.execute("""
-                        SELECT COALESCE(
-                            (SELECT jsonb_agg(entry - 'previous_code' ORDER BY ord)
-                             FROM jsonb_array_elements(cs.evolution_history)
-                                  WITH ORDINALITY AS t(entry, ord)),
-                            '[]'::jsonb)
-                        FROM CUSTOM_STRATEGIES cs
-                        WHERE cs.id = %s
-                    """, (strategy_id,))
+                cursor.execute("""
+                    SELECT COALESCE(
+                        (SELECT jsonb_agg(entry - 'previous_code' ORDER BY ord)
+                         FROM jsonb_array_elements(cs.evolution_history)
+                              WITH ORDINALITY AS t(entry, ord)),
+                        '[]'::jsonb)
+                    FROM CUSTOM_STRATEGIES cs
+                    WHERE cs.id = %s AND cs.user_id = %s
+                """, (strategy_id, user_id))
 
                 row = cursor.fetchone()
                 if not row:
@@ -778,8 +777,8 @@ class StrategiesMixin:
                             AND t.is_published_to_leaderboard IS NOT TRUE
                             AND t.user_id != 0) AS is_private,
                            -- Public author identity: the chosen display name
-                           -- only — never the email fallback other surfaces
-                           -- still carry.
+                           -- only, never an email (the leaderboard applies
+                           -- the same rule).
                            CASE WHEN t.user_id = 0 THEN 'built-in'
                                 ELSE COALESCE(u.display_name, 'anonymous')
                            END AS owner_name,

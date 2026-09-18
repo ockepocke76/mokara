@@ -367,11 +367,9 @@ def strategy_history(strategy_id: int,
             })
         genesis = next((r['request'] for r in runs if r['kind'] == 'create'), None)
 
-    # previous_code snapshots stay server-side (revert material, not UI) —
-    # the DB strips them unless include_code=True is asked for.
-    history = []
-    if strategy['user_id'] == user['id']:
-        history = db.get_strategy_evolution_history(strategy_id) or []
+    # Owner-only like `runs`, enforced in the DB layer (non-owners get []);
+    # previous_code snapshots never leave the DB.
+    history = db.get_strategy_evolution_history(strategy_id, user['id']) or []
     return {
         'history': [_stringify_dates(dict(h)) for h in history],
         'runs': runs,

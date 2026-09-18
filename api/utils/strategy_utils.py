@@ -117,3 +117,23 @@ def calculate_strategy_hash(code: str, parameters: dict) -> str:
     
     # Prefix to indicate it's a draft/content hash
     return f"draft_{sha[:12]}"
+
+
+def next_free_name(base: str, taken, label: str = None) -> str:
+    """First name not in `taken`: the base itself, then suffixed forms.
+
+    With label='clone': "base (clone)", "base (clone 2)", ... — the clone
+    service's convention. Without a label: "base (2)", "base (3)", ... —
+    the save layer's convention. One implementation so the two can't drift.
+    """
+    if base not in taken:
+        return base
+    first = f"{base} ({label})" if label else f"{base} (2)"
+    if first not in taken:
+        return first
+    n = 2 if label else 3
+    while True:
+        candidate = f"{base} ({label} {n})" if label else f"{base} ({n})"
+        if candidate not in taken:
+            return candidate
+        n += 1

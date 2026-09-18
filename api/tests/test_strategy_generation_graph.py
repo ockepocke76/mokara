@@ -227,7 +227,7 @@ def test_evolve_parameter_change_is_minimal_edit():
 
     # The legacy V37 timeline is retired (V40): the request lives in the
     # version node and the generation run, nowhere else.
-    assert db.get_strategy_evolution_history(sid) == []
+    assert db.get_strategy_evolution_history(sid, user_id) == []
     # The pre-change code lives in the version DAG, so a bad evolve is
     # recoverable: head is the evolve, its parent is the original create.
     versions = db.get_strategy_versions(sid, user_id)
