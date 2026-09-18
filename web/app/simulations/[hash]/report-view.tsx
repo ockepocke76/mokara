@@ -375,11 +375,31 @@ export function ReportView({ items }: { items: ReportItem[] }) {
   return (
     <div className="flex flex-col gap-3">
       {warnings.map((w, i) => {
-        const data = w.data as { title?: string; body?: string };
+        const data = w.data as {
+          title?: string;
+          body?: string;
+          components?: string[];
+        };
         return (
           <WarningBox key={i}>
             ⚠️ <strong>{data.title ?? "Warning"}</strong>{" "}
             {data.body ?? String(w.data)}
+            {data.components && data.components.length > 0 && (
+              <Accordion type="single" collapsible className="mt-1">
+                <AccordionItem value="changed-components" className="border-0">
+                  <AccordionTrigger className="py-1 text-sm">
+                    Changed Components
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <ul className="list-disc pl-5">
+                      {data.components.map((c) => (
+                        <li key={c}>{c}</li>
+                      ))}
+                    </ul>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            )}
           </WarningBox>
         );
       })}
