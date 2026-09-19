@@ -21,6 +21,7 @@ _USER_OWNED_TABLES = [
     'user_settings', 'user_simulation_history', 'custom_strategies',
     'strategy_evaluations', 'subscription_history', 'ai_credit_usage',
     'logs', 'simulations_old', 'user_hidden_items', 'strategy_generation_runs',
+    'analytics_events',  # no FK, but user-owned all the same
 ]
 
 

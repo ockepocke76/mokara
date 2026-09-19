@@ -377,6 +377,18 @@ def create_simulation(
     if errors:
         raise HTTPException(status_code=422, detail=errors)
 
+    from datetime import datetime
+
+    from core.analytics import AnalyticsService
+
+    AnalyticsService(db).track_simulation_run(
+        user_id=user["id"],
+        asset=full.get("asset_model", "unknown"),
+        strategy=full.get("custom_strategy_name") or full.get("strategy", "unknown"),
+        duration=full.get("num_years", 0),
+        timestamp=datetime.now(),
+    )
+
     simulation_hash = generate_simulation_hash(full)
     cache_status, results_id, stored_hashes = db.check_simulation_cache(simulation_hash)
 

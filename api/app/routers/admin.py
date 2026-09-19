@@ -432,6 +432,16 @@ def set_strategy_public(strategy_id: int, body: SetPublic) -> dict:
     return {"strategy_id": strategy_id, "is_public": body.is_public}
 
 
+@router.get("/analytics")
+def get_analytics(days: int = 30) -> dict:
+    from core.analytics import AnalyticsService
+    from db.database import db
+
+    if not 1 <= days <= 365:
+        raise HTTPException(status_code=422, detail="days must be 1–365")
+    return AnalyticsService(db).summary(days=days)
+
+
 @router.get("/jobs")
 def list_jobs(
     job_type: Optional[str] = None,
