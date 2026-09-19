@@ -490,6 +490,21 @@ def run_evaluations() -> dict:
     return {"queued": len(job_ids), "job_ids": job_ids}
 
 
+@router.get("/migrations")
+def get_migrations() -> dict:
+    """Pending (with SQL preview) and applied migrations."""
+    from db.database import db
+
+    return db.get_migration_status()
+
+
+@router.get("/migrations/tables")
+def list_tables() -> dict:
+    from db.database import db
+
+    return {"tables": db.list_tables()}
+
+
 @router.post("/migrations/run")
 def run_migrations() -> dict:
     from db.database import db

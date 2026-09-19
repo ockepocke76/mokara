@@ -16,17 +16,10 @@ import { Label } from "@/components/ui/label";
 type ActionState = { state: "idle" | "busy" | "done" | "error"; note?: string };
 
 export function SystemActions() {
-  const [migrations, setMigrations] = useState<ActionState>({ state: "idle" });
   const [evals, setEvals] = useState<ActionState>({ state: "idle" });
   const [reset, setReset] = useState<ActionState>({ state: "idle" });
   const [password, setPassword] = useState("");
   const [confirmText, setConfirmText] = useState("");
-
-  async function runMigrations() {
-    setMigrations({ state: "busy" });
-    const res = await fetch("/api/bff/admin/migrations/run", { method: "POST" });
-    setMigrations(res.ok ? { state: "done", note: "Migrations up to date." } : { state: "error", note: "Failed — see API logs." });
-  }
 
   async function runEvaluations() {
     setEvals({ state: "busy" });
@@ -61,24 +54,7 @@ export function SystemActions() {
   }
 
   return (
-    <div className="flex max-w-2xl flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Database migrations</CardTitle>
-          <CardDescription>
-            Apply any pending schema migrations (idempotent).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex items-center gap-3">
-          <Button onClick={runMigrations} disabled={migrations.state === "busy"}>
-            {migrations.state === "busy" ? "Running…" : "Run migrations"}
-          </Button>
-          {migrations.note && (
-            <p className="text-sm text-muted-foreground">{migrations.note}</p>
-          )}
-        </CardContent>
-      </Card>
-
+    <div className="flex flex-col gap-6">
       <Card>
         <CardHeader>
           <CardTitle>Leaderboard evaluations</CardTitle>

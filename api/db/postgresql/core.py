@@ -130,6 +130,66 @@ class ConnectionCore:
         finally:
             self.release_connection(conn)
 
+    # (R5.2b: one .parent deeper than in db/postgresql_db.py — this module
+    # lives in db/postgresql/, migrations stay in db/.)
+    MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations" / "postgresql"
+
+    @classmethod
+    def migration_files(cls):
+        """Migration files on disk, sorted by their V<N> prefix."""
+        import re
+
+        cls.MIGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+        def version_number(filepath):
+            match = re.match(r'V(\d+)', filepath.name)
+            return int(match.group(1)) if match else 999999
+
+        return sorted(cls.MIGRATIONS_DIR.glob("V*.sql"), key=version_number)
+
+    def get_migration_status(self, preview_lines=10):
+        """Pending vs. applied migrations, for the admin dashboard."""
+        try:
+            with self._connection_cursor(commit=False) as cursor:
+                cursor.execute("SELECT version, applied_at FROM schema_version")
+                applied_at = {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception as e:
+            # schema_version doesn't exist until the first run_migrations().
+            logging.warning(f"Could not read schema_version: {e}")
+            applied_at = {}
+
+        on_disk = self.migration_files()
+        on_disk_names = {f.name for f in on_disk}
+
+        pending = []
+        applied = []
+        for f in on_disk:
+            if f.name in applied_at:
+                applied.append({"version": f.name, "applied_at": applied_at[f.name]})
+            else:
+                lines = f.read_text().splitlines()
+                preview = "\n".join(lines[:preview_lines])
+                if len(lines) > preview_lines:
+                    preview += "\n... (truncated)"
+                pending.append({"version": f.name, "preview": preview})
+
+        # Applied but no longer on disk — deleted/renamed after being run.
+        for version, ts in applied_at.items():
+            if version not in on_disk_names:
+                applied.append({"version": version, "applied_at": ts, "file_missing": True})
+        applied.sort(key=lambda a: a["applied_at"], reverse=True)
+
+        return {"pending": pending, "applied": applied}
+
+    def list_tables(self):
+        """Public-schema table names, for the admin schema check."""
+        with self._connection_cursor(commit=False) as cursor:
+            cursor.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' ORDER BY table_name"
+            )
+            return [row[0] for row in cursor.fetchall()]
+
     def run_migrations(self, conn=None):
         """Apply PostgreSQL migrations.
 
@@ -167,21 +227,7 @@ class ConnectionCore:
             applied_versions = {row[0] for row in cursor.fetchall()}
             logging.info(f"Applied migrations: {applied_versions or 'None'}")
             
-            # Find migration files
-            # (R5.2b: one .parent deeper than in db/postgresql_db.py — this
-            # module lives in db/postgresql/, migrations stay in db/.)
-            migrations_dir = Path(__file__).parent.parent / "migrations" / "postgresql"
-            migrations_dir.mkdir(parents=True, exist_ok=True)
-            
-            migration_files_raw = list(migrations_dir.glob("V*.sql"))
-            
-            # Sort by version
-            def get_version_number(filepath):
-                import re
-                match = re.match(r'V(\d+)', filepath.name)
-                return int(match.group(1)) if match else 999999
-            
-            migration_files = sorted(migration_files_raw, key=get_version_number)
+            migration_files = self.migration_files()
             logging.info(f"Found {len(migration_files)} migrations")
             
             for migration_file in migration_files:
