@@ -41,37 +41,28 @@ function clamp(raw: string | undefined, allowed: number[], fallback: number) {
   return allowed.includes(n) ? n : fallback;
 }
 
+// A non-OK API response must surface as a clear error, not as a crash on
+// an unexpected JSON shape further down.
+async function getJson<T>(path: string): Promise<T> {
+  const res = await apiFetch(path);
+  if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+  return (await res.json()) as T;
+}
+
 export default async function AdminLlmUsagePage({
   searchParams,
 }: {
   searchParams: Promise<{ window?: string; days?: string }>;
 }) {
   const params = await searchParams;
-  const window = clamp(params.window, WINDOWS, 100);
+  const window = clamp(params.window, WINDOWS, 100); // latest-N operations
   const days = clamp(params.days, DAY_RANGES, 30);
 
-  const summaryRes = await apiFetch(
-    `/admin/llm-usage/summary?window=${window}&days=${days}`,
-  );
-  const summary: Summary = await summaryRes.json();
-
-  const [usersRes, recentRes, ...stepRes] = await Promise.all([
-    apiFetch(`/admin/llm-usage/users?days=${days}`),
-    apiFetch(`/admin/llm-usage/operations?limit=25`),
-    ...summary.operations.map((o) =>
-      apiFetch(
-        `/admin/llm-usage/steps?operation=${encodeURIComponent(o.operation)}&window=${window}`,
-      ),
-    ),
+  const [summary, { users }, { operations: recent }] = await Promise.all([
+    getJson<Summary>(`/admin/llm-usage/summary?window=${window}&days=${days}`),
+    getJson<{ users: UserTotals[] }>(`/admin/llm-usage/users?days=${days}`),
+    getJson<{ operations: OperationRow[] }>(`/admin/llm-usage/operations?limit=25`),
   ]);
-  const { users }: { users: UserTotals[] } = await usersRes.json();
-  const { operations: recent }: { operations: OperationRow[] } =
-    await recentRes.json();
-  const stepsByOp = new Map<string, StepStats[]>();
-  for (const [i, res] of stepRes.entries()) {
-    const body: { steps: StepStats[] } = await res.json();
-    stepsByOp.set(summary.operations[i].operation, body.steps);
-  }
 
   const unpriced = summary.totals.by_operation.reduce(
     (acc, o) => acc + (o.unpriced_calls ?? 0),
@@ -206,7 +197,7 @@ export default async function AdminLlmUsagePage({
                       </>
                     )}
                   </p>
-                  <StepsTable steps={stepsByOp.get(op.operation) ?? []} />
+                  <StepsTable steps={summary.steps[op.operation] ?? []} />
                 </CardContent>
               </Card>
             ))}

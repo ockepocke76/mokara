@@ -7,6 +7,8 @@ answer, one report analysis) spans several calls that share
 "cost per strategy creation" is a real per-run number, not a per-call one.
 Calls that arrived without an llm_scope (ref_id NULL) count as one operation
 each — they show up as 'unknown' in admin rather than vanishing.
+
+All day-level bucketing is UTC.
 """
 from datetime import date, datetime
 from decimal import Decimal
@@ -17,6 +19,19 @@ from db.database import db
 # Operation labels used by callers of core.llm.llm_scope — kept here so the
 # admin API and UI have one list to iterate.
 OPERATIONS = ('strategy_create', 'strategy_evolve', 'strategy_qa', 'report_analysis')
+
+# The key that groups calls into one operation: the caller's ref_id, or a
+# synthetic per-row key for scope-less calls.
+def _op_key(alias: str = '') -> str:
+    prefix = f"{alias}." if alias else ""
+    return f"COALESCE({prefix}ref_id, 'call-' || {prefix}id::text)"
+
+
+_OP_KEY = _op_key()
+
+# Window stats (latest N operations) never need old history; bounding the
+# scan keeps the admin page fast as the table grows.
+_RECENT_HISTORY = "created_at >= NOW() - interval '180 days'"
 
 
 def _rows(cursor) -> list[dict]:
@@ -60,12 +75,14 @@ def record_call(*, operation: str, model: str, user_id: Optional[int] = None,
         db.release_connection(conn)
 
 
-# One operation = the calls sharing (operation, ref_id). Scope-less calls
-# (ref_id NULL) become one operation each via COALESCE on the row id.
-_OPERATIONS_CTE = """
+def _ops_cte(*conditions: str) -> str:
+    """The per-operation rollup, optionally filtered (conditions are SQL
+    fragments from this module, never user input; values go in params)."""
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    return f"""
     ops AS (
         SELECT operation,
-               COALESCE(ref_id, 'call-' || id::text) AS ref_id,
+               {_OP_KEY} AS ref_id,
                MAX(user_id) AS user_id,
                COUNT(*) AS calls,
                COUNT(*) FILTER (WHERE NOT ok) AS failed_calls,
@@ -80,9 +97,23 @@ _OPERATIONS_CTE = """
                MAX(created_at) AS finished_at
         FROM LLM_USAGE
         {where}
-        GROUP BY operation, COALESCE(ref_id, 'call-' || id::text)
-    )
-"""
+        GROUP BY operation, {_OP_KEY}
+    )"""
+
+
+# Latest-N ranking per operation type. A strategy run that is still
+# generating has only part of its calls, so it is left out until it settles
+# (needs_input at review is already fully priced: no calls follow a save).
+_RANKED_CTE = """
+    ranked AS (
+        SELECT ops.*,
+               ROW_NUMBER() OVER (PARTITION BY ops.operation ORDER BY ops.finished_at DESC) AS rn
+        FROM ops
+        LEFT JOIN STRATEGY_GENERATION_RUNS run
+               ON ops.operation IN ('strategy_create', 'strategy_evolve')
+              AND run.id::text = ops.ref_id
+        WHERE run.status IS DISTINCT FROM 'running'
+    )"""
 
 
 def models_used() -> list[str]:
@@ -97,16 +128,12 @@ def models_used() -> list[str]:
 
 def operation_stats(window: int = 100) -> list[dict]:
     """Per operation type: n / mean / median / p90 / max cost and mean token
-    mix over the latest `window` operations of that type."""
+    mix over the latest `window` settled operations of that type."""
     conn = db.get_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "WITH " + _OPERATIONS_CTE.format(where="") + """,
-            ranked AS (
-                SELECT ops.*, ROW_NUMBER() OVER (PARTITION BY operation ORDER BY finished_at DESC) AS rn
-                FROM ops
-            )
+            "WITH " + _ops_cte(_RECENT_HISTORY) + "," + _RANKED_CTE + """
             SELECT operation,
                    COUNT(*) AS n,
                    AVG(cost_usd) AS mean_cost_usd,
@@ -136,34 +163,41 @@ def operation_stats(window: int = 100) -> list[dict]:
         db.release_connection(conn)
 
 
-def step_stats(operation: str, window: int = 100) -> list[dict]:
-    """Where the money goes inside one operation type: mean cost and tokens
-    per step (graph node) over the latest `window` operations."""
+def step_stats(window: int = 100) -> list[dict]:
+    """Where the money goes inside each operation type: per (operation, step,
+    tier), calls and cost per operation over the same latest-`window` set
+    operation_stats uses. One query for all operation types."""
     conn = db.get_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "WITH " + _OPERATIONS_CTE.format(where="WHERE operation = %s") + """,
+            "WITH " + _ops_cte(_RECENT_HISTORY) + "," + _RANKED_CTE + f""",
             recent AS (
-                SELECT ref_id FROM ops ORDER BY finished_at DESC LIMIT %s
+                SELECT operation, ref_id FROM ranked WHERE rn <= %s
+            ),
+            counts AS (
+                SELECT operation, COUNT(*) AS n FROM recent GROUP BY operation
             )
-            SELECT COALESCE(u.step, '(no step)') AS step,
+            SELECT u.operation,
+                   COALESCE(u.step, '(no step)') AS step,
                    COALESCE(u.tier, '') AS tier,
                    COUNT(*) AS calls,
-                   COUNT(*)::float / (SELECT COUNT(*) FROM recent) AS calls_per_operation,
-                   SUM(u.cost_usd) / (SELECT COUNT(*) FROM recent) AS cost_per_operation_usd,
+                   COUNT(*)::float / c.n AS calls_per_operation,
+                   SUM(u.cost_usd) / c.n AS cost_per_operation_usd,
                    AVG(u.cost_usd) AS mean_cost_usd,
                    AVG(u.prompt_tokens) AS mean_prompt_tokens,
                    AVG(u.completion_tokens) AS mean_completion_tokens,
                    AVG(u.thinking_tokens) AS mean_thinking_tokens,
                    AVG(u.latency_ms) AS mean_latency_ms
             FROM LLM_USAGE u
-            JOIN recent ON recent.ref_id = COALESCE(u.ref_id, 'call-' || u.id::text)
-            WHERE u.operation = %s
-            GROUP BY u.step, u.tier
-            ORDER BY cost_per_operation_usd DESC NULLS LAST
+            JOIN recent ON recent.operation = u.operation
+                       AND recent.ref_id = {_op_key('u')}
+            JOIN counts c ON c.operation = u.operation
+            WHERE u.{_RECENT_HISTORY}
+            GROUP BY u.operation, u.step, u.tier, c.n
+            ORDER BY u.operation, cost_per_operation_usd DESC NULLS LAST
             """,
-            (operation, window, operation),
+            (window,),
         )
         return _rows(cursor)
     finally:
@@ -176,9 +210,9 @@ def totals(days: int = 30) -> dict:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT operation,
-                   COUNT(DISTINCT COALESCE(ref_id, 'call-' || id::text)) AS operations,
+                   COUNT(DISTINCT {_OP_KEY}) AS operations,
                    COUNT(*) AS calls,
                    SUM(cost_usd) AS cost_usd,
                    COUNT(*) FILTER (WHERE cost_usd IS NULL AND ok) AS unpriced_calls
@@ -191,9 +225,9 @@ def totals(days: int = 30) -> dict:
         )
         by_operation = _rows(cursor)
         cursor.execute(
-            """
+            f"""
             SELECT (created_at AT TIME ZONE 'UTC')::date AS day,
-                   COUNT(DISTINCT COALESCE(ref_id, 'call-' || id::text)) AS operations,
+                   COUNT(DISTINCT {_OP_KEY}) AS operations,
                    SUM(cost_usd) AS cost_usd
             FROM LLM_USAGE
             WHERE created_at >= NOW() - (%s || ' days')::interval
@@ -225,8 +259,7 @@ def user_totals(days: int = 30, limit: int = 200) -> list[dict]:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "WITH " + _OPERATIONS_CTE.format(
-                where="WHERE created_at >= NOW() - (%s || ' days')::interval") + """
+            "WITH " + _ops_cte("created_at >= NOW() - (%s || ' days')::interval") + """
             SELECT ops.user_id,
                    usr.email, usr.name, usr.plan_tier AS tier,
                    COUNT(*) AS operations,
@@ -257,7 +290,7 @@ def user_operations(user_id: int, limit: int = 50) -> list[dict]:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "WITH " + _OPERATIONS_CTE.format(where="WHERE user_id = %s") + """
+            "WITH " + _ops_cte("user_id = %s") + """
             SELECT operation, ref_id, calls, failed_calls, unpriced_calls, cost_usd,
                    prompt_tokens, cached_tokens, completion_tokens, thinking_tokens,
                    latency_ms, started_at, finished_at
@@ -273,18 +306,20 @@ def user_operations(user_id: int, limit: int = 50) -> list[dict]:
 
 
 def user_summary(user_id: int) -> dict:
-    """All-time and 30-day spend for one user, for the admin user detail."""
+    """All-time, 30-day and calendar-month (UTC) spend for one user."""
     conn = db.get_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT SUM(cost_usd) AS all_time_cost_usd,
                    SUM(cost_usd) FILTER (WHERE created_at >= NOW() - interval '30 days') AS cost_30d_usd,
-                   SUM(cost_usd) FILTER (WHERE date_trunc('month', created_at) = date_trunc('month', NOW())) AS cost_month_usd,
-                   COUNT(DISTINCT COALESCE(ref_id, 'call-' || id::text)) AS operations,
-                   COUNT(DISTINCT COALESCE(ref_id, 'call-' || id::text))
-                       FILTER (WHERE date_trunc('month', created_at) = date_trunc('month', NOW())) AS operations_month
+                   SUM(cost_usd) FILTER (WHERE date_trunc('month', created_at AT TIME ZONE 'UTC')
+                                          = date_trunc('month', NOW() AT TIME ZONE 'UTC')) AS cost_month_usd,
+                   COUNT(DISTINCT {_OP_KEY}) AS operations,
+                   COUNT(DISTINCT {_OP_KEY})
+                       FILTER (WHERE date_trunc('month', created_at AT TIME ZONE 'UTC')
+                                   = date_trunc('month', NOW() AT TIME ZONE 'UTC')) AS operations_month
             FROM LLM_USAGE WHERE user_id = %s
             """,
             (user_id,),
@@ -296,17 +331,18 @@ def user_summary(user_id: int) -> dict:
 
 
 def operation_calls(operation: str, ref_id: str) -> list[dict]:
-    """The individual calls of one operation, in order (drill-down)."""
+    """The individual calls of one operation, in order (drill-down). Accepts
+    the synthetic 'call-<id>' key the rollups give scope-less calls."""
     conn = db.get_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT id, created_at, user_id, step, tier, model,
                    prompt_tokens, cached_tokens, completion_tokens, thinking_tokens,
                    cost_usd, latency_ms, ok, error
             FROM LLM_USAGE
-            WHERE operation = %s AND ref_id = %s
+            WHERE operation = %s AND {_OP_KEY} = %s
             ORDER BY created_at, id
             """,
             (operation, ref_id),
@@ -321,10 +357,10 @@ def recent_operations(operation: Optional[str] = None, limit: int = 100) -> list
     conn = db.get_connection()
     try:
         cursor = conn.cursor()
-        where = "WHERE operation = %s" if operation else ""
+        conditions = [_RECENT_HISTORY] + (["operation = %s"] if operation else [])
         params: tuple = (operation, limit) if operation else (limit,)
         cursor.execute(
-            "WITH " + _OPERATIONS_CTE.format(where=where) + """
+            "WITH " + _ops_cte(*conditions) + """
             SELECT ops.operation, ops.ref_id, ops.user_id, usr.email,
                    ops.calls, ops.failed_calls, ops.unpriced_calls, ops.cost_usd,
                    ops.prompt_tokens, ops.cached_tokens, ops.completion_tokens, ops.thinking_tokens,

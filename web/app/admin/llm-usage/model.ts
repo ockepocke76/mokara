@@ -59,6 +59,8 @@ export type Price = {
 export type Summary = {
   window: number;
   operations: OperationStats[];
+  // per operation type, the per-step breakdown behind its card
+  steps: Record<string, StepStats[]>;
   totals: Totals;
   prices: Record<string, Price | null>;
 };

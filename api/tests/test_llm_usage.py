@@ -45,7 +45,9 @@ def _remove_rows_written_by_this_module():
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "DELETE FROM LLM_USAGE WHERE ref_id LIKE %s OR error = %s",
+            "DELETE FROM LLM_USAGE WHERE ref_id LIKE %s OR error = %s "
+            "OR ref_id IN (SELECT id::text FROM STRATEGY_GENERATION_RUNS "
+            "              WHERE user_request = 'in-flight test')",
             (f"{REF_PREFIX}%", UNSCOPED_ERROR))
         conn.commit()
     finally:
@@ -138,13 +140,19 @@ def test_call_gemini_safe_records_scoped_usage(monkeypatch):
 def test_call_gemini_safe_records_failures_and_unscoped_calls(monkeypatch):
     monkeypatch.setattr(core_llm, '_get_client',
                         lambda api_key=None: _fake_client(error=UNSCOPED_ERROR))
-    before = llm_usage.totals(1)['all_time_calls']
     text, err, usage = core_llm.call_gemini_safe('gemini-3.5-flash-lite', "prompt")
     assert text is None and "high load" in err
-    after = llm_usage.totals(1)['all_time_calls']
-    assert after == before + 1
-    latest = llm_usage.recent_operations(operation='unknown', limit=1)[0]
-    assert latest['failed_calls'] == 1 and latest['calls'] == 1
+    # Scope-less: lands as its own 'unknown' operation under a synthetic
+    # 'call-<id>' key (found by our error text — the DB is shared with other
+    # sessions' tests, so no global counts here) …
+    mine = [o for o in llm_usage.recent_operations(operation='unknown', limit=50)
+            if llm_usage.operation_calls('unknown', o['ref_id'])[0]['error'] == UNSCOPED_ERROR]
+    assert len(mine) == 1
+    op = mine[0]
+    assert op['failed_calls'] == 1 and op['calls'] == 1 and op['ref_id'].startswith('call-')
+    # … and that synthetic key resolves in the drill-down, like a real ref.
+    calls = llm_usage.operation_calls('unknown', op['ref_id'])
+    assert len(calls) == 1 and calls[0]['ok'] is False and calls[0]['cost_usd'] == 0
 
 
 def test_logging_failure_never_breaks_the_call(monkeypatch):
@@ -219,9 +227,10 @@ def test_operation_stats_aggregate_per_run_not_per_call():
     # window trims to the newest runs
     assert {s['operation']: s for s in llm_usage.operation_stats(window=1)}[op]['n'] == 1
 
-    steps = llm_usage.step_stats(op, window=100)
-    assert steps[0]['step'] == 'generate'
+    steps = [s for s in llm_usage.step_stats(window=100) if s['operation'] == op]
+    assert len(steps) == 1 and steps[0]['step'] == 'generate'
     assert steps[0]['cost_per_operation_usd'] == pytest.approx(2 * unit_cost)
+    assert steps[0]['calls_per_operation'] == pytest.approx(2)
 
     ops = llm_usage.user_operations(user_id)
     assert [o['ref_id'] for o in ops] == [_ref('r3'), _ref('r2'), _ref('r1')]
@@ -233,6 +242,24 @@ def test_operation_stats_aggregate_per_run_not_per_call():
 
     me = next(u for u in llm_usage.user_totals(days=1, limit=1000) if u['user_id'] == user_id)
     assert me['operations'] == 3 and me['other'] == 3
+
+
+def test_running_strategy_runs_are_left_out_of_window_stats():
+    from db import strategy_generation as sg
+
+    _, user_id = _new_user()
+    run_id = str(uuid.uuid4())
+    sg.create_run(run_id, user_id, f"stratgen-{run_id}", "in-flight test")   # status running
+    _record('strategy_create', run_id, user_id, [(100_000, 20_000, 40_000)])  # deliberately huge
+    huge = estimate_cost_usd('gemini-3.8-flash', 100_000, 0, 20_000, 40_000)
+    cost_of_newest = lambda: {  # noqa: E731
+        s['operation']: s for s in llm_usage.operation_stats(window=1)}['strategy_create']
+
+    # Still generating: not the newest settled creation, so it doesn't rank.
+    assert cost_of_newest()['max_cost_usd'] != pytest.approx(huge)
+
+    sg.update_run(run_id, status='completed')
+    assert cost_of_newest()['max_cost_usd'] == pytest.approx(huge)
 
 
 # --- admin API -----------------------------------------------------------------
@@ -252,8 +279,7 @@ def test_admin_llm_usage_endpoints():
     assert any(o['operation'] == 'strategy_evolve' for o in body['operations'])
     assert body['totals']['days'] == 7
 
-    r = client.get("/admin/llm-usage/steps?operation=strategy_evolve", headers=headers)
-    assert r.status_code == 200 and any(s['step'] == 'plan' for s in r.json()['steps'])
+    assert any(s['step'] == 'plan' for s in body['steps']['strategy_evolve'])
 
     r = client.get(f"/admin/llm-usage/users/{target_id}", headers=headers)
     assert r.status_code == 200
