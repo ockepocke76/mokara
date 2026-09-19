@@ -157,3 +157,22 @@ def random_username(user: Optional[dict] = Depends(get_current_user)) -> dict:
     from utils.username_generator import generate_username
 
     return {"username": generate_username(check_exists_fn=db.username_exists)}
+
+
+class LoginEvent(BaseModel):
+    method: str
+
+
+@router.post("/me/login-event")
+def login_event(
+    body: LoginEvent,
+    user: Optional[dict] = Depends(get_current_user),
+) -> dict:
+    """Recorded by the web app's auth layer when a session is created."""
+    if user is None:
+        raise HTTPException(status_code=401, detail="authentication required")
+    from core.analytics import AnalyticsService
+    from db.database import db
+
+    AnalyticsService(db).track_login(user["id"], body.method)
+    return {"ok": True}

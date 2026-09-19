@@ -16,6 +16,7 @@ const ADMIN_NAV = [
   { href: "/admin/audit", label: "Audit" },
   { href: "/admin/tiers", label: "Tiers" },
   { href: "/admin/demo-content", label: "Demo Content" },
+  { href: "/admin/analytics", label: "Analytics" },
 ];
 
 export default async function AdminLayout({

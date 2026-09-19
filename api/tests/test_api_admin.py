@@ -245,3 +245,23 @@ def test_selective_evaluation_and_status():
     finally:
         with db._connection_cursor() as cur:
             cur.execute("DELETE FROM background_jobs WHERE id = %s", (job_id,))
+
+
+def test_analytics_summary_and_login_event():
+    from db.database import db
+
+    admin_email, admin_id = _new_user(tier="ADMIN")
+    headers = {**SECRET, "X-User-Email": admin_email}
+
+    r = client.post("/me/login-event", headers=headers, json={"method": "pytest"})
+    assert r.status_code == 200
+    try:
+        r = client.get("/admin/analytics?days=7", headers=headers)
+        assert r.status_code == 200
+        s = r.json()
+        assert s["total_events"] >= 1
+        assert any(row["method"] == "pytest" for row in s["logins_by_method"])
+        assert client.get("/admin/analytics?days=0", headers=headers).status_code == 422
+    finally:
+        with db._connection_cursor() as cur:
+            cur.execute("DELETE FROM analytics_events WHERE user_id = %s", (admin_id,))
