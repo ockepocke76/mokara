@@ -7,8 +7,7 @@ stub and MOKARA_FAKE_LLM=1 runs the whole designer flow without an API key.
 The real implementation stays on core.llm.call_gemini_safe (no langchain
 model layer, per the W5 design).
 
-Model tiers: 'fast' for spec/clarify/review-style calls, 'strong' for
-code generation and analysis. Override with GEMINI_MODEL_FAST/_STRONG.
+Model tiers ('fast' / 'strong') and their overrides live in core.llm.
 """
 import json
 import logging
@@ -20,17 +19,14 @@ class LLMError(RuntimeError):
     """Provider-level failure (quota, network, empty response)."""
 
 
-def _model_for(tier: str) -> str:
-    if tier == 'strong':
-        return os.environ.get('GEMINI_MODEL_STRONG', 'gemini-3.8-flash')
-    return os.environ.get('GEMINI_MODEL_FAST', 'gemini-3.5-flash-lite')
-
-
 def real_llm_call(prompt: str, tier: str = 'fast', json_mode: bool = False) -> str:
-    from core.llm import call_gemini_safe
+    from core.llm import call_gemini_safe, model_for_tier
 
     config = {'response_mime_type': 'application/json'} if json_mode else None
-    text, error, _usage = call_gemini_safe(_model_for(tier), prompt, generation_config=config)
+    # Usage/cost is recorded inside call_gemini_safe against the ambient
+    # core.llm.llm_scope (set by the runner / Q&A service / report worker).
+    text, error, _usage = call_gemini_safe(model_for_tier(tier), prompt, generation_config=config,
+                                           tier=tier)
     if error or not text:
         raise LLMError(error or "Empty response from LLM")
     return text

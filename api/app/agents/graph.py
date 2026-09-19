@@ -32,6 +32,7 @@ from langgraph.types import interrupt
 from app.agents import prompts, retrieval
 from app.agents.llm import extract_description_and_code, parse_json_response
 from core.simulation import STATE_KEY_PREFIX
+from core.llm import llm_scope
 from db import strategy_generation as sg
 
 MAX_ATTEMPTS = 3        # automatic rework rounds (validate/static/analyze failures)
@@ -104,13 +105,18 @@ def _llm(state: GenState, config: dict, prompt: str, tier: str,
     it is a transient generation glitch, not a reason to kill the run."""
     calls = state.get('llm_calls', 0)
     llm_call = config['configurable']['llm_call']
+    # Tag the usage row with the node name so admin can see where a run's
+    # cost goes (plan vs generate vs analyze); the run/user scope is set by
+    # the runner and inherited here.
+    step = (config.get('metadata') or {}).get('langgraph_node')
     last_error = None
     for _ in range(2):
         calls += 1
         if calls > MAX_LLM_CALLS:
             raise GenerationBudgetExceeded(
                 f"LLM call budget ({MAX_LLM_CALLS}) exhausted for this run")
-        text = llm_call(prompt, tier=tier, json_mode=json_mode)
+        with llm_scope(step=step):
+            text = llm_call(prompt, tier=tier, json_mode=json_mode)
         if not json_mode:
             return text, calls
         try:

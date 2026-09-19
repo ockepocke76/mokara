@@ -20,6 +20,7 @@ from langgraph.types import Command
 
 from app.agents.graph import GenerationNeedsDecision, build_graph
 from app.agents.llm import get_llm_call
+from core.llm import llm_scope
 from db import strategy_generation as sg
 
 _lock = threading.Lock()
@@ -65,11 +66,15 @@ def _config(thread_id: str) -> dict:
     return {'configurable': {'thread_id': thread_id, 'llm_call': get_llm_call()}}
 
 
-def _execute(run_id: str, thread_id: str, graph_input) -> None:
+def _execute(run_id: str, thread_id: str, graph_input, operation: str,
+             user_id: int | None) -> None:
     graph = get_graph()
     config = _config(thread_id)
     try:
-        result = graph.invoke(graph_input, config)
+        # LLM-usage attribution for every call this run makes (start or
+        # resume): one operation per run, keyed by the run id.
+        with llm_scope(operation, user_id=user_id, ref_id=run_id):
+            result = graph.invoke(graph_input, config)
     except GenerationNeedsDecision as e:
         # Not a failure: the resume couldn't be honored (e.g. revision budget
         # spent) — hand the decision back to the user.
@@ -107,11 +112,17 @@ def _fail_run(run_id: str, thread_id: str, error: Exception) -> None:
              validation_error=str(error))
 
 
-def _launch(run_id: str, thread_id: str, graph_input) -> None:
+def _operation(seed_strategy_id) -> str:
+    return 'strategy_evolve' if seed_strategy_id else 'strategy_create'
+
+
+def _launch(run_id: str, thread_id: str, graph_input, operation: str,
+            user_id: int | None) -> None:
+    args = (run_id, thread_id, graph_input, operation, user_id)
     if os.environ.get('MOKARA_SYNC_RUNNER') == '1':
-        _execute(run_id, thread_id, graph_input)
+        _execute(*args)
         return
-    threading.Thread(target=_execute, args=(run_id, thread_id, graph_input),
+    threading.Thread(target=_execute, args=args,
                      daemon=True, name=f"strategy-gen-{run_id[:8]}").start()
 
 
@@ -147,7 +158,8 @@ def start_run(user_id: int, user_request: str, strategy_name: str | None = None,
         # Evolve keeps the seed's name — save updates that strategy in place.
         if not initial_state['strategy_name']:
             initial_state['strategy_name'] = seed_strategy.get('strategy_name') or ''
-    _launch(run_id, thread_id, initial_state)
+    _launch(run_id, thread_id, initial_state,
+            _operation((seed_strategy or {}).get('id')), user_id)
     return run_id
 
 
@@ -166,4 +178,5 @@ def resume_run(run_id: str, payload: dict) -> None:
     sg.append_event(run_id, 'input_received',
                     {k: payload[k] for k in ('kind', 'action', 'feedback', 'answers')
                      if payload.get(k) is not None})
-    _launch(run_id, run['thread_id'], Command(resume=payload))
+    _launch(run_id, run['thread_id'], Command(resume=payload),
+            _operation(run.get('seed_strategy_id')), run.get('user_id'))

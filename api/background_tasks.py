@@ -350,13 +350,19 @@ def run_and_save_simulation(ui_params, full_sim_params, simulation_hash, progres
                     strategy_description = STRATEGY_DESCRIPTIONS.get(strategy_key, 
                                                                     ' '.join(word.capitalize() for word in strategy_key.split('_')))
                 
-                # Part 1: Full Analysis
-                gemini_prompt_text = get_gemini_analysis_prompt(full_sim_params, final_stats, simulation_currency, strategy_description)
-                analysis = get_gemini_analysis(gemini_prompt_text, api_key) # noqa
+                # Both calls are one 'report_analysis' operation in LLM_USAGE,
+                # keyed by the simulation hash.
+                from core.llm import llm_scope
+                with llm_scope('report_analysis', user_id=user_id, ref_id=simulation_hash):
+                    # Part 1: Full Analysis
+                    with llm_scope(step='analysis'):
+                        gemini_prompt_text = get_gemini_analysis_prompt(full_sim_params, final_stats, simulation_currency, strategy_description)
+                        analysis = get_gemini_analysis(gemini_prompt_text, api_key) # noqa
 
-                # Part 2: Executive Summary
-                executive_summary_prompt = get_executive_summary_prompt(full_sim_params, final_stats, strategy_description, simulation_currency)
-                executive_summary_text = get_executive_summary_from_gemini(executive_summary_prompt, api_key)
+                    # Part 2: Executive Summary
+                    with llm_scope(step='executive_summary'):
+                        executive_summary_prompt = get_executive_summary_prompt(full_sim_params, final_stats, strategy_description, simulation_currency)
+                        executive_summary_text = get_executive_summary_from_gemini(executive_summary_prompt, api_key)
 
                 # --- Increment AI Credits After Successful LLM Analysis ---
                 # This is where we consume the Gemini API, so we increment credits here

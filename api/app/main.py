@@ -94,6 +94,7 @@ def _reconcile_orphaned_generation_runs() -> None:
 
 
 from app.routers import admin as admin_router
+from app.routers import admin_llm_usage as admin_llm_usage_router
 from app.routers import history as history_router
 from app.routers import home as home_router
 from app.routers import me as me_router
@@ -107,6 +108,7 @@ app.include_router(public_router.router)
 app.include_router(simulations_router.router)
 app.include_router(history_router.router)
 app.include_router(admin_router.router)
+app.include_router(admin_llm_usage_router.router)
 app.include_router(home_router.router)
 app.include_router(strategies_router.router)
 app.include_router(qa_router.router)

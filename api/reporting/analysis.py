@@ -1,10 +1,9 @@
 import logging
-import os
 from .content import get_methodology_description
 from core.strategy import TrinityStrategy, BuyBorrowDieStrategy
 from core.strategy_get_rich_stay_rich import GetRichStayRichStrategy
 from core.currency_config import format_currency_amount
-from core.llm import call_gemini_safe
+from core.llm import call_gemini_safe, model_for_tier
 
 try:
     from core.llm import call_gemini_safe
@@ -278,9 +277,10 @@ Let the strategy description guide your interpretation.
 """
     return prompt.strip()
 
-def get_gemini_analysis(prompt, api_key, analytics_tracking_info=None):
+def get_gemini_analysis(prompt, api_key):
+    """Sends a prompt to the Gemini API and returns the analysis text.
+    Usage/cost is recorded by core.llm against the caller's llm_scope."""
     logging.info("Sending prompt to Gemini API.")
-    """Sends a prompt to the Gemini API and returns the analysis text."""
     if not GEMINI_AVAILABLE:
         return "AI analysis skipped: The 'google-genai' library is not installed. Please run 'pip install google-genai'."
     
@@ -288,11 +288,10 @@ def get_gemini_analysis(prompt, api_key, analytics_tracking_info=None):
         return "AI analysis skipped: The Gemini API key is not configured. For Streamlit deployment, add 'GEMINI_API_KEY' to your secrets. For local execution, set it as an environment variable."
 
     try:
-        # Use centralized wrapper. Same GEMINI_MODEL_FAST override as the
-        # strategy-designer's fast tier (api/app/agents/llm.py) — one knob
-        # for both when a model is retired (gemini-2.0-flash was, 2026-09).
-        model_name = os.environ.get('GEMINI_MODEL_FAST', 'gemini-3.5-flash-lite')
-        text, error_msg, usage_meta = call_gemini_safe(model_name, prompt, api_key=api_key)
+        # Same fast tier (and GEMINI_MODEL_FAST override) as the strategy
+        # designer — one knob for both when a model is retired.
+        text, error_msg, _usage = call_gemini_safe(model_for_tier('fast'), prompt,
+                                                   api_key=api_key, tier='fast')
         
         if error_msg:
              logging.warning(f"AI Analysis blocked: {error_msg}")
@@ -302,26 +301,6 @@ def get_gemini_analysis(prompt, api_key, analytics_tracking_info=None):
              return "AI analysis unavailable: No response generated."
 
         logging.info("Successfully received analysis from Gemini.")
-        
-        # --- Analytics Tracking ---
-        if analytics_tracking_info and 'service' in analytics_tracking_info:
-            try:
-                service = analytics_tracking_info['service']
-                user_id = analytics_tracking_info.get('user_id')
-                operation = analytics_tracking_info.get('operation', 'analysis')
-                
-                # Use actual token counts if available, otherwise fallback to estimation
-                prompt_tokens = usage_meta.get('prompt_tokens', len(prompt) // 4) if usage_meta else len(prompt) // 4
-                completion_tokens = usage_meta.get('completion_tokens', len(text) // 4) if usage_meta else len(text) // 4
-                
-                service.track_ai_usage(
-                    user_id=user_id,
-                    operation=operation,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens
-                )
-            except Exception as e:
-                logging.warning(f"Failed to track AI analytics: {e}")
 
         # Replace markdown with simple line breaks for PDF
         return text.replace('**', '').replace('*', '')
