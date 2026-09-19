@@ -118,6 +118,24 @@ class UsersMixin:
             return []
 
     @log_db_call
+    def get_subscription_history(self, limit=100):
+        """Get tier-change audit trail, most recent first."""
+        try:
+            with self._connection_cursor(cursor_factory=extras.RealDictCursor, commit=False) as cursor:
+                cursor.execute("""
+                    SELECT sh.id, sh.user_id, u.email, sh.changed_from, sh.changed_to,
+                           sh.changed_at, sh.changed_by, sh.reason
+                    FROM SUBSCRIPTION_HISTORY sh
+                    JOIN USERS u ON sh.user_id = u.id
+                    ORDER BY sh.changed_at DESC
+                    LIMIT %s
+                """, (limit,))
+                return cursor.fetchall()
+        except Exception as e:
+            logging.error(f"Failed to get subscription history: {e}", exc_info=True)
+            return []
+
+    @log_db_call
     def delete_login_request(self, email):
         """Remove a login request."""
         try:
@@ -439,10 +457,16 @@ class UsersMixin:
         """Update user's tier."""
         try:
             with self._connection_cursor() as cursor:
+                cursor.execute("SELECT plan_tier FROM USERS WHERE id = %s", (user_id,))
+                row = cursor.fetchone()
+                previous_tier = row[0] if row else None
+
                 cursor.execute("UPDATE USERS SET plan_tier = %s, tier_set_at = CURRENT_TIMESTAMP, tier_set_by = %s WHERE id = %s",
                              (new_tier, changed_by, user_id))
-                cursor.execute("INSERT INTO SUBSCRIPTION_HISTORY (user_id, plan_tier, changed_to, changed_by, reason) VALUES (%s, %s, %s, %s, %s)",
-                             (user_id, new_tier, new_tier, changed_by, reason))
+                cursor.execute(
+                    "INSERT INTO SUBSCRIPTION_HISTORY (user_id, plan_tier, changed_from, changed_to, changed_by, reason) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (user_id, new_tier, previous_tier, new_tier, changed_by, reason))
         except Exception as e:
             logging.error(f"Failed: {e}", exc_info=True)
 
