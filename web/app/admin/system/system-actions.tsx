@@ -16,21 +16,9 @@ import { Label } from "@/components/ui/label";
 type ActionState = { state: "idle" | "busy" | "done" | "error"; note?: string };
 
 export function SystemActions() {
-  const [evals, setEvals] = useState<ActionState>({ state: "idle" });
   const [reset, setReset] = useState<ActionState>({ state: "idle" });
   const [password, setPassword] = useState("");
   const [confirmText, setConfirmText] = useState("");
-
-  async function runEvaluations() {
-    setEvals({ state: "busy" });
-    const res = await fetch("/api/bff/admin/evaluations/run", { method: "POST" });
-    if (res.ok) {
-      const body = await res.json();
-      setEvals({ state: "done", note: `Queued ${body.queued} evaluation jobs (worker must be running).` });
-    } else {
-      setEvals({ state: "error", note: "Failed to queue evaluations." });
-    }
-  }
 
   async function systemReset(e: React.FormEvent) {
     e.preventDefault();
@@ -55,24 +43,6 @@ export function SystemActions() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Leaderboard evaluations</CardTitle>
-          <CardDescription>
-            Re-evaluate all built-in and community strategies (queues one
-            background job per strategy).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex items-center gap-3">
-          <Button onClick={runEvaluations} disabled={evals.state === "busy"}>
-            {evals.state === "busy" ? "Queuing…" : "Re-run evaluations"}
-          </Button>
-          {evals.note && (
-            <p className="text-sm text-muted-foreground">{evals.note}</p>
-          )}
-        </CardContent>
-      </Card>
-
       <Card className="border-destructive/50">
         <CardHeader>
           <CardTitle className="text-destructive">Danger zone</CardTitle>

@@ -1098,8 +1098,11 @@ class StrategiesMixin:
                         cs.class_name,
                         cs.code,
                         cs.description,
-                        cs.parameters_json
+                        cs.parameters_json,
+                        cs.git_commit_sha
                     FROM CUSTOM_STRATEGIES cs
+                    WHERE cs.deleted_at IS NULL
+                      AND cs.user_id != 0  -- built-in copies are evaluated via the builtin path
                     ORDER BY cs.user_id, cs.strategy_name
                 """)
                 records = [dict(row) for row in cursor.fetchall()]
