@@ -128,7 +128,8 @@ class UsersMixin:
 
     @log_db_call
     def add_allowed_user(self, email, added_by=None, notes=None):
-        """Grant access to a user."""
+        """Grant access to a user. Returns False if the insert failed
+        (already-allowed is a success)."""
         try:
             with self._connection_cursor() as cursor:
                 cursor.execute("""
@@ -136,8 +137,10 @@ class UsersMixin:
                     VALUES (%s, %s,%s)
                     ON CONFLICT (email) DO NOTHING
                 """, (email.lower(), added_by, notes))
+            return True
         except Exception as e:
             logging.error(f"Failed to add allowed user: {e}", exc_info=True)
+            return False
 
     @log_db_call
     def remove_allowed_user(self, email):
@@ -202,7 +205,7 @@ class UsersMixin:
 
         except Exception as e:
             logging.error(f"Failed to delete users ({len(user_ids)} ids): {e}", exc_info=True)
-            return 0
+            raise
 
     @log_db_call
     def delete_user(self, email):
