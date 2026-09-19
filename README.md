@@ -6,6 +6,7 @@ Monte Carlo BTC/portfolio simulator — successor to the Streamlit-based
 - **[CLAUDE.md](CLAUDE.md)** — workflow rules (branching, review, merge policy, definition of done). Read before contributing.
 - **[PORT_PLAN.md](PORT_PLAN.md)** — architecture, decisions, and the wave-by-wave build tracker. Start here.
 - **[PARITY_REPORT.md](PARITY_REPORT.md)** — Streamlit-parity status and accepted differences.
+- **[LLM_COST_MODEL.md](LLM_COST_MODEL.md)** — LLM cost per operation, credit pricing, free-tier budget.
 - `api/` — FastAPI + the simulation engine (copied from `mymontecarlo@pre-port-detangled`)
 - `web/` — Next.js App Router + TypeScript + Tailwind + shadcn/ui + Better Auth
 

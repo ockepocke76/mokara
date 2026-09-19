@@ -79,3 +79,5 @@ keep them the same way here.)
   and the accepted remaining differences.
 - **[README.md](README.md)** — local run recipe (api + worker + web).
 - `W5_DESIGNER_UX.md` — UX spec for the agentic strategy designer (W5).
+- `LLM_COST_MODEL.md` — what an AI operation costs, the credit/pricing
+  model, and the free-tier budget; `/admin/llm-usage` is the live view.
