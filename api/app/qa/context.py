@@ -7,6 +7,7 @@ parameters, stats, and sampled paths). Prompts and the UI never branch on
 which one it was.
 """
 import inspect
+import logging
 import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -183,8 +184,7 @@ def from_simulation(simulation_hash: str, params: dict, stats: dict,
         source = params.get('custom_strategy_code')
         strategy_params = dict(params.get('custom_strategy_params') or {})
     else:
-        name, description, source = _builtin_strategy(strategy_key)
-        strategy_params = {}
+        name, description, source, strategy_params = _builtin_strategy(strategy_key, params)
 
     run_params = {k: params.get(k) for k in _RUN_PARAM_KEYS if params.get(k) is not None}
     parameters = {**strategy_params}
@@ -206,22 +206,27 @@ def from_simulation(simulation_hash: str, params: dict, stats: dict,
     )
 
 
-def _builtin_strategy(key: str | None) -> tuple[str, str, str | None]:
+def _builtin_strategy(key: str | None, params: dict) -> tuple[str, str, str | None, dict]:
+    """Name, description, source, and the values of the strategy's own
+    declared parameters as they were set for this run."""
     from reporting.content import STRATEGY_DESCRIPTIONS
 
     description = STRATEGY_DESCRIPTIONS.get(key or '', '')
     module_name, class_name = _BUILTIN_STRATEGIES.get(key or '', (None, None))
     source = None
+    strategy_params: dict = {}
     if module_name:
         import importlib
         try:
             cls = getattr(importlib.import_module(module_name), class_name)
             source = inspect.getsource(cls)
             description = description or (inspect.getdoc(cls) or '')
+            declared = cls(params).parameters or {}
+            strategy_params = {n: params[n] for n in declared if n in params}
         except Exception:
-            source = None
+            logging.exception("qa: could not introspect built-in strategy %s", key)
     name = (key or 'unknown').replace('_', ' ').title()
-    return name, description, source
+    return name, description, source, strategy_params
 
 
 def _sampled_traces(sampled_paths) -> list[dict]:
