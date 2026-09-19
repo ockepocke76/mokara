@@ -234,6 +234,13 @@ def test_selective_evaluation_and_status():
             json={"builtin_names": ["Nope"]},
         )
         assert r.status_code == 422
+        r = client.post(
+            "/admin/evaluations/run",
+            headers=headers,
+            json={"builtin_names": [], "custom_strategy_ids": [999999999]},
+        )
+        assert r.status_code == 422
+        assert "999999999" in r.json()["detail"]
     finally:
         with db._connection_cursor() as cur:
             cur.execute("DELETE FROM background_jobs WHERE id = %s", (job_id,))

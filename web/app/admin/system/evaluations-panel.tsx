@@ -68,19 +68,38 @@ export function EvaluationsPanel({ strategies }: { strategies: EvaluationStrateg
 
   const running = jobIds.length > 0 && (status?.running ?? true);
 
+  const [pollError, setPollError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!running) return;
     let cancelled = false;
+    let failures = 0;
+    let timer: ReturnType<typeof setInterval> | undefined;
     async function poll() {
-      const res = await fetch(
-        `/api/bff/admin/evaluations/status?job_ids=${encodeURIComponent(jobIds.join(","))}`,
-      );
-      if (!res.ok || cancelled) return;
-      const body: EvalStatus = await res.json();
-      setStatus(body);
+      try {
+        const res = await fetch(
+          `/api/bff/admin/evaluations/status?job_ids=${encodeURIComponent(jobIds.join(","))}`,
+        );
+        if (!res.ok) throw new Error(`status check failed (${res.status})`);
+        const body: EvalStatus = await res.json();
+        if (cancelled) return;
+        failures = 0;
+        setPollError(null);
+        setStatus(body);
+      } catch (err) {
+        if (cancelled) return;
+        failures += 1;
+        setPollError(err instanceof Error ? err.message : "status check failed");
+        if (failures >= 10) {
+          // Stop hammering a dead API; the jobs stay tracked in localStorage,
+          // so a reload resumes once it's back.
+          clearInterval(timer);
+          setPollError("Lost contact with the API — reload to resume tracking.");
+        }
+      }
     }
     poll();
-    const timer = setInterval(poll, 1000);
+    timer = setInterval(poll, 1000);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -175,7 +194,9 @@ export function EvaluationsPanel({ strategies }: { strategies: EvaluationStrateg
           <span className="text-sm text-muted-foreground">
             one job per strategy · worker must be running
           </span>
-          {error && <span className="text-sm text-destructive">{error}</span>}
+          {(error ?? pollError) && (
+            <span className="text-sm text-destructive">{error ?? pollError}</span>
+          )}
         </div>
 
         {jobIds.length > 0 && status && (

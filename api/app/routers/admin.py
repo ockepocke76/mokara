@@ -511,10 +511,17 @@ def run_evaluations(body: Optional[RunEvaluations] = None) -> dict:
         if job_id:
             job_ids.append(job_id)
 
-    customs = db.get_all_custom_strategies_for_admin() or []
     if selective:
-        wanted = set(body.custom_strategy_ids or [])
-        customs = [cs for cs in customs if cs.get("id") in wanted]
+        # Straight from the DB, not the 60s-cached admin list: a selection
+        # must never be silently trimmed.
+        wanted = list(dict.fromkeys(body.custom_strategy_ids or []))
+        customs = [db.get_custom_strategy(sid) for sid in wanted]
+        missing = [sid for sid, cs in zip(wanted, customs)
+                   if not cs or cs.get("deleted_at") or cs.get("user_id") == 0]
+        if missing:
+            raise HTTPException(status_code=422, detail=f"Unknown custom strategies: {missing}")
+    else:
+        customs = db.get_all_custom_strategies_for_admin() or []
     for cs in customs:
         job_id = BackgroundManager.start_strategy_evaluation(
             strategy_name=cs.get("strategy_name"),
