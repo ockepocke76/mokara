@@ -3,6 +3,7 @@ End-to-end tests for the W5 strategy-generation graph, run synchronously
 against the real local Postgres (checkpointer + event log) with the canned
 LLM provider — no API key, deterministic.
 """
+import json
 import os
 import uuid
 
@@ -182,6 +183,26 @@ def test_missing_state_metrics_trigger_rework_then_pass(monkeypatch):
     failed = [e for e in sg.list_events(run_id)
               if e['type'] == 'stage_progress' and e['payload'].get('check') == 'state_metrics']
     assert failed and 'state_withdrawal_target' in failed[0]['payload']['message']
+
+
+def test_parameter_only_evolve_ignores_unmet_state_metrics(monkeypatch):
+    """A parameter-only evolve cannot touch execute_strategy_for_year, so a
+    plan that declares a state metric the seed never emits must not rework."""
+    def llm(prompt, tier='fast', json_mode=False):
+        text = fake_llm_call(prompt, tier=tier, json_mode=json_mode)
+        if prompt.startswith('TASK: evolve_plan'):
+            plan = json.loads(text)
+            plan['state_metrics'] = [{'name': 'state_never_emitted', 'description': 'x'}]
+            return json.dumps(plan)
+        return text
+
+    monkeypatch.setattr('app.agents.runner.get_llm_call', lambda: llm)
+    user_id = _new_user()
+    sid, _ = _seed_strategy(user_id, name="Param Only")
+    run_id = _start_evolve(user_id, sid, "change the withdrawal rate default to 5%")
+    assert sg.get_run(run_id)['status'] == 'needs_input'
+    assert not [e for e in sg.list_events(run_id)
+                if e['type'] == 'stage_progress' and e['payload'].get('check') == 'state_metrics']
 
 
 def _seed_strategy(user_id: int, name: str = "Seed FIRE"):

@@ -471,11 +471,21 @@ def _finite_or_none(v):
         return None
 
 
-def _missing_state_metrics(plan: dict, result: dict) -> list[str]:
-    required = [m.get('name') for m in (plan or {}).get('state_metrics', [])
+def _missing_state_metrics(state: GenState, result: dict) -> list[str]:
+    """Declared state metrics the test flight never saw. Enforced only where
+    a rework could add them: on an evolve, the minimal-edit guard forbids
+    touching execute_strategy_for_year unless a planned edit targets it."""
+    plan = state.get('plan') or {}
+    required = [m.get('name') for m in plan.get('state_metrics', [])
                 if isinstance(m, dict) and isinstance(m.get('name'), str)]
     if not required:
         return []
+    if _minimal_evolution(state):
+        targets = {str(e.get('target')).strip() for e in plan.get('edits', [])
+                   if isinstance(e, dict) and e.get('target')}
+        if (state['spec'].get('change_scope') == 'parameter_only'
+                or 'execute_strategy_for_year' not in targets):
+            return []
     seen: set[str] = set()
     for p in result.get('random_paths', []):
         seen.update(_state_keys(p.get('yearly_results', [])))
@@ -559,7 +569,7 @@ def test_sim(state: GenState, config) -> dict:
         return {'rework_stage': 'test_sim',
                 'rework_reason': 'the strategy crashed during the test simulation',
                 'rework_feedback': f"The test simulation failed at runtime:\n{result.get('error')}"}
-    missing = _missing_state_metrics(state.get('plan'), result)
+    missing = _missing_state_metrics(state, result)
     if missing:
         _emit(state, 'stage_progress', stage='test_flight', check='state_metrics',
               passed=False, message=f"missing state metrics: {', '.join(missing)}")
