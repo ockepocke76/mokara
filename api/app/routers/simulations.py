@@ -377,18 +377,6 @@ def create_simulation(
     if errors:
         raise HTTPException(status_code=422, detail=errors)
 
-    from datetime import datetime
-
-    from core.analytics import AnalyticsService
-
-    AnalyticsService(db).track_simulation_run(
-        user_id=user["id"],
-        asset=full.get("asset_model", "unknown"),
-        strategy=full.get("custom_strategy_name") or full.get("strategy", "unknown"),
-        duration=full.get("num_years", 0),
-        timestamp=datetime.now(),
-    )
-
     simulation_hash = generate_simulation_hash(full)
     cache_status, results_id, stored_hashes = db.check_simulation_cache(simulation_hash)
 
@@ -431,6 +419,20 @@ def create_simulation(
     job_id = BackgroundManager.start_simulation(full, user=user)
     if not job_id:
         raise HTTPException(status_code=500, detail="Failed to queue simulation job")
+
+    # Counted here, not on request, so cache hits and duplicate submits of an
+    # in-flight run don't inflate the analytics (old app tracked completions).
+    from datetime import datetime
+
+    from core.analytics import AnalyticsService
+
+    AnalyticsService(db).track_simulation_run(
+        user_id=user["id"],
+        asset=full.get("asset_model", "unknown"),
+        strategy=full.get("custom_strategy_name") or full.get("strategy", "unknown"),
+        duration=full.get("num_years", 0),
+        timestamp=datetime.now(),
+    )
     return {"status": "queued", "simulation_hash": simulation_hash, "job_id": job_id}
 
 

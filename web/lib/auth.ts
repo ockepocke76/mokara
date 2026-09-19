@@ -26,12 +26,13 @@ export const auth = betterAuth({
     session: {
       create: {
         // A new session = a login. Recorded as a product-analytics event on
-        // the API; failures are logged and never block sign-in.
+        // the API. Fire-and-forget with a short timeout: analytics must never
+        // delay or block sign-in, even with the API down.
         after: async (session, ctx) => {
           try {
             const user = await ctx?.context.internalAdapter.findUserById(session.userId);
             if (!user?.email) return;
-            const res = await fetch(`${API_URL}/me/login-event`, {
+            void fetch(`${API_URL}/me/login-event`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
@@ -40,8 +41,12 @@ export const auth = betterAuth({
                 ...(user.name ? { "X-User-Name": user.name } : {}),
               },
               body: JSON.stringify({ method: loginMethod(ctx?.path) }),
-            });
-            if (!res.ok) console.warn(`login-event: API responded ${res.status}`);
+              signal: AbortSignal.timeout(2000),
+            })
+              .then((res) => {
+                if (!res.ok) console.warn(`login-event: API responded ${res.status}`);
+              })
+              .catch((err) => console.warn("login-event: failed to record", err));
           } catch (err) {
             console.warn("login-event: failed to record", err);
           }
