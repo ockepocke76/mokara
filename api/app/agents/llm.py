@@ -106,7 +106,8 @@ class {class_name}(BaseStrategy):
     def execute_strategy_for_year(self, year, portfolio_state, portfolio_history, desired_drawdown, mandatory_costs):
         need = desired_drawdown + mandatory_costs
         return {{'amount_sold': need, 'amount_bought': 0.0,
-                 'debt_increase': 0.0, 'debt_repayment': 0.0, 'amount_contributed': 0.0}}
+                 'debt_increase': 0.0, 'debt_repayment': 0.0, 'amount_contributed': 0.0,
+                 'state_withdrawal_target': desired_drawdown}}
 
     def evaluation_category(self):
         return 'WITHDRAWAL_ONLY'
@@ -185,6 +186,8 @@ def fake_llm_call(prompt: str, tier: str = 'fast', json_mode: bool = False) -> s
                       "Fund withdrawals by selling assets; never borrow."],
             "parameters": [{"name": "withdrawal_rate", "default": 0.04, "min": 0.01,
                             "max": 0.10, "description": "Annual withdrawal rate"}],
+            "state_metrics": [{"name": "state_withdrawal_target",
+                               "description": "The inflation-adjusted withdrawal the year targeted"}],
             "self_check": "The rules cover initialization, annual withdrawal sizing, and funding."})
     if task == 'generate':
         name_match = re.search(r"named '(\w+)'", prompt)
@@ -207,4 +210,34 @@ def fake_llm_call(prompt: str, tier: str = 'fast', json_mode: bool = False) -> s
             "explanation": "A fixed-rate, inflation-adjusted withdrawal strategy funded by asset sales. "
                            "It never borrows and holds no cash buffer.",
             "notes": "Behavior matched the blueprint in all test paths."})
+    if task == 'qa_triage':
+        question = _fake_question(prompt)
+        on_topic = any(word in question for word in _FAKE_ON_TOPIC_WORDS)
+        return json.dumps({"on_topic": on_topic,
+                           "reason": "mentions the strategy's behavior" if on_topic
+                           else "not about this strategy"})
+    if task == 'qa_answer':
+        question = _fake_question(prompt)
+        wants_change = any(w in question for w in ('change', 'fix', 'how would', 'what would'))
+        return json.dumps({
+            "answer_md": "The strategy sold exactly its inflation-adjusted withdrawal "
+                         "each year (see `state_withdrawal_target` in the trace), so the "
+                         "outcome tracks the market path rather than any rule firing.",
+            "suggested_change": ({"summary": "Lower the withdrawal rate to 3.5%",
+                                  "refine_feedback": "Change the withdrawal_rate default "
+                                                     "from 0.04 to 0.035."}
+                                 if wants_change else None),
+            "confidence": "high"})
     raise LLMError(f"fake_llm_call has no canned response for task '{task}'")
+
+
+_FAKE_ON_TOPIC_WORDS = ('strategy', 'withdraw', 'transition', 'year', 'portfolio',
+                        'why', 'net worth', 'sell', 'sold', 'borrow', 'trigger',
+                        'phase', 'rate', 'rule', 'path', 'ruin', 'change', 'state_')
+
+
+def _fake_question(prompt: str) -> str:
+    # triage: 'Question: "..."' line; answer: text under the '## Question' heading.
+    marker = "## Question\n" if "## Question\n" in prompt else "Question:"
+    tail = prompt.rsplit(marker, 1)[-1] if marker in prompt else prompt
+    return tail.strip().split("\n\n", 1)[0].strip().lower()

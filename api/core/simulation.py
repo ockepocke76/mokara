@@ -12,6 +12,26 @@ class SimulationResult:
         self.annual_returns = annual_returns
         self.metadata = metadata
 
+
+STATE_KEY_PREFIX = 'state_'
+
+
+def strategy_state_from_actions(strategy_actions: dict) -> dict:
+    """Decision-state a strategy chose to expose for the year (`state_*` keys
+    on its action dict), coerced to floats so they aggregate like every other
+    yearly metric. Non-numeric or non-finite values are dropped."""
+    state = {}
+    for key, value in (strategy_actions or {}).items():
+        if not key.startswith(STATE_KEY_PREFIX) or isinstance(value, str):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(number):
+            state[key] = number
+    return state
+
 def run_simulation(params, returns_sources=None, mu=None, sigma=None, progress_queue=None, strategy_map=None, progress_range=(0.0, 1.0), strategy_factory=None):
     """Runs a Monte Carlo simulation based on the provided parameters.
     
@@ -155,8 +175,9 @@ def run_simulation(params, returns_sources=None, mu=None, sigma=None, progress_q
                 shortfall_policy
             )
 
-            portfolio.record_yearly_snapshot(year, transaction_results, cash_interest)
-        
+            portfolio.record_yearly_snapshot(year, transaction_results, cash_interest,
+                                             strategy_state=strategy_state_from_actions(strategy_actions))
+
         all_simulations.append(SimulationResult(yearly_results=portfolio.history, annual_returns=annual_returns_for_sim, metadata=metadata))
 
     logging.info("Simulation run finished.")

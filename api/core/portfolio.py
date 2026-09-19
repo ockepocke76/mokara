@@ -253,9 +253,12 @@ class Portfolio:
             'amount_contributed': amount_contributed,
         }
 
-    def record_yearly_snapshot(self, year: int, transaction_results: dict, cash_interest: float):
+    def record_yearly_snapshot(self, year: int, transaction_results: dict, cash_interest: float,
+                               strategy_state: dict | None = None):
         """
         Records the end-of-year state of the portfolio to its history.
+        `strategy_state` carries the strategy's own `state_*` decision metrics
+        for the year (see simulation.strategy_state_from_actions).
         """
         snapshot = {
             'Year': year,
@@ -276,4 +279,6 @@ class Portfolio:
             'Accumulated Fees': self.accumulated_fees,
             'Cash Interest': cash_interest
         }
+        if strategy_state:
+            snapshot.update(strategy_state)
         self.history.append(snapshot)

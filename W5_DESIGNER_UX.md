@@ -164,6 +164,26 @@ If the strategy is faithful-but-underperforming, this is where it is said
 test it trailed buy-and-hold. Adjust the blueprint, or save and run the
 full evaluation."
 
+### 3.8a Ask about this strategy (Q&A panel)
+Below the decision card once a test flight exists — and it stays after
+save (the build log is persisted, so is the conversation). One thread per
+build; an evolve run is its own build with its own thread.
+- Free-text question + three starter chips ("Why did the worst path end
+  where it did?", "Which rule never fired…", "What would need to change…").
+- Every question is triaged first. Off-topic gets a fixed, quiet refusal
+  ("I can only answer questions about this strategy…") and costs nothing.
+- Answers are Markdown, grounded in the code, the test-flight traces and
+  the strategy's own `state_*` decision metrics (cited by name and year).
+  **This is the one place the copy may be prescriptive** — "what would
+  need to change?" gets a concrete parameter/rule change.
+- When the answer proposes a change AND the run is paused at review, a
+  **Use as refine feedback** button drops the change into the
+  Request-changes textarea (scrolled into view, focused) — the user still
+  presses Request changes. After save the button disappears; the thread
+  stays readable.
+- The same panel serves completed simulation reports ("Ask about these
+  results") without the refine button.
+
 ### 3.9 Failure end-state (retry cap hit)
 No dead ends. Card: "I couldn't get this working after 3 attempts."
 - What was tried (attempt list, collapsed), which check kept failing.
@@ -203,7 +223,10 @@ evolve).
 ## 6. Copy rules (enforced in prompts AND in UI strings)
 
 - Descriptive, never advisory. Banned framings: "you should", "best",
-  "recommended strategy", "this will earn".
+  "recommended strategy", "this will earn". Sole exception: Q&A answers
+  (3.8a) when the user asks what would need to change — proposing a
+  specific parameter value or rule change is the answer, not advice about
+  the user's future.
 - Every number that comes from 10 paths carries its uncertainty label.
 - Jargon gets a glossary tooltip or a plainer word.
 - The agent speaks in first person about *its process* ("I assumed…",

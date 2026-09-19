@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
-import { apiFetch } from "@/lib/api";
+import { QaPanel } from "@/components/qa-panel";
+import { apiFetch, getViewer } from "@/lib/api";
 import { ReportView, type ReportItem } from "./report-view";
 import { PdfButton } from "./pdf-button";
 
@@ -14,9 +15,10 @@ export default async function SimulationResultsPage({
 }) {
   const { hash } = await params;
 
-  const [reportRes, resultsRes] = await Promise.all([
+  const [reportRes, resultsRes, viewer] = await Promise.all([
     apiFetch(`/simulations/${encodeURIComponent(hash)}/report`),
     apiFetch(`/simulations/${encodeURIComponent(hash)}/results`),
+    getViewer(),
   ]);
   if (reportRes.status === 404) notFound();
   if (!reportRes.ok) throw new Error(`report fetch failed: ${reportRes.status}`);
@@ -47,6 +49,15 @@ export default async function SimulationResultsPage({
         <PdfButton hash={hash} />
       </div>
       <ReportView items={report.items} />
+      {viewer.authenticated && viewer.allowed !== false && (
+        <section className="mt-10">
+          <QaPanel
+            subjectType="simulation"
+            subjectId={hash}
+            title="Ask about these results"
+          />
+        </section>
+      )}
     </main>
   );
 }

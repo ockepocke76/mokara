@@ -108,6 +108,13 @@ pass `theme='light'` for visual coherence with the rest of the app.
 sidebar had an auth widget; the new app has the header user menu instead.
 Same capabilities (sign in/out, settings), different placement.
 
+**New, no Streamlit counterpart — strategy Q&A (2026-09-19).** The old
+app's only AI narrative about a run was the fixed Gemini analysis text.
+The new app adds a question-and-answer panel on the designer's build and
+on every completed report, grounded in the strategy's code and the run's
+traces. Nothing in the old app to compare against; the existing Gemini
+narrative is kept and fed to the Q&A as prior context.
+
 ## Not ported anywhere (dead by design)
 
 Compare tab (decision 2026-09-06); Streamlit machinery (session-state

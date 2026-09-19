@@ -31,6 +31,7 @@ from langgraph.types import interrupt
 
 from app.agents import prompts, retrieval
 from app.agents.llm import extract_description_and_code, parse_json_response
+from core.simulation import STATE_KEY_PREFIX
 from db import strategy_generation as sg
 
 MAX_ATTEMPTS = 3        # automatic rework rounds (validate/static/analyze failures)
@@ -444,10 +445,51 @@ def _condense_paths(result: dict) -> list[dict]:
                 'years': [y['Year'] for y in yearly]}
         for key, column in _PATH_SERIES.items():
             path[key] = [_round_finite(y.get(column)) for y in yearly]
+        state_keys = _state_keys(yearly)
+        if state_keys:
+            path['state'] = {k: [_finite_or_none(y.get(k)) for y in yearly]
+                             for k in state_keys}
         if is_backtest:
             path['is_backtest'] = True
         paths.append(path)
     return paths
+
+
+def _state_keys(yearly: list[dict]) -> list[str]:
+    """The strategy's own `state_*` metrics present in a path's yearly rows
+    (year 0 carries none — the engine records them from year 1)."""
+    keys: set[str] = set()
+    for y in yearly:
+        keys.update(k for k in y if k.startswith(STATE_KEY_PREFIX))
+    return sorted(keys)
+
+
+def _finite_or_none(v):
+    try:
+        return v if math.isfinite(v) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _missing_state_metrics(state: GenState, result: dict) -> list[str]:
+    """Declared state metrics the test flight never saw. Enforced only where
+    a rework could add them: on an evolve, the minimal-edit guard forbids
+    touching execute_strategy_for_year unless a planned edit targets it."""
+    plan = state.get('plan') or {}
+    required = [m.get('name') for m in plan.get('state_metrics', [])
+                if isinstance(m, dict) and isinstance(m.get('name'), str)]
+    if not required:
+        return []
+    if _minimal_evolution(state):
+        targets = {str(e.get('target')).strip() for e in plan.get('edits', [])
+                   if isinstance(e, dict) and e.get('target')}
+        if (state['spec'].get('change_scope') == 'parameter_only'
+                or 'execute_strategy_for_year' not in targets):
+            return []
+    seen: set[str] = set()
+    for p in result.get('random_paths', []):
+        seen.update(_state_keys(p.get('yearly_results', [])))
+    return [name for name in required if name not in seen]
 
 
 # The engine seeds the process-global numpy RNG; the shared reentrant lock
@@ -527,6 +569,16 @@ def test_sim(state: GenState, config) -> dict:
         return {'rework_stage': 'test_sim',
                 'rework_reason': 'the strategy crashed during the test simulation',
                 'rework_feedback': f"The test simulation failed at runtime:\n{result.get('error')}"}
+    missing = _missing_state_metrics(state, result)
+    if missing:
+        _emit(state, 'stage_progress', stage='test_flight', check='state_metrics',
+              passed=False, message=f"missing state metrics: {', '.join(missing)}")
+        return {'rework_stage': 'test_sim',
+                'rework_reason': 'the strategy did not record its required state metrics',
+                'rework_feedback': (
+                    f"The yearly history never contained these required state "
+                    f"metrics: {missing}. Return each of them (numeric/boolean) "
+                    f"from execute_strategy_for_year on every code path, exact names.")}
 
     # The condensed per-path series go only into the emitted artifact (the
     # UI's copy) — keeping them out of graph state avoids re-checkpointing
@@ -535,9 +587,11 @@ def test_sim(state: GenState, config) -> dict:
                    'num_paths': TEST_PATHS, 'num_years': TEST_YEARS,
                    'test_capital': capital['initial_investment'],
                    'worst_path_trace': _worst_path_trace(result)}
+    paths = _sanitize(_condense_paths(result))
     _emit(state, 'stage_completed', stage='test_flight',
           artifact={'summary_stats': test_result['summary_stats'],
-                    'paths': _sanitize(_condense_paths(result)),
+                    'paths': paths,
+                    'state_metrics': (state.get('plan') or {}).get('state_metrics', []),
                     'baseline': baseline or None,
                     'num_paths': TEST_PATHS, 'num_years': TEST_YEARS})
     return {'test_result': test_result, 'baseline_result': baseline}
@@ -561,10 +615,12 @@ def _worst_path_trace(result: dict) -> list[dict]:
             worst_final, worst = final, yearly
     if not worst:
         return []
+    state_keys = _state_keys(worst)
     return _sanitize([
         {'year': y['Year'],
          **{field: _round_finite(y.get(_PATH_SERIES[series_key]))
-            for field, series_key in _TRACE_FIELDS.items()}}
+            for field, series_key in _TRACE_FIELDS.items()},
+         **{k: _finite_or_none(y.get(k)) for k in state_keys if k in y}}
         for y in worst])
 
 
