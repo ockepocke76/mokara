@@ -166,3 +166,36 @@ def test_tier_change_unknown_user_is_404_and_audited_from():
     r = client.get("/admin/stats", headers=headers)
     assert r.status_code == 200
     assert all(u["email"] != "system@btc-simulator.internal" for u in r.json()["top_by_strategies"])
+
+
+def test_public_toggle_is_scoped_to_admin_owned_strategies():
+    from db.database import db
+
+    admin_email, admin_id = _new_user(tier="ADMIN")
+    user_email, user_id = _new_user()
+    headers = {**SECRET, "X-User-Email": admin_email}
+
+    def make(owner_id, name):
+        assert db.save_custom_strategy(
+            owner_id, name, "S", "d", None, "class S:\n    pass", "{}")
+        return next(s["id"] for s in db.get_user_custom_strategies(owner_id) if s["strategy_name"] == name)
+
+    theirs = make(user_id, f"private-{uuid.uuid4().hex[:6]}")
+    mine = make(admin_id, f"demo-{uuid.uuid4().hex[:6]}")
+    try:
+        r = client.post(f"/admin/strategies/{theirs}/public", headers=headers, json={"is_public": True})
+        assert r.status_code == 404
+        assert not db.get_custom_strategy(theirs)["is_public"]
+
+        r = client.post(f"/admin/strategies/{mine}/public", headers=headers, json={"is_public": True})
+        assert r.status_code == 200
+        assert db.get_custom_strategy(mine)["is_public"]
+        assert any(s["id"] == mine and s["is_public"]
+                   for s in client.get("/admin/demo-content", headers=headers).json()["strategies"])
+        assert client.post("/admin/strategies/999999999/public", headers=headers,
+                           json={"is_public": True}).status_code == 404
+        assert client.post("/admin/simulations/no-such-hash/public", headers=headers,
+                           json={"is_public": True}).status_code == 404
+    finally:
+        client.post(f"/admin/strategies/{mine}/public", headers=headers, json={"is_public": False})
+        db.delete_users_by_id([user_id, admin_id])

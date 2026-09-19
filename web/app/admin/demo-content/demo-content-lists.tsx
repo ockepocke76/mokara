@@ -91,7 +91,10 @@ export function DemoContentLists({
                   )}
                 </div>
                 <div className="truncate text-xs text-muted-foreground">
-                  {s.email} · {new Date(s.timestamp).toLocaleDateString()}
+                  {s.email} ·{" "}
+                  <time dateTime={s.timestamp} suppressHydrationWarning>
+                    {new Date(s.timestamp).toLocaleDateString()}
+                  </time>
                 </div>
               </div>
               <Checkbox
@@ -133,7 +136,10 @@ export function DemoContentLists({
                   )}
                 </div>
                 <div className="truncate text-xs text-muted-foreground">
-                  {s.email} · {new Date(s.created_at).toLocaleDateString()}
+                  {s.email} ·{" "}
+                  <time dateTime={s.created_at} suppressHydrationWarning>
+                    {new Date(s.created_at).toLocaleDateString()}
+                  </time>
                 </div>
               </div>
               <Checkbox

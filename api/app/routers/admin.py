@@ -390,20 +390,28 @@ class SetPublic(BaseModel):
     is_public: bool
 
 
+# Only content owned by an ADMIN account may be curated as demo content —
+# the toggles must never be able to expose a regular user's private work.
 @router.post("/simulations/{simulation_hash}/public")
 def set_simulation_public(simulation_hash: str, body: SetPublic) -> dict:
+    from db.cache import get_user_simulations_cached
     from db.database import db
 
-    conn = db.get_connection()
-    try:
-        cursor = conn.cursor()
+    with db._connection_cursor() as cursor:
         cursor.execute(
-            "UPDATE CACHED_SIMULATIONS SET is_public = %s WHERE simulation_hash = %s",
+            """UPDATE CACHED_SIMULATIONS SET is_public = %s
+               WHERE simulation_hash = %s
+                 AND EXISTS (
+                     SELECT 1 FROM USER_SIMULATION_HISTORY ush
+                     JOIN USERS u ON ush.user_id = u.id
+                     WHERE ush.simulation_hash = CACHED_SIMULATIONS.simulation_hash
+                       AND ush.is_removed = FALSE AND u.plan_tier = 'ADMIN')""",
             (body.is_public, simulation_hash),
         )
-        conn.commit()
-    finally:
-        db.release_connection(conn)
+        updated = cursor.rowcount
+    if not updated:
+        raise HTTPException(status_code=404, detail="No admin-owned simulation with that hash")
+    get_user_simulations_cached.clear()
     return {"simulation_hash": simulation_hash, "is_public": body.is_public}
 
 
@@ -411,16 +419,16 @@ def set_simulation_public(simulation_hash: str, body: SetPublic) -> dict:
 def set_strategy_public(strategy_id: int, body: SetPublic) -> dict:
     from db.database import db
 
-    conn = db.get_connection()
-    try:
-        cursor = conn.cursor()
+    with db._connection_cursor() as cursor:
         cursor.execute(
-            "UPDATE CUSTOM_STRATEGIES SET is_public = %s WHERE id = %s",
+            """UPDATE CUSTOM_STRATEGIES SET is_public = %s
+               WHERE id = %s AND deleted_at IS NULL
+                 AND user_id IN (SELECT id FROM USERS WHERE plan_tier = 'ADMIN')""",
             (body.is_public, strategy_id),
         )
-        conn.commit()
-    finally:
-        db.release_connection(conn)
+        updated = cursor.rowcount
+    if not updated:
+        raise HTTPException(status_code=404, detail="No admin-owned strategy with that id")
     return {"strategy_id": strategy_id, "is_public": body.is_public}
 
 
