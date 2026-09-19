@@ -113,6 +113,20 @@ def test_answer_prompt_includes_history_code_and_traces(build):
     assert 'cite them by name and year' in prompt  # state metrics present
 
 
+def test_provider_failure_persists_nothing_and_maps_to_502(build):
+    user, run_id = build
+    before = len(service.get_thread(user, 'generation_run', run_id)['messages'])
+
+    def down(prompt, tier='fast', json_mode=False):
+        from app.agents.llm import LLMError
+        raise LLMError("quota exceeded")
+
+    with pytest.raises(service.QAError) as e:
+        service.ask(user, 'generation_run', run_id, "why did it sell?", llm_call=down)
+    assert e.value.status_code == 502 and 'quota' in e.value.detail
+    assert len(service.get_thread(user, 'generation_run', run_id)['messages']) == before
+
+
 def test_other_users_build_is_not_found(build):
     _owner, run_id = build
     stranger = _user()

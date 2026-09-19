@@ -7,7 +7,7 @@ Flow per question: resolve the subject (ownership + context) -> triage
 """
 import logging
 
-from app.agents.llm import get_llm_call, parse_json_response
+from app.agents.llm import LLMError, get_llm_call, parse_json_response
 from app.qa import prompts
 from app.qa.context import QAContext, from_generation_run, from_simulation
 from db import qa as qa_db
@@ -98,19 +98,21 @@ def ask(user: dict, subject_type: str, subject_id: str, question: str,
 
     thread_id = qa_db.get_or_create_thread(user['id'], subject.subject_type, subject.subject_id)
     history = qa_db.list_messages(thread_id, limit=HISTORY_TURNS)
-    user_message = qa_db.append_message(thread_id, 'user', question)
 
-    triage = _json(llm_call(prompts.triage_prompt(context, question), tier='fast', json_mode=True))
+    # Both turns are written only once there is an answer: a provider failure
+    # must not leave a dangling question the retry would duplicate.
+    triage = _json(_call(llm_call, prompts.triage_prompt(context, question), 'fast'))
     if not triage.get('on_topic'):
+        user_message = qa_db.append_message(thread_id, 'user', question)
         assistant = qa_db.append_message(thread_id, 'assistant', prompts.REFUSAL,
                                          on_topic=False, llm_calls=1)
         return _result(thread_id, user_message, assistant, subject)
 
-    answer = _json(llm_call(prompts.answer_prompt(context, history, question),
-                            tier='strong', json_mode=True))
+    answer = _json(_call(llm_call, prompts.answer_prompt(context, history, question), 'strong'))
     answer_md = str(answer.get('answer_md') or '').strip()
     if not answer_md:
         raise QAError(502, "The model returned an empty answer — try again")
+    user_message = qa_db.append_message(thread_id, 'user', question)
     assistant = qa_db.append_message(
         thread_id, 'assistant', answer_md, on_topic=True, llm_calls=2,
         suggested_change=_suggested_change(answer.get('suggested_change')))
@@ -119,6 +121,13 @@ def ask(user: dict, subject_type: str, subject_id: str, question: str,
     except Exception:
         logging.exception("qa: failed to charge AI credit for user %s", user['id'])
     return _result(thread_id, user_message, assistant, subject)
+
+
+def _call(llm_call, prompt: str, tier: str) -> str:
+    try:
+        return llm_call(prompt, tier=tier, json_mode=True)
+    except LLMError as e:
+        raise QAError(502, f"The model is unavailable right now: {e}") from e
 
 
 def _json(text: str) -> dict:
