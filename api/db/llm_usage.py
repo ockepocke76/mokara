@@ -85,6 +85,16 @@ _OPERATIONS_CTE = """
 """
 
 
+def models_used() -> list[str]:
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT model FROM LLM_USAGE ORDER BY model")
+        return [row[0] for row in cursor.fetchall()]
+    finally:
+        db.release_connection(conn)
+
+
 def operation_stats(window: int = 100) -> list[dict]:
     """Per operation type: n / mean / median / p90 / max cost and mean token
     mix over the latest `window` operations of that type."""

@@ -24,20 +24,29 @@ def usage_summary(
 ) -> dict:
     """Per-operation cost stats over the latest `window` operations of each
     type, plus spend totals over the last `days`."""
-    from core.llm_pricing import PRICES, price_for
+    import os
+
+    from core.llm_pricing import price_for
     from db import llm_usage
 
+    # Price list for the models that matter: the two configured tiers plus
+    # anything that has actually been called (an override, a retired default).
+    models = {
+        os.environ.get('GEMINI_MODEL_STRONG', 'gemini-3.8-flash'),
+        os.environ.get('GEMINI_MODEL_FAST', 'gemini-3.5-flash-lite'),
+        *llm_usage.models_used(),
+    }
     return {
         "window": window,
         "operations": llm_usage.operation_stats(window=window),
         "totals": llm_usage.totals(days=days),
         "prices": {
-            model: {
-                "input": p.input, "output": p.output, "cached": p.cached,
-                "effective_from": p.effective_from.isoformat(),
-            }
-            for model in PRICES
-            if (p := price_for(model)) is not None
+            model: (
+                {"input": p.input, "output": p.output, "cached": p.cached,
+                 "effective_from": p.effective_from.isoformat()}
+                if (p := price_for(model)) is not None else None
+            )
+            for model in sorted(models)
         },
     }
 
