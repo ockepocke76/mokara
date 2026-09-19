@@ -11,13 +11,14 @@
  */
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { QaPanel } from "@/components/qa-panel";
 
 import { RunEvent, RunModel, STAGES, STAGE_LABELS, buildModel } from "../model";
 import {
@@ -227,7 +228,7 @@ export function Designer({
         {seedStrategy && (
           <Badge variant="outline">Based on: {seedStrategy.strategy_name}</Badge>
         )}
-        <BuildLog model={model} busy={busy} onResume={resume} />
+        <BuildLog model={model} runId={runId} busy={busy} onResume={resume} />
       </div>
     </div>
   );
@@ -346,10 +347,12 @@ function StageRail({ model }: { model: RunModel }) {
 
 function BuildLog({
   model,
+  runId,
   busy,
   onResume,
 }: {
   model: RunModel;
+  runId: string;
   busy: boolean;
   onResume: (payload: Record<string, unknown>) => void;
 }) {
@@ -357,6 +360,17 @@ function BuildLog({
   const attemptNote = lastAttempt
     ? `Attempt ${lastAttempt.attempt} of ${lastAttempt.max} — fixing: ${lastAttempt.reason}`
     : null;
+  // Refine feedback lives here so the Q&A panel can hand a proposed change
+  // to the review card's textarea.
+  const [feedback, setFeedback] = useState("");
+  const feedbackRef = useRef<HTMLTextAreaElement | null>(null);
+  const atReview = model.needsInput?.kind === "review";
+
+  function useAsFeedback(text: string) {
+    setFeedback(text);
+    feedbackRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+    feedbackRef.current?.focus();
+  }
 
   return (
     <div className="space-y-4">
@@ -390,11 +404,21 @@ function BuildLog({
           revisionsLeft={model.needsInput.revisions_left}
           busy={busy}
           onResume={onResume}
+          feedback={feedback}
+          setFeedback={setFeedback}
+          feedbackRef={feedbackRef}
         />
       )}
       {model.terminal && <TerminalCard model={model} />}
       {!model.terminal && !model.needsInput && (
         <p className="text-sm text-muted-foreground">Working…</p>
+      )}
+      {model.test && model.terminal?.type !== "run_discarded" && (
+        <QaPanel
+          subjectType="generation_run"
+          subjectId={runId}
+          onUseAsFeedback={atReview ? useAsFeedback : undefined}
+        />
       )}
     </div>
   );
@@ -473,12 +497,17 @@ function ReviewCard({
   revisionsLeft,
   busy,
   onResume,
+  feedback,
+  setFeedback,
+  feedbackRef,
 }: {
   revisionsLeft?: number;
   busy: boolean;
   onResume: (payload: Record<string, unknown>) => void;
+  feedback: string;
+  setFeedback: (value: string) => void;
+  feedbackRef: RefObject<HTMLTextAreaElement | null>;
 }) {
-  const [feedback, setFeedback] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   return (
     <Card className="border-amber-500/50">
@@ -515,6 +544,7 @@ function ReviewCard({
         </div>
         <div className="space-y-2">
           <textarea
+            ref={feedbackRef}
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             rows={2}
