@@ -332,6 +332,98 @@ def get_tiers() -> dict:
     return {"tiers": tiers}
 
 
+@router.get("/demo-content")
+def get_demo_content() -> dict:
+    """Admin-owned simulations & custom strategies, for curating demo content."""
+    from db.database import db
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT ush.id, ush.simulation_hash, ush.simulation_name, u.email,
+                   ush.timestamp, cs.is_public
+            FROM USER_SIMULATION_HISTORY ush
+            JOIN USERS u ON ush.user_id = u.id
+            JOIN CACHED_SIMULATIONS cs ON ush.simulation_hash = cs.simulation_hash
+            WHERE ush.is_removed = FALSE AND u.plan_tier = 'ADMIN'
+            ORDER BY ush.timestamp DESC
+            LIMIT 50
+        """)
+        simulations = [
+            {
+                "id": row[0],
+                "simulation_hash": row[1],
+                "simulation_name": row[2],
+                "email": row[3],
+                "timestamp": row[4],
+                "is_public": bool(row[5]),
+            }
+            for row in cursor.fetchall()
+        ]
+
+        cursor.execute("""
+            SELECT cs.id, cs.strategy_name, u.email, cs.created_at, cs.is_public
+            FROM CUSTOM_STRATEGIES cs
+            JOIN USERS u ON cs.user_id = u.id
+            WHERE u.plan_tier = 'ADMIN' AND cs.deleted_at IS NULL
+            ORDER BY cs.created_at DESC
+            LIMIT 50
+        """)
+        strategies = [
+            {
+                "id": row[0],
+                "strategy_name": row[1],
+                "email": row[2],
+                "created_at": row[3],
+                "is_public": bool(row[4]),
+            }
+            for row in cursor.fetchall()
+        ]
+    finally:
+        db.release_connection(conn)
+
+    return {"simulations": simulations, "strategies": strategies}
+
+
+class SetPublic(BaseModel):
+    is_public: bool
+
+
+@router.post("/simulations/{simulation_hash}/public")
+def set_simulation_public(simulation_hash: str, body: SetPublic) -> dict:
+    from db.database import db
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE CACHED_SIMULATIONS SET is_public = %s WHERE simulation_hash = %s",
+            (body.is_public, simulation_hash),
+        )
+        conn.commit()
+    finally:
+        db.release_connection(conn)
+    return {"simulation_hash": simulation_hash, "is_public": body.is_public}
+
+
+@router.post("/strategies/{strategy_id}/public")
+def set_strategy_public(strategy_id: int, body: SetPublic) -> dict:
+    from db.database import db
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE CUSTOM_STRATEGIES SET is_public = %s WHERE id = %s",
+            (body.is_public, strategy_id),
+        )
+        conn.commit()
+    finally:
+        db.release_connection(conn)
+    return {"strategy_id": strategy_id, "is_public": body.is_public}
+
+
 @router.get("/jobs")
 def list_jobs(
     job_type: Optional[str] = None,
