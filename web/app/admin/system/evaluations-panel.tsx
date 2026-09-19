@@ -74,7 +74,7 @@ export function EvaluationsPanel({ strategies }: { strategies: EvaluationStrateg
     if (!running) return;
     let cancelled = false;
     let failures = 0;
-    let timer: ReturnType<typeof setInterval> | undefined;
+    const timer = setInterval(() => void poll(), 1000);
     async function poll() {
       try {
         const res = await fetch(
@@ -98,8 +98,7 @@ export function EvaluationsPanel({ strategies }: { strategies: EvaluationStrateg
         }
       }
     }
-    poll();
-    timer = setInterval(poll, 1000);
+    void poll();
     return () => {
       cancelled = true;
       clearInterval(timer);
