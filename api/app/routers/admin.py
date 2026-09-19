@@ -133,6 +133,91 @@ def revoke_user(email: str) -> dict:
     return {"email": email.lower(), "allowed": False}
 
 
+class BulkAllowUsers(BaseModel):
+    emails: list[str]
+
+
+@router.post("/allowed-users/bulk")
+def bulk_allow_users(body: BulkAllowUsers, admin: dict = Depends(require_admin)) -> dict:
+    from db.database import db
+
+    added: list[str] = []
+    failed: list[dict] = []
+    for raw in body.emails:
+        email = raw.strip()
+        if not email or email.startswith("#"):
+            continue
+        try:
+            db.add_allowed_user(email.lower(), added_by=admin["email"], notes="Bulk import")
+            added.append(email.lower())
+        except Exception as e:
+            failed.append({"email": email, "error": str(e)})
+    return {"added": added, "failed": failed}
+
+
+@router.delete("/users/{user_id}")
+def delete_user(user_id: int) -> dict:
+    from db.database import db
+
+    deleted = db.delete_users_by_id([user_id])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user_id": user_id, "deleted": True}
+
+
+@router.get("/login-requests")
+def list_login_requests(limit: int = 100) -> dict:
+    from db.database import db
+
+    return {"requests": db.get_login_requests(limit=limit) or []}
+
+
+@router.post("/login-requests/{email}/approve")
+def approve_login_request(email: str, admin: dict = Depends(require_admin)) -> dict:
+    from db.database import db
+
+    db.add_allowed_user(email.lower(), added_by=admin["email"], notes="Approved login request")
+    db.delete_login_request(email.lower())
+    return {"email": email.lower(), "approved": True}
+
+
+@router.delete("/login-requests/{email}")
+def dismiss_login_request(email: str) -> dict:
+    from db.database import db
+
+    db.delete_login_request(email.lower())
+    return {"email": email.lower(), "dismissed": True}
+
+
+@router.get("/system-settings/max-beta-users")
+def get_beta_capacity() -> dict:
+    from db.database import db
+
+    max_beta_users = int(db.get_system_setting("max_beta_users", 50))
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM allowed_users")
+        current_allowed = cursor.fetchone()[0]
+    finally:
+        db.release_connection(conn)
+    return {"max_beta_users": max_beta_users, "current_allowed": current_allowed}
+
+
+class SetBetaCapacity(BaseModel):
+    max_beta_users: int
+
+
+@router.post("/system-settings/max-beta-users")
+def set_beta_capacity(body: SetBetaCapacity) -> dict:
+    from db.database import db
+
+    if body.max_beta_users < 0:
+        raise HTTPException(status_code=422, detail="max_beta_users must be >= 0")
+    db.set_system_setting("max_beta_users", body.max_beta_users)
+    return {"max_beta_users": body.max_beta_users}
+
+
 @router.get("/jobs")
 def list_jobs(
     job_type: Optional[str] = None,
