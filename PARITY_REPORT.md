@@ -49,7 +49,7 @@ motivation. Strategies (W5) is excluded by decision.
 | Glossary / Disclaimer | ✅ verbatim (generated from the same engine functions) |
 | About | ✅ parity |
 | Settings | ✅ parity (profile, currency, public username + 🎲) |
-| Admin | ✅ ported in W6 (users/tiers/allowlist, jobs, evaluations, migrations, reset) |
+| Admin | ✅ ported in W6 (users/tiers/allowlist, jobs, evaluations, migrations, reset); parity pass 2026-09-19 restored the rest (search/delete/beta capacity/login requests/bulk import, Stats/Audit/Tiers, Demo Content, migrations detail, selective evaluations, Analytics). Not ported by decision: Git config/Reseed Strategy Repo (obsolete), config.yml editor (never live), Retention Cleanup (stub) |
 | Strategies | ⏸ W5 placeholder (agentic redesign, separate track) |
 
 ## Remaining differences — and why
