@@ -224,9 +224,10 @@ def test_selective_evaluation_and_status():
         r = client.get(f"/admin/evaluations/status?job_ids={job_id}", headers=headers)
         assert r.status_code == 200
         status = r.json()
+        # A live worker may already have picked the job up (or finished it).
         assert status["total"] == 1
-        assert status["running"] is True
-        assert status["pending"] + status["processing"] == 1
+        assert sum(status[k] for k in ("pending", "processing", "completed", "failed")) == 1
+        assert status["running"] == (status["completed"] + status["failed"] < 1)
 
         r = client.post(
             "/admin/evaluations/run",
