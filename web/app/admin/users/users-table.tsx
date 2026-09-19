@@ -216,7 +216,13 @@ export function UsersTable({
                 {u.strategies}
               </TableCell>
               <TableCell className="text-muted-foreground">
-                {u.joined ? new Date(u.joined).toLocaleDateString() : "—"}
+                {u.joined ? (
+                  <time dateTime={u.joined} suppressHydrationWarning>
+                    {new Date(u.joined).toLocaleDateString()}
+                  </time>
+                ) : (
+                  "—"
+                )}
               </TableCell>
               <TableCell>
                 {u.id !== null && (
