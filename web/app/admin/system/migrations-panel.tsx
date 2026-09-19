@@ -33,6 +33,7 @@ export function MigrationsPanel({ status }: { status: MigrationStatus }) {
   const [run, setRun] = useState<ActionState>({ state: "idle" });
   const [tables, setTables] = useState<string[] | null>(null);
   const [tablesBusy, setTablesBusy] = useState(false);
+  const [tablesError, setTablesError] = useState<string | null>(null);
 
   const total = status.pending.length + status.applied.filter((a) => !a.file_missing).length;
 
@@ -50,9 +51,18 @@ export function MigrationsPanel({ status }: { status: MigrationStatus }) {
 
   async function verifySchema() {
     setTablesBusy(true);
-    const res = await fetch("/api/bff/admin/migrations/tables");
-    const body = await res.json().catch(() => ({ tables: [] }));
-    setTables(body.tables ?? []);
+    setTablesError(null);
+    setTables(null);
+    try {
+      const res = await fetch("/api/bff/admin/migrations/tables");
+      const body = await res.json();
+      if (!res.ok || !Array.isArray(body.tables)) {
+        throw new Error(body.detail ?? `API responded ${res.status}`);
+      }
+      setTables(body.tables);
+    } catch (err) {
+      setTablesError(err instanceof Error ? err.message : "Schema check failed.");
+    }
     setTablesBusy(false);
   }
 
@@ -103,6 +113,7 @@ export function MigrationsPanel({ status }: { status: MigrationStatus }) {
           )}
         </div>
 
+        {tablesError && <p className="text-sm text-destructive">{tablesError}</p>}
         {tables && (
           <details open className="rounded-lg border border-border px-2.5 py-1.5 text-sm">
             <summary className="cursor-pointer">{tables.length} tables in public schema</summary>
