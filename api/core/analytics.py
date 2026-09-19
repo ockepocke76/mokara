@@ -74,14 +74,9 @@ class AnalyticsService:
             'timestamp': timestamp.isoformat()
         })
         
-    def track_ai_usage(self, user_id: Optional[int], operation: str, prompt_tokens: int = 0, completion_tokens: int = 0):
-        self.track('ai_usage', user_id, {
-            'operation_type': operation, # 'simulation_analysis', 'strategy_design', 'chat'
-            'prompt_tokens': prompt_tokens,
-            'completion_tokens': completion_tokens,
-            'total_tokens': prompt_tokens + completion_tokens
-        })
-        
+    # AI token usage is recorded per call in LLM_USAGE by core.llm (with
+    # thinking tokens and cost) — no analytics event for it any more.
+
     def track_login(self, user_id: int, method: str):
         self.track('user_login', user_id, {
             'method': method, # 'google', 'email', 'cookie'

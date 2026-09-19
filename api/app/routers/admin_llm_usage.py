@@ -5,6 +5,7 @@ Reads LLM_USAGE (db.llm_usage), which core.llm fills on every Gemini call.
 Own module (same gate as routers/admin.py) so it can grow without crowding
 the users/jobs/system surface.
 """
+from collections import defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -22,23 +23,24 @@ def usage_summary(
     window: int = Query(100, ge=1, le=1000),
     days: int = Query(30, ge=1, le=365),
 ) -> dict:
-    """Per-operation cost stats over the latest `window` operations of each
-    type, plus spend totals over the last `days`."""
-    import os
-
+    """Per-operation cost stats (and the per-step breakdown behind them)
+    over the latest `window` operations of each type, plus spend totals over
+    the last `days` and the list prices in force."""
+    from core.llm import model_for_tier
     from core.llm_pricing import price_for
     from db import llm_usage
 
+    steps: dict[str, list] = defaultdict(list)
+    for row in llm_usage.step_stats(window=window):
+        steps[row.pop('operation')].append(row)
+
     # Price list for the models that matter: the two configured tiers plus
     # anything that has actually been called (an override, a retired default).
-    models = {
-        os.environ.get('GEMINI_MODEL_STRONG', 'gemini-3.8-flash'),
-        os.environ.get('GEMINI_MODEL_FAST', 'gemini-3.5-flash-lite'),
-        *llm_usage.models_used(),
-    }
+    models = {model_for_tier('strong'), model_for_tier('fast'), *llm_usage.models_used()}
     return {
         "window": window,
         "operations": llm_usage.operation_stats(window=window),
+        "steps": steps,
         "totals": llm_usage.totals(days=days),
         "prices": {
             model: (
@@ -49,18 +51,6 @@ def usage_summary(
             for model in sorted(models)
         },
     }
-
-
-@router.get("/steps")
-def usage_steps(
-    operation: str,
-    window: int = Query(100, ge=1, le=1000),
-) -> dict:
-    """Cost per graph step inside one operation type (where the money goes)."""
-    from db import llm_usage
-
-    return {"operation": operation, "window": window,
-            "steps": llm_usage.step_stats(operation, window=window)}
 
 
 @router.get("/operations")

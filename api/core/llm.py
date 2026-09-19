@@ -20,6 +20,17 @@ from typing import Optional
 from google import genai
 from config import CONFIG
 
+# Model tiers: 'fast' for spec/clarify/review-style calls and report analysis,
+# 'strong' for code generation and analysis. Override with GEMINI_MODEL_FAST /
+# GEMINI_MODEL_STRONG (see .env.example for the why behind the defaults).
+DEFAULT_MODELS = {'strong': 'gemini-3.8-flash', 'fast': 'gemini-3.5-flash-lite'}
+
+
+def model_for_tier(tier: str) -> str:
+    tier = tier if tier in DEFAULT_MODELS else 'fast'
+    return os.environ.get(f'GEMINI_MODEL_{tier.upper()}', DEFAULT_MODELS[tier])
+
+
 # {'operation', 'user_id', 'ref_id', 'step'} for the operation in progress.
 _llm_scope: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar('llm_scope', default=None)
 
