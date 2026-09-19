@@ -4,78 +4,8 @@ These functions consume the REPORT_STRUCTURE manifest to generate reports.
 """
 
 import logging
-from reporting.content import REPORT_STRUCTURE, get_section_intro, get_disclaimer_text
-from reporting.content import get_methodology_intro, get_methodology_detailed
-from reporting.content import get_methodology_flowchart_description, get_glossary_data
-from reporting.content import get_strategy_evaluations_content
-from reporting.components import prepare_settings_table, prepare_advanced_stats_table
-from core.shared_logic import get_info_boxes_text
-
-
-def build_data_context(sim_params, final_stats, input_data_dict, sampled_paths, 
-                       average_results_df, median_yearly_results_df, example_path_df,
-                       gemini_analysis_content, evaluation_data, simulation_currency):
-    """
-    Build comprehensive data context dictionary for manifest rendering.
-    
-    This contains all data needed to render any section of the report.
-    """
-    from reporting.analysis import get_executive_summary_content
-    
-    # Get info boxes
-    structured_info = get_info_boxes_text(sim_params, final_stats)
-    
-    # Get executive summary content
-    summary_content = get_executive_summary_content(sim_params, final_stats, gemini_analysis_content)
-    
-    context = {
-        # Core data
-        'params': sim_params,
-        'final_stats': final_stats,
-        'currency': simulation_currency,
-        
-        # Text content
-        'disclaimer': get_disclaimer_text(),
-        'methodology_intro': get_methodology_intro(),
-        'methodology_flowchart_desc': get_methodology_flowchart_description(),
-        'methodology_detailed': get_methodology_detailed(),
-        
-        # Strategic analysis (will be populated as needed)
-        'evaluation_data': evaluation_data,
-        
-        # Settings
-        'settings_table': prepare_settings_table(sim_params),
-        
-        # Input data
-        'input_data': input_data_dict,
-        'asset_info': input_data_dict.get('asset_info') if input_data_dict else None,
-        
-        # Info boxes
-        'info_boxes': structured_info,
-        
-        # Advanced stats
-        'advanced_stats': prepare_advanced_stats_table(final_stats, sim_params),
-        
-        # Data tables
-        'average_results': average_results_df,
-        'median_results': median_yearly_results_df,
-        'example_path': example_path_df,
-        
-        # Sampled paths for plots
-        'sampled_paths': sampled_paths,
-        
-        # AI analysis
-        'gemini_analysis': gemini_analysis_content,
-        'summary_content': summary_content,
-        
-        # Glossary
-        'glossary': get_glossary_data(),
-        
-        # Strategy evaluations
-        'strategy_eval_content': get_strategy_evaluations_content() if evaluation_data else None,
-    }
-    
-    return context
+from reporting.content import REPORT_STRUCTURE, get_section_intro
+from reporting.components import thousands_scaling_caption
 
 
 def render_item_for_ui(item, context, send_result, section_name):
@@ -174,15 +104,15 @@ def render_item_for_ui(item, context, send_result, section_name):
             if key == 'average_results' and context.get('average_results') is not None:
                 df_for_ui = context['average_results'].to_json(orient='split')
                 send_result('dataframe', df_for_ui,
-                           caption=f"All values are shown in thousands of {context['currency']} for improved readability, representing the average state of the portfolio at the end of each year, after all transactions have been completed. NOTE: Average results are heavily affected by outliers, look at median table to understand typical outcomes.",
+                           caption=thousands_scaling_caption(context['currency'], ", representing the average state of the portfolio at the end of each year, after all transactions have been completed. NOTE: Average results are heavily affected by outliers, look at median table to understand typical outcomes."),
                            section='Appendices', sub_section='Average Yearly Results')
             elif key == 'median_results' and context.get('median_results') is not None:
                 df_for_ui = context['median_results'].to_json(orient='split')
                 send_result('dataframe', df_for_ui,
-                           caption=f"All values are shown in thousands of {context['currency']} for improved readability, representing the median state of the portfolio at the end of each year, after all transactions have been completed.",
+                           caption=thousands_scaling_caption(context['currency'], ", representing the median state of the portfolio at the end of each year, after all transactions have been completed."),
                            section='Appendices', sub_section='Median Yearly Results')
             elif key == 'example_path' and context.get('example_path') is not None:
-                caption = context.get('caption') or f"All values are shown in thousands of {context['currency']} for improved readability..."
+                caption = context.get('caption') or thousands_scaling_caption(context['currency'], "...")
                 send_result('dataframe', context['example_path'].to_json(orient='split'),
                            caption=caption,
                            section='Appendices', sub_section='Example Simulation Path')

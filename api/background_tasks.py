@@ -37,7 +37,7 @@ from reporting.components import (
     prepare_average_results_table, prepare_example_path_table,
     prepare_settings_table, prepare_advanced_stats_table, prepare_executive_summary,
     prepare_median_yearly_results_table, prepare_historical_stats_table,
-    prepare_market_scenarios_table
+    prepare_market_scenarios_table, thousands_scaling_caption
 )
 from reporting.color_scheme import FlowchartColors, LightFlowchartColors, get_chart_theme
 from reporting.flowchart import ensure_flowchart_image
@@ -615,7 +615,7 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
     # ============================================================================
     # Import manifest and rendering functions
     from reporting.content import REPORT_STRUCTURE
-    from reporting.manifest_renderer import build_data_context, render_section_for_ui
+    from reporting.manifest_renderer import render_section_for_ui
     
     # Start timing static content generation
     # OLD CODE - Being replaced by manifest-driven approach
@@ -1047,12 +1047,8 @@ def regenerate_ui_results(simulation_hash: str, results_queue, progress_queue=No
             sim_name = "Sim_0" # Default name if not available
             raw_example_df = sampled_paths
         example_table_df = prepare_example_path_table(raw_example_df)
-        caption = f"Showing results for a single, randomly selected simulation path ({sim_name}). All values are shown in thousands of {simulation_currency} for improved readability, representing the state of the portfolio at the end of each year, after all transactions have been completed." # Keep the caption as it is
+        caption = f"Showing results for a single, randomly selected simulation path ({sim_name}). " + thousands_scaling_caption(simulation_currency, ", representing the state of the portfolio at the end of each year, after all transactions have been completed.")
         # === Example Simulation Path Appendix ===
-        # OLD CODE - Being replaced by manifest-driven approach
-        # send_result('dataframe', example_table_df, caption=caption, section='Appendices', sub_section='Example Simulation Path')
-        
-        # NEW: Manifest-driven rendering
         section_name = 'Appendices: Example Simulation Path'
         if section_name in REPORT_STRUCTURE:
             context_example = {'example_path': example_table_df, 'currency': simulation_currency, 'caption': caption}

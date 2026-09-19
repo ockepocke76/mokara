@@ -16,6 +16,16 @@ from config import CONFIG # Needed for _get_config_by_path and parameter definit
 from core.param_layout import get_sidebar_layout # Needed to build the layout structure
 from core.strategy import TrinityStrategy, BuyBorrowDieStrategy # Needed for strategy display names
 
+def thousands_scaling_caption(currency: str, detail: str = "") -> str:
+    """
+    Shared "values are in thousands of {currency}" disclosure used by every
+    appendix table that displays /1000-scaled figures (average/median yearly
+    results, example simulation path). `detail` is appended verbatim after
+    "for improved readability".
+    """
+    return f"All values are shown in thousands of {currency} for improved readability{detail}"
+
+
 def prepare_average_results_table(average_results_df: pd.DataFrame) -> pd.DataFrame:
     """
     Prepares and formats the 'Average Yearly Results' DataFrame for display.
