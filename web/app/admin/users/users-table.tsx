@@ -56,6 +56,7 @@ export function UsersTable({
   const [busy, setBusy] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [tierFilter, setTierFilter] = useState("All");
+  const [error, setError] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -114,7 +115,12 @@ export function UsersTable({
 
   async function deleteUser(userId: number) {
     setBusy(`delete-${userId}`);
-    await fetch(`/api/bff/admin/users/${userId}`, { method: "DELETE" });
+    setError(null);
+    const res = await fetch(`/api/bff/admin/users/${userId}`, { method: "DELETE" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body.detail ?? `Delete failed (${res.status}).`);
+    }
     setBusy(null);
     router.refresh();
   }
@@ -153,6 +159,8 @@ export function UsersTable({
           </SelectContent>
         </Select>
       </div>
+
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
       <Table>
         <TableHeader>
@@ -225,7 +233,7 @@ export function UsersTable({
                 )}
               </TableCell>
               <TableCell>
-                {u.id !== null && (
+                {u.id !== null && u.id !== 0 && (
                   <Dialog>
                     <DialogTrigger asChild>
                       <Button

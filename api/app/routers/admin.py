@@ -142,24 +142,33 @@ def bulk_allow_users(body: BulkAllowUsers, admin: dict = Depends(require_admin))
     from db.database import db
 
     added: list[str] = []
-    failed: list[dict] = []
+    failed: list[str] = []
     for raw in body.emails:
-        email = raw.strip()
+        email = raw.strip().lower()
         if not email or email.startswith("#"):
             continue
-        try:
-            db.add_allowed_user(email.lower(), added_by=admin["email"], notes="Bulk import")
-            added.append(email.lower())
-        except Exception as e:
-            failed.append({"email": email, "error": str(e)})
+        if db.add_allowed_user(email, added_by=admin["email"], notes="Bulk import"):
+            added.append(email)
+        else:
+            failed.append(email)
     return {"added": added, "failed": failed}
 
 
+SYSTEM_USER_ID = 0
+
+
 @router.delete("/users/{user_id}")
-def delete_user(user_id: int) -> dict:
+def delete_user(user_id: int, admin: dict = Depends(require_admin)) -> dict:
     from db.database import db
 
-    deleted = db.delete_users_by_id([user_id])
+    if user_id == SYSTEM_USER_ID:
+        raise HTTPException(status_code=403, detail="The system account cannot be deleted")
+    if user_id == admin["id"]:
+        raise HTTPException(status_code=403, detail="You cannot delete your own account")
+    try:
+        deleted = db.delete_users_by_id([user_id])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
     if not deleted:
         raise HTTPException(status_code=404, detail="User not found")
     return {"user_id": user_id, "deleted": True}
@@ -176,7 +185,8 @@ def list_login_requests(limit: int = 100) -> dict:
 def approve_login_request(email: str, admin: dict = Depends(require_admin)) -> dict:
     from db.database import db
 
-    db.add_allowed_user(email.lower(), added_by=admin["email"], notes="Approved login request")
+    if not db.add_allowed_user(email.lower(), added_by=admin["email"], notes="Approved login request"):
+        raise HTTPException(status_code=500, detail="Could not add user to the allowlist")
     db.delete_login_request(email.lower())
     return {"email": email.lower(), "approved": True}
 
@@ -193,7 +203,11 @@ def dismiss_login_request(email: str) -> dict:
 def get_beta_capacity() -> dict:
     from db.database import db
 
-    max_beta_users = int(db.get_system_setting("max_beta_users", 50))
+    try:
+        max_beta_users = int(db.get_system_setting("max_beta_users", 50))
+    except (TypeError, ValueError):
+        logging.warning("max_beta_users setting is not an integer; showing default")
+        max_beta_users = 50
     conn = db.get_connection()
     try:
         cursor = conn.cursor()
