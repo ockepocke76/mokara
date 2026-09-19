@@ -62,12 +62,11 @@ export function QaPanel({
   title?: string;
 }) {
   const [messages, setMessages] = useState<QaMessage[]>([]);
-  const [canRefine, setCanRefine] = useState(false);
   const [question, setQuestion] = useState("");
   const [pending, setPending] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const endRef = useRef<HTMLDivElement | null>(null);
+  const endRef = useRef<HTMLLIElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,7 +79,6 @@ export function QaPanel({
       .then((thread) => {
         if (cancelled) return;
         setMessages(thread.messages);
-        setCanRefine(thread.can_refine);
         setError(null);
       })
       .catch((e: Error) => {
@@ -117,7 +115,6 @@ export function QaPanel({
       if (!res.ok) throw new Error(await errorDetail(res));
       const body = (await res.json()) as AskResponse;
       setMessages((prev) => [...prev, body.user, body.assistant]);
-      setCanRefine(body.can_refine);
     } catch (e) {
       setError((e as Error).message);
       setQuestion(trimmed);
@@ -131,7 +128,9 @@ export function QaPanel({
     void ask(question);
   }
 
-  const showRefine = Boolean(onUseAsFeedback) && canRefine;
+  // The designer passes onUseAsFeedback only while paused at review — live
+  // client state, unlike the server's can_refine snapshot.
+  const showRefine = Boolean(onUseAsFeedback);
 
   return (
     <Card data-testid="qa-panel">
@@ -202,7 +201,7 @@ export function QaPanel({
                 Thinking…
               </li>
             )}
-            <div ref={endRef} />
+            <li ref={endRef} aria-hidden className="h-0 list-none" />
           </ol>
         )}
         {messages.length === 0 && pending && (

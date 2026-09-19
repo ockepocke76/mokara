@@ -366,7 +366,7 @@ function BuildLog({
   const feedbackRef = useRef<HTMLTextAreaElement | null>(null);
   const atReview = model.needsInput?.kind === "review";
 
-  function useAsFeedback(text: string) {
+  function applyAsFeedback(text: string) {
     setFeedback(text);
     feedbackRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
     feedbackRef.current?.focus();
@@ -417,7 +417,7 @@ function BuildLog({
         <QaPanel
           subjectType="generation_run"
           subjectId={runId}
-          onUseAsFeedback={atReview ? useAsFeedback : undefined}
+          onUseAsFeedback={atReview ? applyAsFeedback : undefined}
         />
       )}
     </div>
