@@ -106,9 +106,10 @@ def set_tier(user_id: int, body: SetTier, admin: dict = Depends(require_admin)) 
     valid = set(TIER_LIMITS.keys()) | {"ADMIN"}
     if body.tier not in valid:
         raise HTTPException(status_code=422, detail=f"Unknown tier: {body.tier}")
-    db.update_user_tier(
+    if not db.update_user_tier(
         user_id, body.tier, changed_by=admin["email"], reason=body.reason or "admin panel"
-    )
+    ):
+        raise HTTPException(status_code=404, detail="User not found")
     return {"user_id": user_id, "tier": body.tier}
 
 
@@ -230,6 +231,105 @@ def set_beta_capacity(body: SetBetaCapacity) -> dict:
         raise HTTPException(status_code=422, detail="max_beta_users must be >= 0")
     db.set_system_setting("max_beta_users", body.max_beta_users)
     return {"max_beta_users": body.max_beta_users}
+
+
+@router.get("/stats")
+def get_stats() -> dict:
+    from db.database import db
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+        cursor.execute(
+            "SELECT COUNT(*) FROM user_simulation_history WHERE is_removed = FALSE"
+        )
+        total_simulations = cursor.fetchone()[0]
+        cursor.execute(
+            "SELECT COUNT(*) FROM custom_strategies WHERE deleted_at IS NULL AND user_id != 0"
+        )
+        total_strategies = cursor.fetchone()[0]
+
+        cursor.execute(
+            "SELECT plan_tier, COUNT(*) FROM users GROUP BY plan_tier ORDER BY plan_tier"
+        )
+        tier_distribution = [
+            {"tier": tier, "count": count} for tier, count in cursor.fetchall()
+        ]
+
+        cursor.execute("""
+            SELECT u.email, COUNT(ush.id) AS sim_count
+            FROM users u
+            LEFT JOIN user_simulation_history ush
+                ON ush.user_id = u.id AND ush.is_removed = FALSE
+            GROUP BY u.id, u.email
+            HAVING COUNT(ush.id) > 0
+            ORDER BY sim_count DESC
+            LIMIT 20
+        """)
+        top_by_simulations = [
+            {"email": email, "count": count} for email, count in cursor.fetchall()
+        ]
+
+        cursor.execute("""
+            SELECT u.email, COUNT(cs.id) AS strat_count
+            FROM users u
+            LEFT JOIN custom_strategies cs
+                ON cs.user_id = u.id AND cs.deleted_at IS NULL
+            WHERE u.id != 0
+            GROUP BY u.id, u.email
+            HAVING COUNT(cs.id) > 0
+            ORDER BY strat_count DESC
+            LIMIT 20
+        """)
+        top_by_strategies = [
+            {"email": email, "count": count} for email, count in cursor.fetchall()
+        ]
+    finally:
+        db.release_connection(conn)
+
+    return {
+        "total_users": total_users,
+        "total_simulations": total_simulations,
+        "total_strategies": total_strategies,
+        "tier_distribution": tier_distribution,
+        "top_by_simulations": top_by_simulations,
+        "top_by_strategies": top_by_strategies,
+    }
+
+
+@router.get("/audit")
+def get_audit_log(limit: int = 100) -> dict:
+    from db.database import db
+
+    return {"entries": db.get_subscription_history(limit=limit) or []}
+
+
+@router.get("/tiers")
+def get_tiers() -> dict:
+    from tier_config.limits import TIER_LIMITS
+
+    def _bound(value):
+        return "Unlimited" if value == float("inf") else value
+
+    tiers = []
+    for tier_id, cfg in TIER_LIMITS.items():
+        tiers.append(
+            {
+                "id": tier_id,
+                "display_name": cfg.get("display_name"),
+                "description": cfg.get("description"),
+                "badge": cfg.get("badge"),
+                "color": cfg.get("color"),
+                "max_simulations": _bound(cfg.get("max_simulations")),
+                "max_strategies": _bound(cfg.get("max_strategies")),
+                "price_sek_monthly": cfg.get("price_sek_monthly"),
+                "price_sek_annual": cfg.get("price_sek_annual"),
+                "features": cfg.get("features", {}),
+            }
+        )
+    return {"tiers": tiers}
 
 
 @router.get("/jobs")

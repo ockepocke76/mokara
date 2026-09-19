@@ -12,6 +12,9 @@ const ADMIN_NAV = [
   { href: "/admin/jobs", label: "Jobs" },
   { href: "/admin/system", label: "System" },
   { href: "/admin/llm-usage", label: "LLM usage" },
+  { href: "/admin/stats", label: "Stats" },
+  { href: "/admin/audit", label: "Audit" },
+  { href: "/admin/tiers", label: "Tiers" },
 ];
 
 export default async function AdminLayout({

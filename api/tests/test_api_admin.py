@@ -147,3 +147,22 @@ def test_approve_login_request_keeps_request_on_failure(monkeypatch):
     finally:
         db.delete_login_request(guest)
         db.remove_allowed_user(guest)
+
+
+def test_tier_change_unknown_user_is_404_and_audited_from():
+    admin_email, _ = _new_user(tier="ADMIN")
+    target_email, target_id = _new_user()
+    headers = {**SECRET, "X-User-Email": admin_email}
+
+    r = client.post("/admin/users/999999999/tier", headers=headers, json={"tier": "PAID"})
+    assert r.status_code == 404
+
+    r = client.post(f"/admin/users/{target_id}/tier", headers=headers, json={"tier": "PAID"})
+    assert r.status_code == 200
+    entry = next(e for e in client.get("/admin/audit", headers=headers).json()["entries"]
+                 if e["user_id"] == target_id)
+    assert (entry["changed_from"], entry["changed_to"]) == ("FREE", "PAID")
+
+    r = client.get("/admin/stats", headers=headers)
+    assert r.status_code == 200
+    assert all(u["email"] != "system@btc-simulator.internal" for u in r.json()["top_by_strategies"])
