@@ -454,12 +454,15 @@ class UsersMixin:
 
     @log_db_call
     def update_user_tier(self, user_id, new_tier, changed_by, reason):
-        """Update user's tier."""
+        """Update user's tier and record it in SUBSCRIPTION_HISTORY.
+        Returns False if the user doesn't exist or the write failed."""
         try:
             with self._connection_cursor() as cursor:
                 cursor.execute("SELECT plan_tier FROM USERS WHERE id = %s", (user_id,))
                 row = cursor.fetchone()
-                previous_tier = row[0] if row else None
+                if row is None:
+                    return False
+                previous_tier = row[0]
 
                 cursor.execute("UPDATE USERS SET plan_tier = %s, tier_set_at = CURRENT_TIMESTAMP, tier_set_by = %s WHERE id = %s",
                              (new_tier, changed_by, user_id))
@@ -467,8 +470,10 @@ class UsersMixin:
                     "INSERT INTO SUBSCRIPTION_HISTORY (user_id, plan_tier, changed_from, changed_to, changed_by, reason) "
                     "VALUES (%s, %s, %s, %s, %s, %s)",
                     (user_id, new_tier, previous_tier, new_tier, changed_by, reason))
+            return True
         except Exception as e:
             logging.error(f"Failed: {e}", exc_info=True)
+            return False
 
     @log_db_call
     def ensure_admin_user_exists(self):

@@ -106,9 +106,10 @@ def set_tier(user_id: int, body: SetTier, admin: dict = Depends(require_admin)) 
     valid = set(TIER_LIMITS.keys()) | {"ADMIN"}
     if body.tier not in valid:
         raise HTTPException(status_code=422, detail=f"Unknown tier: {body.tier}")
-    db.update_user_tier(
+    if not db.update_user_tier(
         user_id, body.tier, changed_by=admin["email"], reason=body.reason or "admin panel"
-    )
+    ):
+        raise HTTPException(status_code=404, detail="User not found")
     return {"user_id": user_id, "tier": body.tier}
 
 
@@ -245,7 +246,9 @@ def get_stats() -> dict:
             "SELECT COUNT(*) FROM user_simulation_history WHERE is_removed = FALSE"
         )
         total_simulations = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM custom_strategies")
+        cursor.execute(
+            "SELECT COUNT(*) FROM custom_strategies WHERE deleted_at IS NULL AND user_id != 0"
+        )
         total_strategies = cursor.fetchone()[0]
 
         cursor.execute(
@@ -272,7 +275,9 @@ def get_stats() -> dict:
         cursor.execute("""
             SELECT u.email, COUNT(cs.id) AS strat_count
             FROM users u
-            LEFT JOIN custom_strategies cs ON cs.user_id = u.id
+            LEFT JOIN custom_strategies cs
+                ON cs.user_id = u.id AND cs.deleted_at IS NULL
+            WHERE u.id != 0
             GROUP BY u.id, u.email
             HAVING COUNT(cs.id) > 0
             ORDER BY strat_count DESC
