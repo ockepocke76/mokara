@@ -13,15 +13,14 @@ from ..logging_utils import log_db_call
 
 
 # Tables with a user_id FK to USERS(id) that isn't ON DELETE CASCADE — must be
-# cleared before the user row itself can go. background_jobs uses ON DELETE
-# SET NULL so it doesn't need to be listed here; llm_usage does too, but is
-# listed so a deleted user's spend history goes with them rather than
-# lingering as anonymous rows.
+# cleared before the user row itself can go. background_jobs and llm_usage
+# use ON DELETE SET NULL so they don't need to be listed here (llm_usage on
+# purpose: spend totals must survive a user deletion, the rows just go
+# anonymous).
 _USER_OWNED_TABLES = [
     'user_settings', 'user_simulation_history', 'custom_strategies',
     'strategy_evaluations', 'subscription_history', 'ai_credit_usage',
     'logs', 'simulations_old', 'user_hidden_items', 'strategy_generation_runs',
-    'llm_usage',
 ]
 
 

@@ -12,6 +12,8 @@
 CREATE TABLE IF NOT EXISTS LLM_USAGE (
     id BIGSERIAL PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- SET NULL, not CASCADE: spend totals must survive a user deletion (the
+    -- money was still spent); the rows just become anonymous.
     user_id INTEGER REFERENCES USERS(id) ON DELETE SET NULL,
     -- strategy_create | strategy_evolve | strategy_qa | report_analysis | unknown
     operation TEXT NOT NULL,

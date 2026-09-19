@@ -26,6 +26,31 @@ from db.database import db
 client = TestClient(app)
 SECRET = {"X-Internal-Secret": os.environ["INTERNAL_API_SECRET"]}
 
+# Every row these tests write carries a ref_id with this prefix (or is the
+# one deliberately unscoped failure below), so teardown can remove them:
+# LLM_USAGE rows outlive their user on purpose (ON DELETE SET NULL), so the
+# conftest user purge would leave them behind as anonymous spend.
+REF_PREFIX = f"pytest-{uuid.uuid4().hex[:6]}-"
+UNSCOPED_ERROR = f"429 quota exceeded ({REF_PREFIX})"
+
+
+def _ref(label: str) -> str:
+    return f"{REF_PREFIX}{label}"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _remove_rows_written_by_this_module():
+    yield
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM LLM_USAGE WHERE ref_id LIKE %s OR error = %s",
+            (f"{REF_PREFIX}%", UNSCOPED_ERROR))
+        conn.commit()
+    finally:
+        db.release_connection(conn)
+
 
 def _new_user(tier=None) -> tuple[str, int]:
     email = f"llm-usage-{uuid.uuid4().hex[:10]}@example.com"
@@ -90,7 +115,7 @@ def _fake_client(text="ok", prompt=1200, cached=200, completion=300, thoughts=50
 
 def test_call_gemini_safe_records_scoped_usage(monkeypatch):
     _, user_id = _new_user()
-    ref = f"test-{uuid.uuid4().hex[:8]}"
+    ref = _ref(uuid.uuid4().hex[:8])
     monkeypatch.setattr(core_llm, '_get_client', lambda api_key=None: _fake_client())
 
     with llm_scope('strategy_create', user_id=user_id, ref_id=ref, step='generate'):
@@ -112,7 +137,7 @@ def test_call_gemini_safe_records_scoped_usage(monkeypatch):
 
 def test_call_gemini_safe_records_failures_and_unscoped_calls(monkeypatch):
     monkeypatch.setattr(core_llm, '_get_client',
-                        lambda api_key=None: _fake_client(error="429 quota exceeded"))
+                        lambda api_key=None: _fake_client(error=UNSCOPED_ERROR))
     before = llm_usage.totals(1)['all_time_calls']
     text, err, usage = core_llm.call_gemini_safe('gemini-3.5-flash-lite', "prompt")
     assert text is None and "high load" in err
@@ -178,9 +203,9 @@ def test_operation_stats_aggregate_per_run_not_per_call():
     op = f"test_op_{uuid.uuid4().hex[:6]}"   # private operation label: isolated stats
     # three runs: 1 call / 2 calls / 3 calls of equal size
     unit = (10_000, 2_000, 4_000)
-    _record(op, 'r1', user_id, [unit])
-    _record(op, 'r2', user_id, [unit, unit])
-    _record(op, 'r3', user_id, [unit, unit, unit])
+    _record(op, _ref('r1'), user_id, [unit])
+    _record(op, _ref('r2'), user_id, [unit, unit])
+    _record(op, _ref('r3'), user_id, [unit, unit, unit])
     unit_cost = estimate_cost_usd('gemini-3.8-flash', *unit[:1], 0, *unit[1:])
 
     stats = {s['operation']: s for s in llm_usage.operation_stats(window=100)}[op]
@@ -199,7 +224,7 @@ def test_operation_stats_aggregate_per_run_not_per_call():
     assert steps[0]['cost_per_operation_usd'] == pytest.approx(2 * unit_cost)
 
     ops = llm_usage.user_operations(user_id)
-    assert [o['ref_id'] for o in ops] == ['r3', 'r2', 'r1']
+    assert [o['ref_id'] for o in ops] == [_ref('r3'), _ref('r2'), _ref('r1')]
     assert ops[0]['calls'] == 3
 
     summary = llm_usage.user_summary(user_id)
@@ -216,7 +241,7 @@ def test_admin_llm_usage_endpoints():
     admin_email, _ = _new_user(tier="ADMIN")
     headers = {**SECRET, "X-User-Email": admin_email}
     _, target_id = _new_user()
-    _record('strategy_evolve', f"api-{uuid.uuid4().hex[:6]}", target_id, [(5_000, 500, 1_000)],
+    _record('strategy_evolve', _ref(f"api-{uuid.uuid4().hex[:6]}"), target_id, [(5_000, 500, 1_000)],
             step='plan')
 
     r = client.get("/admin/llm-usage/summary?window=50&days=7", headers=headers)
