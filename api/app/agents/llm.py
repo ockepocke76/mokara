@@ -106,7 +106,8 @@ class {class_name}(BaseStrategy):
     def execute_strategy_for_year(self, year, portfolio_state, portfolio_history, desired_drawdown, mandatory_costs):
         need = desired_drawdown + mandatory_costs
         return {{'amount_sold': need, 'amount_bought': 0.0,
-                 'debt_increase': 0.0, 'debt_repayment': 0.0, 'amount_contributed': 0.0}}
+                 'debt_increase': 0.0, 'debt_repayment': 0.0, 'amount_contributed': 0.0,
+                 'state_withdrawal_target': desired_drawdown}}
 
     def evaluation_category(self):
         return 'WITHDRAWAL_ONLY'
@@ -185,6 +186,8 @@ def fake_llm_call(prompt: str, tier: str = 'fast', json_mode: bool = False) -> s
                       "Fund withdrawals by selling assets; never borrow."],
             "parameters": [{"name": "withdrawal_rate", "default": 0.04, "min": 0.01,
                             "max": 0.10, "description": "Annual withdrawal rate"}],
+            "state_metrics": [{"name": "state_withdrawal_target",
+                               "description": "The inflation-adjusted withdrawal the year targeted"}],
             "self_check": "The rules cover initialization, annual withdrawal sizing, and funding."})
     if task == 'generate':
         name_match = re.search(r"named '(\w+)'", prompt)

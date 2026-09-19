@@ -57,6 +57,26 @@ COMMON_MISTAKES = """
 - Dividing by portfolio values that can be zero — guard denominators.
 """
 
+STATE_LOGGING = """
+## Decision-state logging (required — the yearly history records these)
+The dict returned by `execute_strategy_for_year` must ALSO carry `state_*`
+keys exposing what the strategy's rules decided that year: a 0/1 flag per
+phase (e.g. 'state_retired'), each trigger's actual value AND whether it
+fired (e.g. 'state_nw_to_salary_ratio', 'state_transition_triggered'), and
+any other quantity a blueprint rule compares against a threshold. Values
+must be numbers or booleans (strings are dropped). The engine ignores these
+keys for bookkeeping; they exist so the behavior can be inspected afterward.
+"""
+
+
+def _state_metrics_block(plan: dict) -> str:
+    metrics = [m for m in (plan or {}).get('state_metrics', []) if isinstance(m, dict) and m.get('name')]
+    if not metrics:
+        return ""
+    return ("Required state metrics (emit every one of these, exact names):\n"
+            f"{json.dumps(metrics, indent=2)}\n")
+
+
 OUTPUT_FORMAT = """
 ## Output format (exactly this, nothing else)
 <description>One or two sentences describing what the strategy does.</description>
@@ -183,10 +203,16 @@ An accumulation-from-income spec needs a small start (e.g. 10000 — a big
 head start would trigger any retirement/target rule immediately); a
 withdrawal spec needs a funded portfolio (e.g. 1000000).
 
+Also list the state_metrics the code must record each year so its decisions
+can be inspected afterward: snake_case names prefixed 'state_', one per
+phase flag, per trigger condition (its value and whether it fired), and per
+threshold a rule compares against. Numeric/boolean only.
+
 Respond with JSON:
 {{
   "rules": ["rule 1", "rule 2", ...],
   "parameters": [{{"name": "...", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "description": "..."}}],
+  "state_metrics": [{{"name": "state_...", "description": "what the number means"}}],
   "test_initial_investment": 1000000,
   "self_check": "one sentence confirming every spec mechanic maps to a rule, or naming what is missing"
 }}"""
@@ -215,11 +241,18 @@ test should run with so the CHANGED behavior can actually be observed (an
 accumulation-from-income strategy needs a small start, a withdrawal strategy
 a funded portfolio).
 
+state_metrics: the `state_*` keys `execute_strategy_for_year` will return
+AFTER the edits — every one the current code already returns, plus new ones
+ONLY if a planned edit targets `execute_strategy_for_year` (then add a flag
+or value for each phase/trigger the edited rules decide on). Empty if the
+current code returns none and no edit touches that method.
+
 Respond with JSON:
 {{
   "edits": [{{"target": "the exact method or property name the edit touches (one entry per touched method, including any NEW method or property an edit adds)", "change": "exactly what changes in it"}}],
   "rules": ["the strategy's full blueprint AFTER the edits: numbered plain-language rules restating the CURRENT code's behavior, altered only where an edit applies — the final code is reviewed against these"],
   "parameters": [{{"name": "...", "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "description": "the current code's parameters verbatim except where an edit changes them"}}],
+  "state_metrics": [{{"name": "state_...", "description": "what the number means"}}],
   "test_initial_investment": 1000000,
   "self_check": "one sentence confirming the edits cover every requested change and nothing else"
 }}"""
@@ -261,6 +294,9 @@ Requested changes (for context):
 The engine rules above are context for the edits — NEVER a reason to change
 existing validated code beyond the planned edits.
 {SANDBOX_RULES}
+{STATE_LOGGING}{_state_metrics_block(plan)}
+(Adding or updating `state_*` keys inside an edited `execute_strategy_for_year`
+is part of the planned edit, not a deviation from it.)
 {COMMON_MISTAKES}
 {feedback_block}
 {OUTPUT_FORMAT}"""
@@ -290,6 +326,7 @@ Spec (for context):
 {strategy_api_docs()}
 {ENGINE_MECHANICS}
 {SANDBOX_RULES}
+{STATE_LOGGING}{_state_metrics_block(plan)}
 {COMMON_MISTAKES}
 {examples_block}
 {feedback_block}
@@ -305,7 +342,8 @@ def static_review_prompt(code: str, plan: dict, spec: dict,
                            f"Original code before the change:\n```python\n{seed_code}\n```\n"
                            "Additionally flag as issues any UNREQUESTED differences: original "
                            "mechanics, parameters, or defaults that were dropped or altered "
-                           "with no requested change calling for it.\n")
+                           "with no requested change calling for it (added or updated "
+                           "`state_*` keys in the returned actions dict are never an issue).\n")
     return f"""TASK: static_review
 Review this strategy code against its blueprint. For each rule, decide whether
 the code actually implements it (not whether it compiles — a separate check
@@ -319,6 +357,9 @@ not compute interest or deduct borrowing costs itself.
 
 Blueprint rules:
 {json.dumps(plan.get('rules', []), indent=2)}
+
+{_state_metrics_block(plan) or "No state metrics are required."}Flag as an issue every required state metric that `execute_strategy_for_year`
+does not return (exact key name) on every code path.
 
 Spec constraints: {json.dumps(spec.get('constraints', []))}
 
@@ -399,7 +440,8 @@ Blueprint rules:
 Strategy summary stats: {json.dumps(summary_stats)}
 {baseline_block}
 
-Worst test path, year by year (net worth, withdrawal, sales, borrowing):
+Worst test path, year by year (net worth, withdrawal, sales, borrowing, and
+the strategy's own state_* decision metrics where it records them):
 {json.dumps(worst_path_trace)}
 
 Respond with JSON:

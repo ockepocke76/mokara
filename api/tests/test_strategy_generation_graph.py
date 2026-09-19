@@ -65,6 +65,13 @@ def test_happy_path_to_review_then_save():
             if series in ('net_worth', 'asset_value', 'borrowed', 'sold'):
                 assert any(v is not None for v in values)
 
+    # The strategy's state_* decision metrics ride along per path, and the
+    # blueprint's declared metrics are echoed for the Q&A/inspection UI.
+    assert artifact['state_metrics'][0]['name'] == 'state_withdrawal_target'
+    state = random_paths[0]['state']['state_withdrawal_target']
+    assert len(state) == len(random_paths[0]['years'])
+    assert state[0] is None and state[1] > 0  # year 0 records no decision
+
     runner.resume_run(run_id, {'kind': 'review', 'action': 'save'})
     run = sg.get_run(run_id)
     assert run['status'] == 'completed'
@@ -150,6 +157,31 @@ def test_broken_codegen_exhausts_attempts_and_saves_draft(monkeypatch):
     draft = db.get_custom_strategy(draft_id)
     assert draft['validation_status'] == 'failed'
     assert '(draft ' in draft['strategy_name']
+
+
+def test_missing_state_metrics_trigger_rework_then_pass(monkeypatch):
+    """Code that skips the blueprint's state_* metrics fails the test flight
+    with feedback naming the exact keys; the corrected attempt passes."""
+    calls = {'generate': 0}
+
+    def forgetful_llm(prompt, tier='fast', json_mode=False):
+        text = fake_llm_call(prompt, tier=tier, json_mode=json_mode)
+        if prompt.startswith('TASK: generate'):
+            calls['generate'] += 1
+            if calls['generate'] == 1:
+                return text.replace(",\n                 'state_withdrawal_target': desired_drawdown", "")
+            assert 'state_withdrawal_target' in prompt  # feedback names the key
+        return text
+
+    monkeypatch.setattr('app.agents.runner.get_llm_call', lambda: forgetful_llm)
+
+    user_id = _new_user()
+    run_id = runner.start_run(user_id, "simple 4% rule", strategy_name="Forgetful Test")
+    assert sg.get_run(run_id)['status'] == 'needs_input'
+    assert calls['generate'] == 2
+    failed = [e for e in sg.list_events(run_id)
+              if e['type'] == 'stage_progress' and e['payload'].get('check') == 'state_metrics']
+    assert failed and 'state_withdrawal_target' in failed[0]['payload']['message']
 
 
 def _seed_strategy(user_id: int, name: str = "Seed FIRE"):
