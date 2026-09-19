@@ -30,7 +30,10 @@ def real_llm_call(prompt: str, tier: str = 'fast', json_mode: bool = False) -> s
     from core.llm import call_gemini_safe
 
     config = {'response_mime_type': 'application/json'} if json_mode else None
-    text, error, _usage = call_gemini_safe(_model_for(tier), prompt, generation_config=config)
+    # Usage/cost is recorded inside call_gemini_safe against the ambient
+    # core.llm.llm_scope (set by the runner / Q&A service / report worker).
+    text, error, _usage = call_gemini_safe(_model_for(tier), prompt, generation_config=config,
+                                           tier=tier)
     if error or not text:
         raise LLMError(error or "Empty response from LLM")
     return text

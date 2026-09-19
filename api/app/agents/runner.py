@@ -20,6 +20,7 @@ from langgraph.types import Command
 
 from app.agents.graph import GenerationNeedsDecision, build_graph
 from app.agents.llm import get_llm_call
+from core.llm import llm_scope
 from db import strategy_generation as sg
 
 _lock = threading.Lock()
@@ -65,11 +66,20 @@ def _config(thread_id: str) -> dict:
     return {'configurable': {'thread_id': thread_id, 'llm_call': get_llm_call()}}
 
 
+def _run_scope(run_id: str):
+    """LLM-usage attribution for every call this run makes (start or resume):
+    one operation per run, create vs evolve by whether it has a seed."""
+    run = sg.get_run(run_id) or {}
+    operation = 'strategy_evolve' if run.get('seed_strategy_id') else 'strategy_create'
+    return llm_scope(operation, user_id=run.get('user_id'), ref_id=run_id)
+
+
 def _execute(run_id: str, thread_id: str, graph_input) -> None:
     graph = get_graph()
     config = _config(thread_id)
     try:
-        result = graph.invoke(graph_input, config)
+        with _run_scope(run_id):
+            result = graph.invoke(graph_input, config)
     except GenerationNeedsDecision as e:
         # Not a failure: the resume couldn't be honored (e.g. revision budget
         # spent) — hand the decision back to the user.

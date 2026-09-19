@@ -292,7 +292,8 @@ def get_gemini_analysis(prompt, api_key, analytics_tracking_info=None):
         # strategy-designer's fast tier (api/app/agents/llm.py) — one knob
         # for both when a model is retired (gemini-2.0-flash was, 2026-09).
         model_name = os.environ.get('GEMINI_MODEL_FAST', 'gemini-3.5-flash-lite')
-        text, error_msg, usage_meta = call_gemini_safe(model_name, prompt, api_key=api_key)
+        text, error_msg, usage_meta = call_gemini_safe(model_name, prompt, api_key=api_key,
+                                                       tier='fast')
         
         if error_msg:
              logging.warning(f"AI Analysis blocked: {error_msg}")
