@@ -459,21 +459,69 @@ def list_jobs(
     }
 
 
+@router.get("/evaluations/strategies")
+def list_evaluation_strategies() -> dict:
+    """What can be selected for a leaderboard evaluation run."""
+    from db.database import db
+
+    customs = db.get_all_custom_strategies_for_admin() or []
+    return {
+        "builtins": list(BUILTIN_EVALUATION_STRATEGIES.keys()),
+        "customs": [
+            {"id": cs["id"], "user_id": cs["user_id"], "strategy_name": cs["strategy_name"]}
+            for cs in customs
+        ],
+    }
+
+
+class RunEvaluations(BaseModel):
+    builtin_names: Optional[list[str]] = None
+    custom_strategy_ids: Optional[list[int]] = None
+
+
 @router.post("/evaluations/run")
-def run_evaluations() -> dict:
-    """Queue leaderboard re-evaluation jobs for all built-in + custom strategies."""
+def run_evaluations(body: Optional[RunEvaluations] = None) -> dict:
+    """Queue leaderboard evaluation jobs.
+
+    With no body (or both lists omitted) every built-in and custom strategy
+    is queued — the original "re-run all" behavior. Pass either list to
+    evaluate just that selection.
+    """
     from db.database import db
     from services.background_manager import BackgroundManager
 
+    selective = body is not None and (
+        body.builtin_names is not None or body.custom_strategy_ids is not None
+    )
+    if selective:
+        builtin_names = body.builtin_names or []
+    else:
+        builtin_names = list(BUILTIN_EVALUATION_STRATEGIES)
+    unknown = [n for n in builtin_names if n not in BUILTIN_EVALUATION_STRATEGIES]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown built-in strategies: {unknown}")
+
     job_ids = []
-    for name, cls in BUILTIN_EVALUATION_STRATEGIES.items():
+    for name in builtin_names:
         job_id = BackgroundManager.start_strategy_evaluation(
-            strategy_class=cls, strategy_name=name, is_custom=False
+            strategy_class=BUILTIN_EVALUATION_STRATEGIES[name],
+            strategy_name=name,
+            is_custom=False,
         )
         if job_id:
             job_ids.append(job_id)
 
-    customs = db.get_all_custom_strategies_for_admin() or []
+    if selective:
+        # Straight from the DB, not the 60s-cached admin list: a selection
+        # must never be silently trimmed.
+        wanted = list(dict.fromkeys(body.custom_strategy_ids or []))
+        customs = [db.get_custom_strategy(sid) for sid in wanted]
+        missing = [sid for sid, cs in zip(wanted, customs)
+                   if not cs or cs.get("deleted_at") or cs.get("user_id") == 0]
+        if missing:
+            raise HTTPException(status_code=422, detail=f"Unknown custom strategies: {missing}")
+    else:
+        customs = db.get_all_custom_strategies_for_admin() or []
     for cs in customs:
         job_id = BackgroundManager.start_strategy_evaluation(
             strategy_name=cs.get("strategy_name"),
@@ -503,6 +551,38 @@ def list_tables() -> dict:
     from db.database import db
 
     return {"tables": db.list_tables()}
+
+
+@router.get("/evaluations/status")
+def evaluation_status(job_ids: str) -> dict:
+    """Aggregate progress for a comma-separated set of evaluation job ids."""
+    from db.database import db
+
+    ids = [j for j in job_ids.split(",") if j]
+    counts = {"completed": 0, "failed": 0, "processing": 0, "pending": 0}
+    current = None
+    for job_id in ids:
+        job = db.get_job_by_id(job_id)
+        status = (job or {}).get("status", "FAILED")
+        if status == "COMPLETED":
+            counts["completed"] += 1
+        elif status == "FAILED":
+            counts["failed"] += 1
+        elif status == "PROCESSING":
+            counts["processing"] += 1
+            current = current or (job.get("payload") or {}).get("strategy_name")
+        else:
+            counts["pending"] += 1
+
+    total = len(ids)
+    done = counts["completed"] + counts["failed"]
+    return {
+        **counts,
+        "total": total,
+        "progress": done / total if total else 1.0,
+        "running": done < total,
+        "current_strategy": current,
+    }
 
 
 @router.post("/migrations/run")

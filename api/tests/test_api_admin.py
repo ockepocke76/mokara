@@ -199,3 +199,49 @@ def test_public_toggle_is_scoped_to_admin_owned_strategies():
     finally:
         client.post(f"/admin/strategies/{mine}/public", headers=headers, json={"is_public": False})
         db.delete_users_by_id([user_id, admin_id])
+
+
+def test_selective_evaluation_and_status():
+    from db.database import db
+
+    admin_email, _ = _new_user(tier="ADMIN")
+    headers = {**SECRET, "X-User-Email": admin_email}
+
+    r = client.get("/admin/evaluations/strategies", headers=headers)
+    assert r.status_code == 200
+    assert "Trinity" in r.json()["builtins"]
+
+    r = client.post(
+        "/admin/evaluations/run",
+        headers=headers,
+        json={"builtin_names": ["Trinity"], "custom_strategy_ids": []},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["queued"] == 1
+    job_id = body["job_ids"][0]
+    try:
+        r = client.get(f"/admin/evaluations/status?job_ids={job_id}", headers=headers)
+        assert r.status_code == 200
+        status = r.json()
+        # A live worker may already have picked the job up (or finished it).
+        assert status["total"] == 1
+        assert sum(status[k] for k in ("pending", "processing", "completed", "failed")) == 1
+        assert status["running"] == (status["completed"] + status["failed"] < 1)
+
+        r = client.post(
+            "/admin/evaluations/run",
+            headers=headers,
+            json={"builtin_names": ["Nope"]},
+        )
+        assert r.status_code == 422
+        r = client.post(
+            "/admin/evaluations/run",
+            headers=headers,
+            json={"builtin_names": [], "custom_strategy_ids": [999999999]},
+        )
+        assert r.status_code == 422
+        assert "999999999" in r.json()["detail"]
+    finally:
+        with db._connection_cursor() as cur:
+            cur.execute("DELETE FROM background_jobs WHERE id = %s", (job_id,))
